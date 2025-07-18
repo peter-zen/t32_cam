@@ -1,0 +1,80 @@
+{
+	"F_UploadedTag" : 0,
+	"data" : 
+	{
+		"D_Atmos" : "0",
+		"D_Humidity" : "0",
+		"D_SensorBattery" : "0.0",
+		"D_SensorCount" : 0,
+		"D_SensorGP" : "",
+		"D_SensorPID" : "00000000",
+		"D_SensorSP" : "0.0",
+		"D_SensorType" : 0,
+		"D_SensorValue" : 0,
+		"D_Temperature" : "-40.0"
+	},
+	"device" : 
+	{
+		"AStatus" : 22,
+		"BAT1_Level" : 0,
+		"Battery1" : "0.0",
+		"Battery2" : "0",
+		"EPower" : "0.0",
+		"EUID" : "",
+		"GP" : ",,,,,",
+		"IP" : "192.168.0.197",
+		"Loff_PWR_Val" : "0.0",
+		"Low_PWR_Val" : "0.0",
+		"Memory" : "0.0/0.0 G",
+		"NStatus" : 0,
+		"ONTime" : 0,
+		"PID" : "T152T20250624001",
+		"SPower" : "0",
+		"UTime" : "2025-06-26T20:17:08.000+08:00",
+		"WMode" : 0
+	},
+	"file_inf" : 
+	[
+		{
+			"F_CheckCode" : 43745,
+			"F_FileName" : "20250620_101358.JPG",
+			"F_FilePath" : "./res",
+			"F_FileTime" : "2025-06-26T12:07:10.000+08:00",
+			"F_UploadedTag" : 0
+		},
+		{
+			"F_CheckCode" : 15572,
+			"F_FileName" : "20250620_101458.JPG",
+			"F_FilePath" : "./res",
+			"F_FileTime" : "2025-06-26T12:07:14.000+08:00",
+			"F_UploadedTag" : 0
+		},
+		{
+			"F_CheckCode" : 51268,
+			"F_FileName" : "20250620_101558.JPG",
+			"F_FilePath" : "./res",
+			"F_FileTime" : "2025-06-26T12:07:07.000+08:00",
+			"F_UploadedTag" : 0
+		}
+	],
+	"network" : 
+	{
+		"N_CIP" : "0",
+		"N_CStatus" : 0,
+		"N_MIP" : "0",
+		"N_MStatus" : 0,
+		"N_UIP" : "0",
+		"N_UPID" : "NULL"
+	},
+	"signal" : 
+	{
+		"S_CF" : 0,
+		"S_RL" : 0,
+		"S_RSRP" : 0,
+		"S_RSRQ" : 0,
+		"S_RSSI" : 0,
+		"S_SNR" : 0,
+		"S_TD" : 0,
+		"S_TP" : 0
+	}
+}
