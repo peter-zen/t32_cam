@@ -212,7 +212,7 @@ static inline const char *fmt_to_string(IMPPixelFormat imp_pixfmt)
 	switch (imp_pixfmt) {
 	case PIX_FMT_NV12:
 		return nv12;
-	case PIX_FMT_YUV422:
+	case PIX_FMT_YUYV422:
 		return yuyv422;
 	default:
 		break;

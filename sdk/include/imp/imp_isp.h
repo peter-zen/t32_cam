@@ -355,31 +355,21 @@ typedef struct {
 * 多摄拼接模式
 */
 typedef enum {
-	IMPISP_NOT_JOINT = 0,           /**< 多摄不使能拼接模式 */
+	IMPISP_NOT_JOINT = 0,			/**< 多摄不使能拼接模式 */
 
-	IMPISP_HORIZONTAL_ONLY_JOINT,	/* 多摄仅水平方向拼接 */
-	IMPISP_VERTICAL_ONLY_JOINT,		/* 多摄仅垂直方向拼接 */
+	IMPISP_DOUBLE_ABOVE_UNDER,		/* 双摄仅垂直方向拼接 */
+	IMPISP_DOUBLE_LEFT_RIGHT,		/* 双摄仅水平方向拼接 */
 
-	IMPISP_MAIN_JOINT_BUTT,         /**< 用于判断参数有效性的值，必须大于此值 */
+	IMPISP_MAIN_JOINT_BUTT,			/**< 用于判断参数有效性的值，必须大于此值 */
 } IMPISPMultiSplitJointMode;
 
-/**
- * 拼接模式位置
- */
-typedef enum {
-	IMPISP_JOINT_MODE_POSITION_0,
-	IMPISP_JOINT_MODE_POSITION_1,
-	IMPISP_JOINT_MODE_POSITION_2,
-	IMPISP_JOINT_MODE_POSITION_3,
-	IMPISP_JOINT_MODE_POSITION_BUTT,
-} IMPISPMultiSplitJointPosition;
 
 /**
 * 多摄拼接结构体
 */
 typedef struct {
-	IMPISPMultiSplitJointMode mode;
-	IMPISPMultiSplitJointPosition pos[IMPISP_TOTAL_BUTT];
+	IMPISPMultiSplitJointMode joint_mode;			/* 拼接模式 */
+	uint8_t joint_position[12];						/*拼接画面对应通道*/
 } IMPISPMultiSplitJoint;
 
 /**
@@ -388,7 +378,7 @@ typedef struct {
 typedef struct	{
 	IMPISPSensorNum sensor_num;			/**< 总共挂载sensor数量 */
 	IMPISPMultiInput input;				/**< 多摄缓存配置 */
-	IMPISPMultiSplitJoint joint;		/**< 多摄拼接模式（预留） */
+	IMPISPMultiSplitJoint joint[6];		/**< 多摄拼接模式 */
 } IMPISPCameraInputMode;
 
 /**
@@ -613,7 +603,7 @@ int32_t IMP_ISP_GetISPBypass(IMPVI_NUM num, IMPISPOpsMode *enable);
 int32_t IMP_ISP_WDR_ENABLE(IMPVI_NUM num, IMPISPTuningOpsMode *mode);
 
 /**
- * @fn IMP_ISP_WDR_ENABLE_GET(IMPVI_NUM num, IMPISPTuningOpsMode *mode)
+ * @fn int32_t IMP_ISP_WDR_ENABLE_GET(IMPVI_NUM num, IMPISPTuningOpsMode *mode)
  *
  * 获取ISP WDR 模式.
  *
@@ -720,7 +710,7 @@ typedef struct {
 /**
  * @fn int32_t IMP_ISP_Tuning_GetSensorAttr(IMPVI_NUM num, IMPISPSENSORAttr *attr)
  *
- * 获取填充参数.
+ * 获取Sensor属性.
  *
  * @param[in] num	对应sensor的标号
  * @param[out] attr sensor属性参数.
@@ -1483,7 +1473,7 @@ int32_t IMP_ISP_Tuning_GetModuleControl(IMPVI_NUM num, IMPISPModuleCtl *ispmodul
 typedef enum {
 	IMP_ISP_MODULE_SINTER = 0, /**< 2D降噪下标 */
 	IMP_ISP_MODULE_TEMPER,	   /**< 3D降噪下标 */
-	IMP_ISP_MODULE_DRC,		   /**< 数字宽动态下标（预留） */
+	IMP_ISP_MODULE_DRC,		   /**< 数字宽动态下标 */
 	IMP_ISP_MODULE_DPC,		   /**< 动态去坏点下标 (ps：默认强度128，强度越小，坏点越明显；强度越大，去坏点能力越好)*/
 	IMP_ISP_MODULE_DEFOG,	   /**< 去雾模块的强度下标 */
 	IMP_ISP_MODULE_BUTT,	   /**< 用于判断参数有效性的值，必须大于此值 */
@@ -1587,8 +1577,8 @@ typedef enum {
  */
 typedef struct {
         float CscCoef[9];				/**< 3x3矩阵 */
-        unsigned char CscOffset[2];		/**< [0] UV偏移值 [1] Y偏移值*/
-        unsigned char CscClip[4];		/**< 分别为Y最大值，Y最大值，UV最大值，UV最小值 */
+        unsigned char CscOffset[2];		/**< [0] Y偏移值 [1] UV偏移值*/
+        unsigned char CscClip[4];		/**< 分别为Y最小值，Y最大值，UV最小值，UV最大值 */
 } IMPISPCscMatrix;
 
 /**
@@ -1596,8 +1586,8 @@ typedef struct {
  */
 typedef struct {
         IMPISPCSCColorGamut ColorGamut;		/**< RGB转YUV的标准矩阵 */
-        IMPISPCscMatrix Matrix;				/**< 客户自定义的转换矩阵 */
-        IMPISPCscMatrix MatrixIn;           /**< 客户自定义的转换矩阵 */
+        IMPISPCscMatrix Matrix;				/**< 客户自定义的RGB2YUV转换矩阵 */
+        IMPISPCscMatrix MatrixIn;           /**< 客户自定义的YUV2RGB转换矩阵 */
 } IMPISPCSCAttr;
 
 /**
@@ -2162,7 +2152,7 @@ typedef struct {
 	int stable;						/**< AE 收敛状态 */
 	uint32_t target;				/**< 当前的目标亮度 */
 	uint32_t ae_mean;				/**< 叠加权重之后，AE的当前的统计平均值 */
-    uint32_t bv;					/**< 环境亮度 */
+	uint32_t bv;					/**< 环境亮度 */
 } IMPISPAeOnlyReadAttr;
 
  /**
@@ -2255,7 +2245,7 @@ typedef struct {
  * @retval 0 成功
  * @retval 非0 失败，返回错误码
  *
- * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ * @attention 在使用这个函数之前，IMP_ISP_AddSensor已被调用。
  */
 int32_t IMP_ISP_Tuning_SetAeStartAttr(IMPVI_NUM num, IMPISPAeStartAttr *attr);
 
@@ -2270,7 +2260,7 @@ int32_t IMP_ISP_Tuning_SetAeStartAttr(IMPVI_NUM num, IMPISPAeStartAttr *attr);
  * @retval 0 成功
  * @retval 非0 失败，返回错误码
  *
- * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ * @attention 在使用这个函数之前，IMP_ISP_AddSensor已被调用。
  */
 int32_t IMP_ISP_Tuning_GetAeStartAttr(IMPVI_NUM num, IMPISPAeStartAttr *attr);
 
@@ -2669,7 +2659,7 @@ typedef struct {
 	IMPISPStatisZone Af_HighLumaCnt;
 } IMPISPAFStatisInfo;
 /**
- * @fn IMP_ISP_Tuning_GetAfStatistics(IMPVI_NUM num, IMPISPAFStatisInfo *af_statis)
+ * @fn int32_t IMP_ISP_Tuning_GetAfStatistics(IMPVI_NUM num, IMPISPAFStatisInfo *af_statis)
  *
  * 获取AF统计值。
  *
@@ -2709,7 +2699,7 @@ typedef struct {
 /**
  * @fn int32_t IMP_ISP_Tuning_SetAeWeight(IMPVI_NUM num, IMPISPAEWeightAttr *ae_weight)
  *
- * 设置统计信息参数.
+ * 设置AE权重信息.
  *
  * @param[in] num				 对应sensor的标号
  * @param[out] ae_weight		 权重信息
@@ -3531,6 +3521,7 @@ typedef enum {
  * @endcode
  *
  * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ * @attention 仅在WDR模式下使用有效。
  */
 int32_t IMP_ISP_Tuning_SetWdrOutputMode(IMPVI_NUM num, IMPISPWdrOutputMode *mode);
 
@@ -3558,6 +3549,7 @@ int32_t IMP_ISP_Tuning_SetWdrOutputMode(IMPVI_NUM num, IMPISPWdrOutputMode *mode
  * @endcode
  *
  * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ * @attention 仅在WDR模式下使用有效。
  */
 int32_t IMP_ISP_Tuning_GetWdrOutputMode(IMPVI_NUM num, IMPISPWdrOutputMode *mode);
 
@@ -3924,20 +3916,6 @@ int IMP_ISP_Tuning_ShowOsdRgn(int chn,int handle, int showFlag);
  */
 int IMP_ISP_Tuning_DestroyOsdRgn(int chn,int handle);
 
-/**
- * @fn int32_t IMP_ISP_SetVicDoneCbFunc(void (*cb)(void))
- *
- * 当isp vic每完成一帧数据，设置的回调函数会被执行。
- *
- * @param[in] cb 回调函数。
- *
- * @retval 0 成功
- * @retval 非0 失败，返回错误码
- *
- * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
- */
-int32_t IMP_ISP_SetVicDoneCbFunc(void (*cb)(void));
-
 typedef enum {
 	IMPISP_TUNING_CSCCR_DEFAULT_MODE,	 /**< 默认模式*/
 	IMPISP_TUNING_CSCCR_STRETCH_MODE,	 /**< STRETCH模式*/
@@ -3990,125 +3968,11 @@ int32_t IMP_ISP_SetCsccrMode(IMPVI_NUM num, IMPISPCsccrModeAttr *attr);
 int32_t IMP_ISP_GetCsccrMode(IMPVI_NUM num, IMPISPCsccrModeAttr *attr);
 
 /**
- * ISP WB COEFFT parameter structure.
- */
-typedef struct isp_core_rgb_coefft_wb_attr {
-		unsigned short rgb_coefft_wb_r;
-		unsigned short rgb_coefft_wb_g;
-		unsigned short rgb_coefft_wb_b;
-}IMPISPCoefftWb;
-
-/**
- * @fn IMP_ISP_Tuning_Awb_GetRgbCoefft(IMPVI_NUM num, IMPISPCoefftWb *isp_core_rgb_coefft_wb_attr)
- *
- * 手动获取AWB RGB通道偏移参数。
- *
- * @retval 0 成功
- * @retval 非0 失败，返回错误码
- *
- * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
- */
-int IMP_ISP_Tuning_Awb_GetRgbCoefft(IMPVI_NUM num, IMPISPCoefftWb *isp_core_rgb_coefft_wb_attr);
-
-/**
- * @fn IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_NUM num, IMPISPCoefftWb *isp_core_rgb_coefft_wb_attr)
- *
- * 手动设置AWB RGB通道偏移参数。
- *
- * @retval 0 成功
- * @retval 非0 失败，返回错误码
- *
- * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
- *
- * @code
- * IMPISPCoefftWb isp_core_rgb_coefft_wb_attr;
- *
- * isp_core_rgb_coefft_wb_attr.rgb_coefft_wb_r=x;
- * isp_core_rgb_coefft_wb_attr.rgb_coefft_wb_g=y;
- * isp_core_rgb_coefft_wb_attr.rgb_coefft_wb_b=z;
- * IMP_ISP_Tuning_Awb_SetRgbCoefft(&isp_core_rgb_coefft_wb_attr);
- * if(ret){
- *	IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_Awb_SetRgbCoefft error !\n");
- * return -1;
- }
- * @endcode
- *
-*/
-int IMP_ISP_Tuning_Awb_SetRgbCoefft(IMPVI_NUM num, IMPISPCoefftWb *isp_core_rgb_coefft_wb_attr);
-
-/**
- * Wdr初始化模式
- */
-typedef enum {
-	IMPISP_TYPE_WDR_FS = 1,
-	IMPISP_TYPE_WDR_DOL,
-	IMPISP_TYPE_WDR_NATIVE,
-} IMPISPWdrInitMode;
-
-/**
- * 初始运行模式
- */
-typedef enum {
-	IMPISP_TYPE_RUN_LINEAR,
-	IMPISP_TYPE_RUN_WDR,
-} IMPISPWdrRunMode;
-
-/**
- * Wdr模式开启属性
- */
-typedef struct {
-	IMPISPWdrRunMode rmode;
-	IMPISPWdrInitMode imode;
-} IMPISPWdrOpenAttr;
-
-/**
- * @fn int32_t IMP_ISP_WDR_OPEN(IMPVI_NUM num, IMPISPWdrOpenAttr *attr)
- *
- * 在sensor选择线性的配置基础下也可以开启WDR模式.
- *
- * @param[in] num	对应sensor的标号
- * @param[in] attr	ISP WDR 属性
- *
- * @retval 0 成功
- * @retval 非0 失败，返回错误码
- *
- * @remark imode用于WDR模式的配置，rmode用于选择启动模式。
- *
- * @attention 此函数第一次调用必须在IMP_ISP_AddSensor之前，即先调用此函数，然后调用IMP_ISP_AddSensor逐个添加sensor
- * @attention 在使用linear模式启动时需要在sensor驱动check函数的linear分支下配置wdr_cache属性。
- *
- * @code
- * IMPISPWdrOpenAttr wdrattr;
- *
- * memset(&wdrattr, 0, sizeof(IMPISPWdrOpenAttr));
- * wdrattr.rmode = IMPISP_TYPE_RUN_LINEAR;
- * wdrattr.imode = IMPISP_TYPE_WDR_DOL;
- * ret = IMP_ISP_WDR_OPEN(IMPVI_MAIN, &wdrattr);
- * printf("\n==> sdk IMP_ISP_WDR_OPEN\n");
- */
-int32_t IMP_ISP_WDR_OPEN(IMPVI_NUM num, IMPISPWdrOpenAttr *attr);
-
-/**
- * @fn int32_t IMP_ISP_Tuning_GetAeBv(IMPVI_NUM num, int *bv)
- *
- * 获取AE BV.
- *
- * @param[in] num	   对应sensor的标号
- * @param[in] bv	   BV值
- *
- * @retval 0 成功
- * @retval 非0 失败，返回错误码
- *
- * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
- */
-int32_t IMP_ISP_Tuning_GetAeBv(IMPVI_NUM num, int *bv);
-
-/**
  * AWB色温倾向调节
  */
 typedef struct {
-	uint16_t thres_hm;	/**< AWB 色温倾向调节的中高CT阈值，大于该阈值为高色温，低于该阈值为中色温 */
 	uint16_t thres_lm;	/**< AWB 色温倾向调节的中低CT阈值，大于该阈值为中色温，低于该阈值为低色温 */
+	uint16_t thres_hm;	/**< AWB 色温倾向调节的中高CT阈值，大于该阈值为高色温，低于该阈值为中色温 */
 	IMPISPAWBGain gain_h; /**< AWB 色温倾向调节的高色温段 */
 	IMPISPAWBGain gain_m; /**< AWB 色温倾向调节的中色温段 */
 	IMPISPAWBGain gain_l; /**< AWB 色温倾向调节的低色温段 */
@@ -4387,6 +4251,247 @@ int32_t IMP_ISP_HB_GetAttr(IMPVI_NUM num, uint16_t *time);
  * @attention
  */
 int32_t IMP_ISP_HB_SetAttr(IMPVI_NUM num, uint16_t *time);
+
+/**
+ * Face 功能属性
+ */
+typedef struct {
+	IMPISPTuningOpsMode enable; /**< Face 功能开关 */
+	unsigned int left;   /**< Face 区域左起始点 */
+	unsigned int top;    /**< Face 区域上起始点 */
+	unsigned int right;  /**< Face 区域右结束点 */
+	unsigned int bottom; /**< Face 区域下结束点 */
+	unsigned int target; /**< Face 区域目标亮度 */
+} IMPISPFaceAttr;
+
+/**
+ * @fn int32_t IMP_ISP_Tuning_GetFaceAe(IMPVI_NUM num, IMPISPFaceAttr *gaeattr)
+ *
+ * 获取人脸曝光功能参数.
+ *
+ * @param[in] num      对应sensor的标号
+ * @param[in] gaeattr  face ae参数.
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @code
+ * IMPISPFaceAttr attr;
+ * int ret=0;
+ * attract.enable = IMPISP_TUNING_OPS_MODE_ENABLE;
+ * ret = IMP_ISP_Tuning_GetFaceAe(IMPVI_NUM ,&saeattr);
+ * @endcode
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ */
+int32_t IMP_ISP_Tuning_GetFaceAe(IMPVI_NUM num, IMPISPFaceAttr *gaeattr);
+
+/**
+ * @fn int32_t IMP_ISP_Tuning_SetFaceAe(IMPVI_NUM num, IMPISPFaceAttr *saeattr)
+ *
+ * 设置人脸曝光功能参数。
+ *
+ * @param[in] num      对应sensor的标号
+ * @param[in] saeattr  face ae参数.
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @code
+ * IMPISPFaceAttr attr;
+ * int ret=0;
+ * attract.enable = IMPISP_TUNING_OPS_MODE_ENABLE;
+ * attr.left = 10;
+ * attr.top = 20;
+ * attr.right = 30;
+ * attr.bottom = 40;
+ * attr.target = 300;
+ * ret = IMP_ISP_Tuning_SetFaceAe(IMPVI_NUM ,&saeattr);
+ * @endcode
+ *
+ * @remark faceae功能需要每帧调用
+ * @remark saeattr->target的范围位10-200
+ *
+ * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ */
+int32_t IMP_ISP_Tuning_SetFaceAe(IMPVI_NUM num, IMPISPFaceAttr *saeattr);
+
+/**
+ *	FaceAE权重
+ */
+typedef struct {
+	uint32_t global_weight;
+	uint32_t roi_weight;
+	uint32_t smooth;
+} IMPISPFaceAeWeiget;
+
+/**
+ * @fn int32_t IMP_ISP_Tuning_SetFaceAeWeiget(IMPVI_NUM num, IMPISPFaceAeWeiget *weiget)
+ *
+ * 设置人脸相关AE权重.
+ *
+ * @param[in] num      对应sensor的标号
+ * @param[in] weiget   权重.
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @code
+ * int ret = 0;
+ * IMPISPFaceAeWeiget attr;
+ * ret = IMP_ISP_Tuning_SetFaceAeWeiget(IMPVI_MAIN, &attr);
+ * if(ret){
+ *		IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_SetFaceAeWeiget error !\n");
+ *		return -1;
+ *	}
+ * @endcode
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @remark 无需每帧调用，调用一次即可持续生效
+ *
+ * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ */
+int32_t IMP_ISP_Tuning_SetFaceAeWeiget(IMPVI_NUM num, IMPISPFaceAeWeiget *weiget);
+
+/**
+ * @fn int32_t IMP_ISP_Tuning_GetFaceAeWeiget(IMPVI_NUM num, IMPISPFaceAeWeiget *weiget)
+ *
+ * 获取人脸相关AE权重.
+ *
+ * @param[in] num      对应sensor的标号
+ * @param[in] weiget   权重.
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @code
+ * int ret = 0;
+ * IMPISPFaceAeWeiget attr;
+ * ret = IMP_ISP_Tuning_GetFaceAeWeiget(IMPVI_MAIN, &attr);
+ * if(ret){
+ *		IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_GetFaceAeWeiget error !\n");
+ *		return -1;
+ *	}
+ * @endcode
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ */
+int32_t IMP_ISP_Tuning_GetFaceAeWeiget(IMPVI_NUM num, IMPISPFaceAeWeiget *weiget);
+
+/**
+ * FaceAe相关luma值.
+ */
+typedef struct {
+	uint32_t global;
+	uint32_t roi;
+} IMPISPFaceAeLuma;
+
+/**
+ * @fn int32_t IMP_ISP_Tuning_GetFaceAeLuma(IMPVI_NUM num, IMPISPFaceAeLuma *luma)
+ *
+ * 获取人脸相关luma值
+ *
+ * @param[in] num      对应sensor的标号
+ * @param[in] luma     luma.
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @code
+ * int ret = 0;
+ * IMPISPFaceAeLuma attr;
+ * ret = IMP_ISP_Tuning_GetFaceAeLuma(IMPVI_MAIN, &attr);
+ * if(ret){
+ *		IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_GetFaceAeLuma error !\n");
+ *		return -1;
+ * }
+ * @endcode
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ */
+int32_t IMP_ISP_Tuning_GetFaceAeLuma(IMPVI_NUM num, IMPISPFaceAeLuma *luma);
+
+/**
+ * @fn int32_t IMP_ISP_Tuning_GetFaceAwb(IMPVI_NUM num, IMPISPFaceAttr *gawbattr)
+ *
+ * 获取人脸白平衡功能参数.
+ *
+ * @param[in] num      对应sensor的标号
+ * @param[in] gawbattr  face awb参数.
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ */
+int32_t IMP_ISP_Tuning_GetFaceAwb(IMPVI_NUM num, IMPISPFaceAttr *gawbattr);
+
+/**
+ * @fn int32_t IMP_ISP_Tuning_SetFaceAwb(IMPVI_NUM num, IMPISPFaceAttr *sawbattr)
+ *
+ * 设置人脸白平衡功能参数.
+ *
+ * @param[in] num      对应sensor的标号
+ * @param[in] sawbattr  face awb参数.
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ */
+int32_t IMP_ISP_Tuning_SetFaceAwb(IMPVI_NUM num, IMPISPFaceAttr *sawbattr);
+
+typedef struct{
+		uint8_t tmo_roinum;         //可提亮区域个数（0-6）
+		uint16_t tmo_xcent[6];      //区域中心横坐标
+		uint16_t tmo_ycent[6];      //区域中心纵坐标
+		uint16_t tmo_distep[6];     //区域半径
+		uint16_t tmo_uplumthr[6];   //提亮的阈值
+		uint8_t tmo_upk[6];         //提亮的斜率
+} IMPISPTmoFaceae;
+
+/**
+ * @fn int32_t IMP_ISP_Tuning_SetTmoFaceae(IMPVI_NUM num, IMPISPTmoCurve *attr);
+ *
+ * 设置多块棱形区域提亮
+ *
+ * @param[in] num   对应sensor的标号
+ * @param[out] attr	属性
+ *
+ * @code
+ *      IMPISPTmoFaceae attr;
+ *      attr.tmo_roinum=6;
+ *      for(int i= 0;i<6;i++)
+ *      {
+ *          attr.tmo_xcent[i]=i*100;
+ *          attr.tmo_ycent[i]=i*100;
+ *          attr.tmo_distep[i]=100;
+ *          attr.tmo_uplumthr[i]=1023;
+ *          attr.tmo_upk[i]=127;
+ *      }
+ *      ret = IMP_ISP_Tuning_SetTmoFaceae(IMPVI_MAIN,  &attr);
+ *      if(ret){
+ *      		IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_SetTmoFaceae error !\n");
+ *      		return -1;
+ *      }
+ * @endcode
+ *
+ * @retval 0 成功
+ * @retval 非0 失败，返回错误码
+ *
+ * @attention 在使用这个函数之前，IMP_ISP_EnableTuning已被调用。
+ */
+int32_t IMP_ISP_Tuning_SetTmoFaceae(IMPVI_NUM num, IMPISPTmoFaceae *attr);
 
 #ifdef __cplusplus
 #if __cplusplus

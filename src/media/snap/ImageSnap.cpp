@@ -22,6 +22,8 @@ extern "C" {
 ImageSnapParams::ImageSnapParams()
 {
     this->nchannels = 1;
+    this->width = 1920; 
+	this->height = 1080; 
 }
 
 void ImageSnapParams::setImageSize(int width, int height)
@@ -48,7 +50,6 @@ void ImageSnapParams::setFrameSourceChnNum(int nchannels)
 
 ImageSnap::ImageSnap()
     : initialized(initialize())
-    , runMode(RunMode::BLOCKING)
 {
 
 }
@@ -56,7 +57,6 @@ ImageSnap::ImageSnap()
 ImageSnap::ImageSnap(const ImageSnapParams &params)
     : initialized(initialize())
     , params(params)
-    , runMode(RunMode::BLOCKING)
 {
 	
 }
@@ -73,16 +73,15 @@ bool ImageSnap::setParams(const ImageSnapParams& params) {
 
 bool ImageSnap::initialize()
 {
-    int i = 0;
     int ret = 0;
 
 	/* Step.1 System init */
 	ret = sample_system_init();
 	if (ret < 0) {
-		Logger::log(LogLevel::ERROR,"System init failed\n");
+		Logger::log(LogLevel::ERROR,"System init failed");
 		return false;
 	}
-    Logger::log(LogLevel::DEBUG, "System init success\n");
+    Logger::log(LogLevel::DEBUG, "System init success");
     /* Step.2 FrameSource init */
     ret = sample_framesource_init();
     if (ret < 0) {
@@ -90,51 +89,43 @@ bool ImageSnap::initialize()
         sample_system_exit();
         return false;
     }
-    Logger::log(LogLevel::DEBUG, "FrameSource init success\n");
+    Logger::log(LogLevel::DEBUG, "FrameSource init success");
     /* Step.3 Encoder init */
-    for (i = 0; i < FS_CHN_NUM; i++) {
-        if (chn[i].enable) {
-            ret = IMP_Encoder_CreateGroup(chn[i].index);
-            if (ret < 0) {
-                Logger::log(LogLevel::ERROR, "Encoder CreateGroup(%d) failed", chn[i].index);
-                sample_framesource_exit();
-                sample_system_exit();
-                return false;
-            }
+    if (chn[SNAP_SENSOR_CHN_NUM].enable) {
+        ret = IMP_Encoder_CreateGroup(chn[SNAP_SENSOR_CHN_NUM].index);
+        if (ret < 0) {
+            Logger::log(LogLevel::ERROR, "Encoder CreateGroup(%d) failed", chn[SNAP_SENSOR_CHN_NUM].index);
+            sample_framesource_exit();
+            sample_system_exit();
+            return false;
         }
     }
-    Logger::log(LogLevel::DEBUG, "Encoder CreateGroup success\n");
+    Logger::log(LogLevel::DEBUG, "Encoder CreateGroup success");
     if (!initJpeg()) {
         Logger::log(LogLevel::ERROR, "Jpeg init failed");
-        for (i = 0; i < FS_CHN_NUM; i++) {
-            if (chn[i].enable) {
-                IMP_Encoder_DestroyGroup(chn[i].index);
-            }
+        if (chn[SNAP_SENSOR_CHN_NUM].enable) {
+            IMP_Encoder_DestroyGroup(chn[SNAP_SENSOR_CHN_NUM].index);
         }
         sample_framesource_exit();
         sample_system_exit();
         return false;
     }
-    Logger::log(LogLevel::DEBUG, "Jpeg init success\n");
+    Logger::log(LogLevel::DEBUG, "Jpeg init success");
 #ifdef JPEGQUAILTY_CHANGE
     int jpegQp = 20;
-    for (i = 0; i < FS_CHN_NUM; i++) {
-        if (chn[i].enable) {
-            IMP_Encoder_SetJpegQp(12+chn[i].index/3, jpegQp);
-        }
+    if (chn[SNAP_SENSOR_CHN_NUM].enable) {
+        IMP_Encoder_SetJpegQp(12+chn[SNAP_SENSOR_CHN_NUM].index/3, jpegQp);
     }
 #endif
 	/* Step.4 Bind */
-    for (i = 0; i < FS_CHN_NUM; i++) {
-        if (chn[i].enable) {
-            ret = IMP_System_Bind(&chn[i].framesource_chn, &chn[i].imp_encoder);
-            if (ret < 0) {
-                Logger::log(LogLevel::ERROR, "Bind FrameSource%d and Encoder%d failed", chn[i].framesource_chn.groupID, chn[i].imp_encoder.groupID);
-                return false;
-            }
+    if (chn[SNAP_SENSOR_CHN_NUM].enable) {
+        ret = IMP_System_Bind(&chn[SNAP_SENSOR_CHN_NUM].framesource_chn, &chn[SNAP_SENSOR_CHN_NUM].imp_encoder);
+        if (ret < 0) {
+            Logger::log(LogLevel::ERROR, "Bind FrameSource%d and Encoder%d failed", chn[SNAP_SENSOR_CHN_NUM].framesource_chn.groupID, chn[SNAP_SENSOR_CHN_NUM].imp_encoder.groupID);
+            return false;
         }
     }
-    Logger::log(LogLevel::DEBUG, "Bind success\n");
+    Logger::log(LogLevel::DEBUG, "Bind success");
     return true;
 }
 
@@ -149,15 +140,12 @@ void ImageSnap::deinitialize()
         threads.clear();
 
         /* Step.8 UnBind */
-        int i = 0;
         int ret = 0;
-        for (i = 0; i < FS_CHN_NUM; i++) {
-            if (chn[i].enable) {
-                ret = IMP_System_UnBind(&chn[i].framesource_chn, &chn[i].imp_encoder);
-                if (ret < 0) {
-                    Logger::log(LogLevel::ERROR, "UnBind FrameSource%d and Encoder%d failed", chn[i].framesource_chn.groupID, chn[i].imp_encoder.groupID);
-                    return;
-                }
+        if (chn[SNAP_SENSOR_CHN_NUM].enable) {
+            ret = IMP_System_UnBind(&chn[SNAP_SENSOR_CHN_NUM].framesource_chn, &chn[SNAP_SENSOR_CHN_NUM].imp_encoder);
+            if (ret < 0) {
+                Logger::log(LogLevel::ERROR, "UnBind FrameSource%d and Encoder%d failed", chn[SNAP_SENSOR_CHN_NUM].framesource_chn.groupID, chn[SNAP_SENSOR_CHN_NUM].imp_encoder.groupID);
+                return;
             }
         }
 
@@ -212,10 +200,8 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
     int ret = sample_framesource_streamon();
     if (ret < 0) {
         Logger::log(LogLevel::ERROR, "FrameSource StreamOn failed");
-        for (int i = 0; i < FS_CHN_NUM; ++i) {
-            if (chn[i].enable) {
-                IMP_System_UnBind(&chn[i].framesource_chn, &chn[i].imp_encoder);
-            }
+        if (chn[SNAP_SENSOR_CHN_NUM].enable) {
+            IMP_System_UnBind(&chn[SNAP_SENSOR_CHN_NUM].framesource_chn, &chn[SNAP_SENSOR_CHN_NUM].imp_encoder);
         }
         if (onSnapDone) {
             onSnapDone(false);
@@ -225,27 +211,16 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
 
     bool result = true;
 
-    auto sensorFilter = [](int i) {
-        switch (SENSOR_NUM) {
-            case IMPISP_TOTAL_ONE: return i == 0;
-            case IMPISP_TOTAL_TWO: return i == 0 || i == 3;
-            case IMPISP_TOTAL_THR: return i == 0 || i == 3 || i == 6;
-            case IMPISP_TOTAL_FOU: return i == 0 || i == 3 || i == 6 || i == 9;
-            default: return true;
-        }
-    };
-
-    if (this->runMode == RunMode::NON_BLOCKING) {
-        this->threads.emplace_back([this, filenames, onSnapDone, sensorFilter]() {
+    if (onSnapDone) {
+        this->threads.emplace_back([this, filenames, onSnapDone]() {
             bool nonBlockingResult = true;
-            for (int i = 0; i < FS_CHN_NUM; ++i) {
-                if (chn[i].enable && sensorFilter(i)) {
-                    int chnNum = (PT_JPEG << 16) | (12 + chn[i].index / 3);
-                    if (!this->snap(chnNum, filenames)) {
-                        nonBlockingResult = false;
-                    }
+            if (chn[SNAP_SENSOR_CHN_NUM].enable && sensorFilter(SNAP_SENSOR_CHN_NUM)) {
+                int chnNum = (PT_JPEG << 16) | (12 + chn[SNAP_SENSOR_CHN_NUM].index / 3);
+                if (!this->snap(chnNum, filenames)) {
+                    nonBlockingResult = false;
                 }
             }
+        
             if (onSnapDone) {
                 onSnapDone(nonBlockingResult);
             }
@@ -253,12 +228,10 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
         });
         return true;
     } else {
-        for (int i = 0; i < FS_CHN_NUM; ++i) {
-            if (chn[i].enable && sensorFilter(i)) {
-                int chnNum = (PT_JPEG << 16) | (12 + chn[i].index / 3);
-                if (!snap(chnNum, filenames)) {
-                    result = false;
-                }
+        if (chn[SNAP_SENSOR_CHN_NUM].enable && sensorFilter(SNAP_SENSOR_CHN_NUM)) {
+            int chnNum = (PT_JPEG << 16) | (12 + chn[SNAP_SENSOR_CHN_NUM].index / 3);
+            if (!snap(chnNum, filenames)) {
+                result = false;
             }
         }
     }
@@ -266,10 +239,8 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
     ret = sample_framesource_streamoff();
     if (ret < 0) {
         Logger::log(LogLevel::ERROR, "FrameSource StreamOff failed");
-        for (int i = 0; i < FS_CHN_NUM; ++i) {
-            if (chn[i].enable) {
-                IMP_System_UnBind(&chn[i].framesource_chn, &chn[i].imp_encoder);
-            }
+        if (chn[SNAP_SENSOR_CHN_NUM].enable) {
+            IMP_System_UnBind(&chn[SNAP_SENSOR_CHN_NUM].framesource_chn, &chn[SNAP_SENSOR_CHN_NUM].imp_encoder);
         }
         result = false;
     }
@@ -302,6 +273,7 @@ bool ImageSnap::snap(int chnNum, const std::vector<std::string> &filenames)
         ret = IMP_FrameSource_GetI2dAttr((chnNum-12)*3, &i2d_attr);
         if(ret < 0){
             Logger::log(LogLevel::ERROR, "IMP_FrameSource_GetI2dAttr(%d) failed", (chnNum-12)*3);
+            IMP_Encoder_StopRecvPic(chnNum);
             return false;
         }
 
@@ -321,6 +293,7 @@ bool ImageSnap::snap(int chnNum, const std::vector<std::string> &filenames)
         FILE* fp = fopen(filename.c_str(), "wb"); 
         if (fp == nullptr) {
             Logger::log(LogLevel::ERROR, "open %s failed", filename.c_str());
+            IMP_Encoder_StopRecvPic(chnNum);
             return false;
         }
 
@@ -329,6 +302,7 @@ bool ImageSnap::snap(int chnNum, const std::vector<std::string> &filenames)
         if (ret < 0) {
             Logger::log(LogLevel::ERROR, "IMP_Encoder_PollingStream(%d) timeout", chnNum);
             fclose(fp); 
+            IMP_Encoder_StopRecvPic(chnNum);
             return false;
         }
 
@@ -337,7 +311,8 @@ bool ImageSnap::snap(int chnNum, const std::vector<std::string> &filenames)
         ret = IMP_Encoder_GetStream(chnNum, &stream, 1);
         if (ret < 0) {
             Logger::log(LogLevel::ERROR, "IMP_Encoder_GetStream(%d) failed", chnNum);
-            fclose(fp); 
+            fclose(fp);
+            IMP_Encoder_StopRecvPic(chnNum);
             return false;
         }
 
@@ -345,7 +320,9 @@ bool ImageSnap::snap(int chnNum, const std::vector<std::string> &filenames)
             size_t written = fwrite((void *)stream.pack[i].virAddr, 1, stream.pack[i].length, fp); 
             if (written != stream.pack[i].length) {
                 Logger::log(LogLevel::ERROR, "stream write failed");
-                fclose(fp); 
+                fclose(fp);
+                IMP_Encoder_ReleaseStream(chnNum, &stream);
+                IMP_Encoder_StopRecvPic(chnNum);
                 return false;
             }
         }
@@ -363,102 +340,100 @@ bool ImageSnap::snap(int chnNum, const std::vector<std::string> &filenames)
     return true;
 }
 
-static bool shouldProcessChannel(int index) {
+bool ImageSnap::sensorFilter(int index)
+{
     switch (SENSOR_NUM) {
-        case IMPISP_TOTAL_ONE: return index == 0;
+        case IMPISP_TOTAL_ONE: return index == 0 || index == 1;
         case IMPISP_TOTAL_TWO: return index == 0 || index == 3;
         case IMPISP_TOTAL_THR: return index == 0 || index == 3 || index == 6;
         case IMPISP_TOTAL_FOU: return index == 0 || index == 3 || index == 6 || index == 9;
         default: return false;
     }
 }
-
+    
 bool ImageSnap::initJpeg()
 {
-    int i = 0;
     int ret = 0;
     IMPEncoderAttr *enc_attr;
     IMPEncoderRcAttr *rc_attr;
     IMPEncoderCHNAttr channel_attr;
     IMPFSChnAttr *imp_chn_attr_tmp;
+    int width = 0;
+    int height = 0;
 
-    for (i = 0; i < FS_CHN_NUM; i++) {
-        if (chn[i].enable && shouldProcessChannel(chn[i].index)) {
-            imp_chn_attr_tmp = &chn[i].fs_chn_attr;
-            memset(&channel_attr, 0, sizeof(IMPEncoderCHNAttr));
-            enc_attr = &channel_attr.encAttr;
-            enc_attr->enType = PT_JPEG;
-            enc_attr->bufSize = 0;
-            enc_attr->profile = 0;
-            enc_attr->picWidth = imp_chn_attr_tmp->picWidth;
-            enc_attr->picHeight = imp_chn_attr_tmp->picHeight;
-            rc_attr = &channel_attr.rcAttr;
-            rc_attr->attrRcMode.rcMode = ENC_RC_MODE_FIXQP;
-            rc_attr->attrRcMode.attrJPEGFixQp.qp = 40;
-            Logger::log(LogLevel::DEBUG, "direct_switch:%d, index:%d", direct_switch, chn[i].index);
-            if(direct_switch == 1) {
-                if (0 == chn[i].index)
-                    channel_attr.bEnableIvdc = true;
-            } else if (direct_switch == 2) {
-                if (0 == chn[i].index || 3 == chn[i].index)
-                    channel_attr.bEnableIvdc = true;
-            } else if (direct_switch == 3) {
-                if (0 == chn[i].index || 3 == chn[i].index || 6 == chn[i].index)
-                    channel_attr.bEnableIvdc = true;
-            } else if (direct_switch == 4) {
-                if (0 == chn[i].index || 3 == chn[i].index || 6 == chn[i].index || 9 == chn[i].index)
-                    channel_attr.bEnableIvdc = true;
-            }
+    if (chn[SNAP_SENSOR_CHN_NUM].enable && sensorFilter(chn[SNAP_SENSOR_CHN_NUM].index)) {
+        imp_chn_attr_tmp = &chn[SNAP_SENSOR_CHN_NUM].fs_chn_attr;
+        memset(&channel_attr, 0, sizeof(IMPEncoderCHNAttr));
+        enc_attr = &channel_attr.encAttr;
+        enc_attr->enType = PT_JPEG;
+        enc_attr->bufSize = 0;
+        enc_attr->profile = 0;
+        this->params.getImageSize(width, height);
+        Logger::log(LogLevel::INFO, "ImageSnap", "JPEG width:%d height:%d", width, height);
+        enc_attr->picWidth = width;//imp_chn_attr_tmp->picWidth;
+        enc_attr->picHeight = height;//imp_chn_attr_tmp->picHeight;
+        rc_attr = &channel_attr.rcAttr;
+        rc_attr->attrRcMode.rcMode = ENC_RC_MODE_FIXQP;
+        rc_attr->attrRcMode.attrJPEGFixQp.qp = 40;
+        Logger::log(LogLevel::DEBUG, "direct_switch:%d, index:%d", direct_switch, chn[SNAP_SENSOR_CHN_NUM].index);
+        if(direct_switch == 1) {
+            if (0 == chn[SNAP_SENSOR_CHN_NUM].index)
+                channel_attr.bEnableIvdc = true;
+        } else if (direct_switch == 2) {
+            if (0 == chn[SNAP_SENSOR_CHN_NUM].index || 3 == chn[SNAP_SENSOR_CHN_NUM].index)
+                channel_attr.bEnableIvdc = true;
+        } else if (direct_switch == 3) {
+            if (0 == chn[SNAP_SENSOR_CHN_NUM].index || 3 == chn[SNAP_SENSOR_CHN_NUM].index || 6 == chn[SNAP_SENSOR_CHN_NUM].index)
+                channel_attr.bEnableIvdc = true;
+        } else if (direct_switch == 4) {
+            if (0 == chn[SNAP_SENSOR_CHN_NUM].index || 3 == chn[SNAP_SENSOR_CHN_NUM].index || 6 == chn[SNAP_SENSOR_CHN_NUM].index || 9 == chn[SNAP_SENSOR_CHN_NUM].index)
+                channel_attr.bEnableIvdc = true;
+        }
 
-            /* Create Channel */
-            ret = IMP_Encoder_CreateChn(12+chn[i].index/3, &channel_attr);
-            if (ret < 0) {
-                Logger::log(LogLevel::ERROR, "IMP_Encoder_CreateChn(%d) failed", 12+chn[i].index/3);
-                return false;
-            }
+        /* Create Channel */
+        ret = IMP_Encoder_CreateChn(12+chn[SNAP_SENSOR_CHN_NUM].index/3, &channel_attr);
+        if (ret < 0) {
+            Logger::log(LogLevel::ERROR, "IMP_Encoder_CreateChn(%d) failed", 12+chn[SNAP_SENSOR_CHN_NUM].index/3);
+            return false;
+        }
 
-            /* Register Channel */
-            ret = IMP_Encoder_RegisterChn(chn[i].index, 12+chn[i].index/3);
-            if (ret < 0) {
-                Logger::log(LogLevel::ERROR, "IMP_Encoder_RegisterChn(group%d, chn%d) failed", chn[i].index, 12+chn[i].index/3);
-                return false;
-            }
+        /* Register Channel */
+        ret = IMP_Encoder_RegisterChn(chn[SNAP_SENSOR_CHN_NUM].index, 12+chn[SNAP_SENSOR_CHN_NUM].index/3);
+        if (ret < 0) {
+            Logger::log(LogLevel::ERROR, "IMP_Encoder_RegisterChn(group%d, chn%d) failed", chn[SNAP_SENSOR_CHN_NUM].index, 12+chn[SNAP_SENSOR_CHN_NUM].index/3);
+            return false;
         }
     }
-
     return true;
 }
 
 bool ImageSnap::uninitJpeg(void)
 {
-    int i = 0;
     int ret = 0;
     int chnNum = 0;
     IMPEncoderCHNStat chn_stat;
 
-    for (i = 0; i < FS_CHN_NUM; i++) {
-        if (chn[i].enable && shouldProcessChannel(chn[i].index)) {
-            chnNum = 12+chn[i].index/3;
+    if (chn[SNAP_SENSOR_CHN_NUM].enable && sensorFilter(chn[SNAP_SENSOR_CHN_NUM].index)) {
+        chnNum = 12+chn[SNAP_SENSOR_CHN_NUM].index/3;
 
-            memset(&chn_stat, 0, sizeof(IMPEncoderCHNStat));
-            ret = IMP_Encoder_Query(chnNum, &chn_stat);
+        memset(&chn_stat, 0, sizeof(IMPEncoderCHNStat));
+        ret = IMP_Encoder_Query(chnNum, &chn_stat);
+        if (ret < 0) {
+            Logger::log(LogLevel::ERROR, "IMP_Encoder_Query(%d) failed", chnNum);
+            return false;
+        }
+
+        if (chn_stat.registered) {
+            ret = IMP_Encoder_UnRegisterChn(chnNum);
             if (ret < 0) {
-                Logger::log(LogLevel::ERROR, "IMP_Encoder_Query(%d) failed", chnNum);
+                Logger::log(LogLevel::ERROR, "IMP_Encoder_UnRegisterChn(%d) failed", chnNum);
                 return false;
             }
 
-            if (chn_stat.registered) {
-                ret = IMP_Encoder_UnRegisterChn(chnNum);
-                if (ret < 0) {
-                    Logger::log(LogLevel::ERROR, "IMP_Encoder_UnRegisterChn(%d) failed", chnNum);
-                    return false;
-                }
-
-                ret = IMP_Encoder_DestroyChn(chnNum);
-                if (ret < 0) {
-                    Logger::log(LogLevel::ERROR, "IMP_Encoder_DestroyChn(%d) failed", chnNum);
-                    return false;
-                }
+            ret = IMP_Encoder_DestroyChn(chnNum);
+            if (ret < 0) {
+                Logger::log(LogLevel::ERROR, "IMP_Encoder_DestroyChn(%d) failed", chnNum);
+                return false;
             }
         }
     }

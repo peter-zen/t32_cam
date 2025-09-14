@@ -9,28 +9,38 @@
 #include <iomanip>
 #include <sys/time.h>
 #include <json/json.h>
+#include <csignal>
+
 #include "MgmtServClient.h"
 #include "RemoteCtrlClient.h"
+#include "RtspServer.h"
 #include "DeviceConfig.h"
 #include "Common.h"
 #include "Logger.h"
 #include "ImageSnap.h"
+#include "VideoRecorder.h"
 #include "EnvManager.h"
 #include "Misc.h"
 #include "CRC.h"
 #include "Settings.h"
 #include "MCU.h"
 #include "Disk.h"
+#include "StringConvert.h"
+#include "app.h"
 
 using namespace network;
 using namespace media;
 
-#define QUICK_SNAP_DIR   "/tmp/quick_snap/"
-#define QUICK_SNAP_INFO_FILE   QUICK_SNAP_DIR"info.json"
-#define SD_CARD_PATH   "/mnt/sdcard/"
-#define MEDIA_TARGET_PATH   SD_CARD_PATH"media/"
-#define MEDIA_UPLOAD_PATH   SD_CARD_PATH"media/upload/"
-#define NETIF_NAME "wlan0"
+static std::string getCurrentTimeFormatted()
+{
+    time_t now = time(nullptr);
+    struct tm* time_info = localtime(&now);
+    
+    std::stringstream ss;
+    ss << std::put_time(time_info, "%Y%m%d_%H%M%S");
+    Misc::getDateTime();
+    return ss.str();
+}
 
 static bool getFileCreationTime(const std::string& filename, std::string& time_str)
 {
@@ -66,8 +76,6 @@ static bool getFileCreationTime(const std::string& filename, std::string& time_s
 
     return true;
 }
-
-
 
 static int generateDescInfo(std::vector<std::string>& files, std::string& desc_info)
 {
@@ -285,23 +293,72 @@ static void printUsage(char *argv[])
 {
     std::cout << "Usage: " << argv[0] << " <command> [options]" << std::endl;
     std::cout << "Commands:" << std::endl;
+    std::cout << "  -w, --wifi\t\tConnect to a Wi-Fi network" << std::endl;
+    std::cout << "  -d, --dhcp\t\tGet IP address from DHCP server" << std::endl;
+    std::cout << "  -n, --ntp\t\tSync time with NTP server" << std::endl;
     std::cout << "  -h, --help\t\tDisplay this help message" << std::endl;
     std::cout << "  -a, --auth\t\tAuthenticate with the management server" << std::endl;
     std::cout << "  -hb, --heartbeat\tSend a heartbeat message to the management server" << std::endl;
     std::cout << "  -s, --snap\t\tSnap an image" << std::endl;
     std::cout << "  -u, --upload\t\tUpload a file to the storage server" << std::endl;
+    //std::cout << "  -r, --record\t\tRecord a video" << std::endl;
+    std::cout << "  -m, --mobile\t\tConnect to the mobile network" << std::endl;
+    std::cout << "  -rs, --rtsp-server\tStart the RTSP server" << std::endl;
 }
 
-enum {
-    CMD_HELP = 0,
-    CMD_CONNECT_WIFI,
-    CMD_DHCP,
-    CMD_SNAP,
-    CMD_AUTH,
-    CMD_HEARTBEAT,
-    CMD_UPLOAD,
-    CMD_MOBILE,
-};
+#define CMD_HELP 0
+#define CMD_CONNECT_WIFI (1 << 0)
+#define CMD_DHCP (1 << 1)
+#define CMD_SNAP (1 << 2)
+#define CMD_RECORD (1 << 3)
+#define CMD_AUTH (1 << 4)
+#define CMD_HEARTBEAT (1 << 5)
+#define CMD_UPLOAD (1 << 6)
+#define CMD_MOBILE (1 << 7)
+#define CMD_RTSP_SERVER (1 << 8)
+#define CMD_NTP (1 << 9)
+
+static bool already_in_exit_flow = false;
+static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
+static std::shared_ptr<RemoteCtrlClient> remoteCtrlClient = nullptr;
+static std::shared_ptr<StorageServClient> storageServClient = nullptr;
+// Signal handler for CTRL+C
+static void signalHandler(int signal)
+{
+   
+    if (signal == SIGINT) {
+        Logger::log(LogLevel::INFO, "Received SIGINT, exiting...");
+    }
+    if (signal == SIGTERM) {
+        Logger::log(LogLevel::INFO, "Received SIGTERM, shutting down...");
+    }
+    if (!already_in_exit_flow) {
+        // Stop RTSP server if it's running
+        if (RtspServer::getInstance()->isRunning()) {
+            Logger::log(LogLevel::INFO, "Stopping RTSP server...");
+            RtspServer::getInstance()->stop();
+        }
+
+        std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
+        if (setting_file_path.empty()) {
+            Logger::log(LogLevel::ERROR, "Failed to get setting file path");
+        } else {
+            if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
+                Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
+            }
+        }
+        
+        already_in_exit_flow = true;
+    }
+    
+    if (signal == SIGTERM) {
+        Logger::log(LogLevel::INFO, "Waiting 3 seconds before power off...");
+        sleep(3);
+        Logger::log(LogLevel::INFO, "Power off");
+        Misc::poweroff();
+        while(1);
+    }
+}
 
 int main(int argc, char* argv[])
 {
@@ -317,39 +374,98 @@ int main(int argc, char* argv[])
         command = CMD_DHCP;
     } else if (std::string(argv[1]) == "-s" || std::string(argv[1]) == "--snap") {
         command = CMD_SNAP;
+    } else if (std::string(argv[1]) == "-qs" || std::string(argv[1]) == "--quick-snap") {
+        command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_SNAP | CMD_UPLOAD;
+    } else if (std::string(argv[1]) == "-r" || std::string(argv[1]) == "--record") {
+        command = CMD_RECORD;
     } else if (std::string(argv[1]) == "-a" || std::string(argv[1]) == "--auth") { 
         command = CMD_AUTH;
     } else if (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--heartbeat") {
         command = CMD_HEARTBEAT;
     } else if (std::string(argv[1]) == "-u" || std::string(argv[1]) == "--upload") {
-        command = CMD_UPLOAD;
+        command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
     } else if (std::string(argv[1]) == "-m" || std::string(argv[1]) == "--mobile") {
         command = CMD_MOBILE;
+    } else if (std::string(argv[1]) == "-n" || std::string(argv[1]) == "--ntp") {
+        command = CMD_CONNECT_WIFI | CMD_NTP;
+    } else if (std::string(argv[1]) == "-rs" || std::string(argv[1]) == "--rtsp-server") {
+        command = CMD_RTSP_SERVER;
     } else {
         printUsage(argv);
         return -1;
     }
 
+    // Register signal handler for CTRL+C
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
+
     Misc::setNetworkInterfaceName(NETIF_NAME);
-    EnvManager::getInstance()->parsePrimaryEnv("./res/env.ini");
+    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);
+    std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
+    if (!setting_file_path.empty()) {
+        Settings::getInstance()->loadFromJsonFile(setting_file_path);
+    }
     auto config = DeviceConfig::getInstance();
-    std::shared_ptr<MgmtServClient> mgmtServClient;
-    if (command == CMD_CONNECT_WIFI) {
+    //mount sdcard
+    if (!Misc::mountSDCard(SD_CARD_PATH)) {
+        Logger::log(LogLevel::ERROR, "mount sdcard error");
+        goto exit;
+    }
+   
+
+    //connect wifi
+    if (command & CMD_CONNECT_WIFI) {
         auto wifi_ssid = config->get(INI_SECTION_SYS, INI_KEY_UPID, "");
         auto wifi_pwd = config->get(INI_SECTION_SYS, INI_KEY_PWD, "");
         Misc::connectWifi(wifi_ssid, wifi_pwd);
-        Misc::startDHCP();
-    } else if (command == CMD_DHCP) {
+    }
+
+    //dhcp
+    if (command & CMD_DHCP) {
         Misc::startDHCP();
     }
 
-    if (command == CMD_SNAP) {
-        //mount sdcard
-        if (!Misc::mountSDCard(SD_CARD_PATH)) {
-            std::cout << "mount sdcard error" << std::endl;
-            return -1;
+    if (command & CMD_NTP) {
+        auto ntp_server_ip = config->get(INI_SECTION_SERVER, INI_KEY_NTP_IP, "");
+        auto ntp_server_port = config->get(INI_SECTION_SERVER, INI_KEY_NTP_PORT, 0);
+        auto ntp_server = ntp_server_ip + ":" + to_string_custom(ntp_server_port);
+        Logger::log(LogLevel::INFO, "ntp server: %s", ntp_server.c_str());
+        if (ntp_server.empty()) {
+            Logger::log(LogLevel::ERROR, "ntp server is empty");
+            goto exit;
+        }
+        Misc::ntpSync(ntp_server);
+        
+        // Wait until system time is synchronized (year > 1970)
+        const int MAX_WAIT_SECONDS = 60; // Maximum wait time 60 seconds
+        const int CHECK_INTERVAL = 2;    // Check every 2 seconds
+        int wait_time = 0;
+        
+        while (wait_time < MAX_WAIT_SECONDS) {
+            time_t now = time(nullptr);
+            struct tm* time_info = localtime(&now);
+            
+            // Check if year is greater than 1970
+            if (time_info->tm_year + 1900 > 1970) {
+                Logger::log(LogLevel::INFO, "System time synchronized: %d-%02d-%02d %02d:%02d:%02d",
+                           time_info->tm_year + 1900, time_info->tm_mon + 1, time_info->tm_mday,
+                           time_info->tm_hour, time_info->tm_min, time_info->tm_sec);
+                break;
+            }
+            
+            Logger::log(LogLevel::INFO, "Waiting for system time synchronization, current year: %d, waited %d seconds", 
+                       time_info->tm_year + 1900, wait_time);
+            sleep(CHECK_INTERVAL);
+            wait_time += CHECK_INTERVAL;
         }
         
+        if (wait_time >= MAX_WAIT_SECONDS) {
+            Logger::log(LogLevel::WARNING, "Timeout waiting for system time synchronization after %d seconds", MAX_WAIT_SECONDS);
+            goto exit;
+        }
+    }
+
+    if (command & CMD_SNAP) {
         //move media file from /tmp to sdcard
         std::vector<std::string> file_names;
        
@@ -360,22 +476,35 @@ int main(int argc, char* argv[])
             std::string errs;
             if (!Json::parseFromStream(readerBuilder, jsonFile, &root, &errs)) {
                 Logger::log(LogLevel::ERROR, "Parse json file failed");
-                return -1;
+                goto exit;
             } 
             auto dir = root["dir"].asString();
             auto files = root["files"];
             std::string oldpath = QUICK_SNAP_DIR + dir + "/*";
+            #if RTC_EXIST
             std::string newpath =  MEDIA_TARGET_PATH + dir;
             std::string upload_path = MEDIA_UPLOAD_PATH + dir;
+            #else
+            std::string timeStr = getCurrentTimeFormatted();
+            std::string newpath =  MEDIA_TARGET_PATH + timeStr;
+            std::string upload_path = MEDIA_UPLOAD_PATH + timeStr;
+            #endif
 
-            if (!Misc::createDirectory(newpath) || !Misc::moveFile(oldpath, newpath)) {
+            if (!Misc::createDirectory(newpath) || !Misc::createDirectory(MEDIA_UPLOAD_PATH) || !Misc::moveFile(oldpath, newpath)) {
                 Logger::log(LogLevel::ERROR, "move %s to %s failed", oldpath.c_str(), newpath.c_str());
-                return -1;
+                goto exit;
             }
 
             //create desc file
             for (auto & file : files) { 
+                #if RTC_EXIST
                 auto filename = newpath + "/" + file.asString();
+                #else
+                auto oldname = newpath + "/" + file.asString();
+                auto filename = newpath + "/" + timeStr + "_" + file.asString();
+                Logger::log(LogLevel::INFO, "rename %s to %s", oldname.c_str(), filename.c_str());
+                Misc::moveFile(oldname, filename);
+                #endif
                 file_names.push_back(filename);
             }
 
@@ -396,7 +525,13 @@ int main(int argc, char* argv[])
         }
     }
 
-    if (command == CMD_MOBILE) {
+    if (command & CMD_RECORD) {
+        auto record_param = VideoRecorderParams();
+        auto recorder = std::make_shared<VideoRecorder>(record_param);
+        recorder->record("./res/20250728_191158.mp4", 10);
+    }
+
+    if (command & CMD_MOBILE) {
         auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
         auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
         Misc::connectWifi(wifi_ssid, wifi_pwd);
@@ -404,106 +539,181 @@ int main(int argc, char* argv[])
         auto remoteCtrlServerIp = Misc::getGatewayAddress(Misc::getNetworkInterfaceName());
         if (remoteCtrlServerIp.empty()) {
             std::cout << "Failed to get gateway IP address" << std::endl;
-            return -1;
+            goto exit;
         }
         auto remoteCtrlServerPort = 7788;
-        auto remoteCtrlClient = std::make_shared<RemoteCtrlClient>(remoteCtrlServerIp, 7788);
+        remoteCtrlClient = std::make_shared<RemoteCtrlClient>(remoteCtrlServerIp, remoteCtrlServerPort);
         if (EC_SUCCESS != remoteCtrlClient->connect(3000)) {
-            Logger::log(LogLevel::ERROR, "connect [%s:%d] failed", remoteCtrlServerIp.c_str(), 7788);
-            return -1;
+            Logger::log(LogLevel::ERROR, "connect [%s:%d] failed", remoteCtrlServerIp.c_str(), remoteCtrlServerPort);
+            goto exit;
         }
-
-        sleep(20);
+        
+        bool sessionClosed = false;
+         RtspServer::getInstance()->registerOnsessionClosedCallback([&sessionClosed](void) {
+            sessionClosed = true;
+        });
+        RtspServer::getInstance()->start();
+        while ((remoteCtrlClient->isConnected() || !sessionClosed) && !already_in_exit_flow) {
+            sleep(1);
+        }
     }
-    if (command == CMD_AUTH || command == CMD_HEARTBEAT || command == CMD_UPLOAD) {
+
+    if (command & CMD_RTSP_SERVER) {
+        auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
+        auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
+        //Misc::connectWifi(wifi_ssid, wifi_pwd);
+       // Misc::startDHCP();
+       bool sessionClosed = false;
+         RtspServer::getInstance()->registerOnsessionClosedCallback([&sessionClosed](void) {
+            Logger::log(LogLevel::INFO, "session closed, stop rtsp server");
+            sessionClosed = true;
+        });
+        RtspServer::getInstance()->start();
+        while (!sessionClosed) {
+            sleep(1);
+        }
+        RtspServer::getInstance()->stop();
+    }
+
+    if (command & CMD_AUTH || command & CMD_HEARTBEAT || command & CMD_UPLOAD) {
         auto mgmtServerAddr = config->get(INI_SECTION_SERVER, INI_KEY_MS_IP, "");
-        Logger::log(LogLevel::INFO, "mgmtServerAddr: %s", mgmtServerAddr);
+        Logger::log(LogLevel::INFO, "mgmtServerAddr: %s", mgmtServerAddr.c_str());
         auto mgmtServerPort = config->get(INI_SECTION_SERVER, INI_KEY_MS_PORT, 0);
         Logger::log(LogLevel::INFO, "mgmtServerPort: %d", mgmtServerPort);
 
         mgmtServClient = std::make_shared<MgmtServClient>(mgmtServerAddr, mgmtServerPort);
         if (EC_SUCCESS != mgmtServClient->connect(3000)) {
-            Logger::log(LogLevel::ERROR, "connect [%s:%d] failed", mgmtServerAddr, mgmtServerPort);
-            return -1;
+            Logger::log(LogLevel::ERROR, "connect [%s:%d] failed", mgmtServerAddr.c_str(), mgmtServerPort);
+            goto exit;
         } else {
-            Logger::log(LogLevel::INFO, "connect [%s:%d] success", mgmtServerAddr, mgmtServerPort);
+            Logger::log(LogLevel::INFO, "connect [%s:%d] success", mgmtServerAddr.c_str(), mgmtServerPort);
         }
 
         if (EC_SUCCESS != mgmtServClient->authenticate()) {
             Logger::log(LogLevel::ERROR, "auth failed");
-            return -1;
+            goto exit;
         } else {
             Logger::log(LogLevel::INFO, "auth success");
         }
 
-        if (command == CMD_AUTH) {
+        if (command & CMD_AUTH) {
             sleep(10);
         }
     }
 
-    if (command == CMD_HEARTBEAT) {
+    if (command & CMD_HEARTBEAT) {
         mgmtServClient->sendHeartbeat();
     }
     
-    if (command == CMD_UPLOAD) {
+    if (command & CMD_UPLOAD) {
+        bool descfile_uploaded = false;
         //assume we have a storage server same as mgmt server
-        auto storageServClient = mgmtServClient->newStorageServClient();
-        storageServClient->bindUploadCallback([](const std::string &filename, int error_code) {
-            Logger::log(LogLevel::INFO, "upload %s, error code: %d", filename.c_str(), error_code);
-        });
+        storageServClient = mgmtServClient->newStorageServClient();
+        
         auto desc_filenames = Misc::listFilenames(MEDIA_UPLOAD_PATH);
         for (auto &desc_filename : desc_filenames) {
             Logger::log(LogLevel::INFO, "desc_filename %s", desc_filename.c_str());
-            if (!Misc::isJsonFile(MEDIA_UPLOAD_PATH + desc_filename)) {
-                Logger::log(LogLevel::INFO, "%s is not json", desc_filename.c_str());
-                continue;
-            }
-            
-            //upload file description json file
-            storageServClient->uploadFile(desc_filename);
-            
-            //upload files recorded in json file
+            desc_filename = MEDIA_UPLOAD_PATH + desc_filename;
             std::ifstream ifs(desc_filename);
             
-            if (!ifs.is_open()) {
-                Logger::log(LogLevel::ERROR, "Failed to open JSON file: %s", desc_filename.c_str());
+            if (!Misc::isJsonFile(desc_filename)) {
+                Logger::log(LogLevel::INFO, "%s is not json", desc_filename.c_str());
+                Misc::deleteFile(desc_filename);
+                continue;
+            }
+
+            Json::Value root;
+            Json::Reader reader;
+            if (!reader.parse(ifs, root)) {
+                Logger::log(LogLevel::ERROR, "Failed to parse JSON file: %s", desc_filename.c_str());
             } else {
-                Json::Value root;
-                Json::Reader reader;
-                if (!reader.parse(ifs, root)) {
-                    Logger::log(LogLevel::ERROR, "Failed to parse JSON file: %s", desc_filename.c_str());
+                std::string pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
+                if (!root.isMember("F_UploadedTag") ||!root.isMember("device") || !root["device"].isMember("PID") || (root["device"]["PID"].asString() != pid)) {
+                    Logger::log(LogLevel::ERROR, "PID not match");
+                    Misc::deleteFile(desc_filename);
+                    continue;
+                }
+                
+                if (!root.isMember("file_inf")) {
+                    Logger::log(LogLevel::ERROR, "file_inf not exist");
+                    Misc::deleteFile(desc_filename);
+                    continue;
+                }
+                
+                if (root["F_UploadedTag"].asInt() == 0) {
+                    //upload file description json file
+                    storageServClient->bindUploadCallback([&descfile_uploaded, desc_filename](const std::string &filename, int error_code) {
+                        Logger::log(LogLevel::INFO, "upload %s, error code: %d", filename.c_str(), error_code);
+                        if (filename == desc_filename) {
+                            descfile_uploaded = true;
+                        }
+                    });
+                    storageServClient->uploadFile(desc_filename);
+                    auto start_time = std::chrono::steady_clock::now();
+                    auto now = std::chrono::steady_clock::now();
+                    while (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() < 3) {
+                        if (descfile_uploaded) {
+                            Logger::log(LogLevel::INFO, "descfile %s uploaded", desc_filename.c_str());
+                            root["F_UploadedTag"] = 1;
+                            std::ofstream ofs(desc_filename);
+                            ofs << root.toStyledString();
+                            ofs.close();
+                            break;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        now = std::chrono::steady_clock::now();
+                    }
                 } else {
-                    std::string pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
-                    if (!root.isMember("device") || !root["device"].isMember("PID") || (root["device"]["PID"].asString() != pid)) {
-                        Logger::log(LogLevel::ERROR, "PID not match");
-                        return -1;
+                    descfile_uploaded = true;
+                }
+            }
+
+            if (descfile_uploaded) {
+                const Json::Value file_inf_array = root["file_inf"];
+                std::vector<std::string> uploaded_file_list;
+                storageServClient->bindUploadCallback([&uploaded_file_list](const std::string &filename, int error_code) {
+                    Logger::log(LogLevel::INFO, "upload %s, error code: %d", filename.c_str(), error_code);
+                    if (error_code == EC_SUCCESS) {
+                        uploaded_file_list.push_back(filename);
                     }
-                    
-                    if (!root.isMember("file_inf")) {
-                        Logger::log(LogLevel::ERROR, "file_inf not exist");
-                        return -1;
-                    }
-                    
-                    const Json::Value file_inf_array = root["file_inf"];
-                    for (Json::ArrayIndex i = 0; i < file_inf_array.size(); ++i) {
-                        if (file_inf_array[i].isMember("F_FileName") && file_inf_array[i].isMember("F_FilePath")) {
-                            std::string filepath = file_inf_array[i]["F_FilePath"].asString();
-                            std::string filename = file_inf_array[i]["F_FileName"].asString();
+                });
+                for (Json::ArrayIndex i = 0; i < file_inf_array.size(); ++i) {
+                    if (file_inf_array[i].isMember("F_FileName") && file_inf_array[i].isMember("F_FilePath")) {
+                        std::string filepath = file_inf_array[i]["F_FilePath"].asString();
+                        std::string filename = file_inf_array[i]["F_FileName"].asString();
+                        auto tag = file_inf_array[i]["F_UploadedTag"].asInt();
+                        if (tag == 0) {
                             Logger::log(LogLevel::INFO, "uploading file: %s", filename.c_str());
                             auto pathname = filepath + "/" + filename;
                             storageServClient->uploadFile(pathname);
                         }
                     }
-
-                    while (!storageServClient->isUploadFinished()) {
-                        usleep(1);
-                    }
-                    Logger::log(LogLevel::INFO, "upload all files finished");
                 }
-            }
+
+                while (!storageServClient->isUploadFinished()) {
+                    usleep(1);
+                }
+
+                for (auto& filename : uploaded_file_list) {
+                    for (Json::ArrayIndex i = 0; i < file_inf_array.size(); ++i) {
+                            auto pathname = file_inf_array[i]["F_FilePath"].asString() + "/" + file_inf_array[i]["F_FileName"].asString();
+                            if (pathname == filename) {
+                                root["file_inf"][i]["F_UploadedTag"] = 1;
+                            }
+                        }
+                    }
+                }
+                
+                std::ofstream ofs(desc_filename);
+                ofs << root.toStyledString();
+                ofs.close();
+                Logger::log(LogLevel::INFO, "upload all files finished");
+                Misc::deleteFile(desc_filename);
+            } 
         }
-        
-    }
+
+exit:
+    Settings::getInstance()->saveToJsonFile(setting_file_path);
 
     return 0;
 }

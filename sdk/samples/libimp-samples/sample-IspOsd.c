@@ -29,8 +29,18 @@ static IMPOSDRgnAttr rIspOsdAttr;
 static char path[128] = "/mnt/res/64x64_2.rgba";
 static char *g_pdata = NULL;
 static FILE *g_fp = NULL;
+
 static int g_main_timehandle = -1;
 static int g_main_pichandle = -1;
+
+static int g_sec_timehandle = -1;
+static int g_sec_pichandle = -1;
+
+static int g_thr_timehandle = -1;
+static int g_thr_pichandle = -1;
+
+static int g_fou_timehandle = -1;
+static int g_fou_pichandle = -1;
 
 static void* ISPOSD(void *arg);
 static int sample_osd_init_isp(void);
@@ -265,13 +275,41 @@ static void update_time(void *p)
 		}
 
 		if (SENSOR_NUM > IMPISP_TOTAL_ONE) {
-			ret = IMP_ISP_Tuning_SetOsdRgnAttr(1, g_main_timehandle, &stISPOSDAsm);
+			ret = IMP_ISP_Tuning_SetOsdRgnAttr(1, g_sec_timehandle, &stISPOSDAsm);
 			if (ret < 0) {
 				IMP_LOG_ERR(TAG, "IMP_ISP_SetOSDAttr failed\n");
 				return ;
 			}
 
-			ret = IMP_ISP_Tuning_ShowOsdRgn(1, g_main_timehandle, 1);
+			ret = IMP_ISP_Tuning_ShowOsdRgn(1, g_sec_timehandle, 1);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn_ISP failed\n");
+				return ;
+			}
+		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_TWO) {
+			ret = IMP_ISP_Tuning_SetOsdRgnAttr(2, g_thr_timehandle, &stISPOSDAsm);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_ISP_SetOSDAttr failed\n");
+				return ;
+			}
+
+			ret = IMP_ISP_Tuning_ShowOsdRgn(2, g_thr_timehandle, 1);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn_ISP failed\n");
+				return ;
+			}
+		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_THR) {
+			ret = IMP_ISP_Tuning_SetOsdRgnAttr(3, g_fou_timehandle, &stISPOSDAsm);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_ISP_SetOSDAttr failed\n");
+				return ;
+			}
+
+			ret = IMP_ISP_Tuning_ShowOsdRgn(3, g_fou_timehandle, 1);
 			if (ret < 0) {
 				IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn_ISP failed\n");
 				return ;
@@ -346,20 +384,50 @@ static void draw_pic(void)
 		return;
 	}
 
+	stISPOSDAsm.stsinglepicAttr.pic.pinum = g_sec_pichandle;
 	if (SENSOR_NUM > IMPISP_TOTAL_ONE) {
-		ret = IMP_ISP_Tuning_SetOsdRgnAttr(1, g_main_pichandle, &stISPOSDAsm);
+		ret = IMP_ISP_Tuning_SetOsdRgnAttr(1, g_sec_pichandle, &stISPOSDAsm);
 		if (ret < 0) {
 			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_SetOsdRgnAttr failed\n");
 			return;
 		}
 
-		ret = IMP_ISP_Tuning_ShowOsdRgn(1, g_main_pichandle, 1);
+		ret = IMP_ISP_Tuning_ShowOsdRgn(1, g_sec_pichandle, 1);
 		if (ret < 0) {
 			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_ShowOsdRgn failed\n");
 			return;
 		}
 	}
 
+	stISPOSDAsm.stsinglepicAttr.pic.pinum = g_thr_pichandle;
+	if (SENSOR_NUM > IMPISP_TOTAL_TWO) {
+		ret = IMP_ISP_Tuning_SetOsdRgnAttr(2, g_thr_pichandle, &stISPOSDAsm);
+		if (ret < 0) {
+			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_SetOsdRgnAttr failed\n");
+			return;
+		}
+
+		ret = IMP_ISP_Tuning_ShowOsdRgn(2, g_thr_pichandle, 1);
+		if (ret < 0) {
+			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_ShowOsdRgn failed\n");
+			return;
+		}
+	}
+
+	stISPOSDAsm.stsinglepicAttr.pic.pinum = g_fou_pichandle;
+	if (SENSOR_NUM > IMPISP_TOTAL_THR) {
+		ret = IMP_ISP_Tuning_SetOsdRgnAttr(3, g_thr_pichandle, &stISPOSDAsm);
+		if (ret < 0) {
+			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_SetOsdRgnAttr failed\n");
+			return;
+		}
+
+		ret = IMP_ISP_Tuning_ShowOsdRgn(3, g_thr_pichandle, 1);
+		if (ret < 0) {
+			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_ShowOsdRgn failed\n");
+			return;
+		}
+	}
 }
 
 static void ISPOSDDraw(IMPOsdRgnType type)
@@ -394,6 +462,20 @@ static void ISPOSDDraw(IMPOsdRgnType type)
 				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
 			}
 		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_TWO) {
+			ret = IMP_OSD_SetRgnAttr_ISP(2, &rIspOsdAttr, 0);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
+			}
+		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_THR) {
+			ret = IMP_OSD_SetRgnAttr_ISP(3, &rIspOsdAttr, 0);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
+			}
+		}
 	}
 
 	if (OSD_REG_ISP_LINE_RECT == type) {
@@ -420,6 +502,20 @@ static void ISPOSDDraw(IMPOsdRgnType type)
 
 		if (SENSOR_NUM > IMPISP_TOTAL_ONE) {
 			ret = IMP_OSD_SetRgnAttr_ISP(1, &rIspOsdAttr, 0);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
+			}
+		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_TWO) {
+			ret = IMP_OSD_SetRgnAttr_ISP(2, &rIspOsdAttr, 0);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
+			}
+		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_THR) {
+			ret = IMP_OSD_SetRgnAttr_ISP(3, &rIspOsdAttr, 0);
 			if (ret < 0) {
 				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
 			}
@@ -453,6 +549,20 @@ static void ISPOSDDraw(IMPOsdRgnType type)
 				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
 			}
 		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_TWO) {
+			ret = IMP_OSD_SetRgnAttr_ISP(2, &rIspOsdAttr, 0);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
+			}
+		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_THR) {
+			ret = IMP_OSD_SetRgnAttr_ISP(3, &rIspOsdAttr, 0);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
+			}
+		}
 	}
 
 	if (OSD_REG_ISP_COVER == type) {
@@ -476,6 +586,20 @@ static void ISPOSDDraw(IMPOsdRgnType type)
 
 		if (SENSOR_NUM > IMPISP_TOTAL_ONE) {
 			ret = IMP_OSD_SetRgnAttr_ISP(1, &rIspOsdAttr, 0);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
+			}
+		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_TWO) {
+			ret = IMP_OSD_SetRgnAttr_ISP(2, &rIspOsdAttr, 0);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
+			}
+		}
+
+		if (SENSOR_NUM > IMPISP_TOTAL_THR) {
+			ret = IMP_OSD_SetRgnAttr_ISP(3, &rIspOsdAttr, 0);
 			if (ret < 0) {
 				IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr_ISP failed\n");
 			}
@@ -504,6 +628,7 @@ static int sample_osd_init_isp(void)
 {
 	int ret = 0;
 	int chnNum = 0;
+
 	ret = datainit();
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "datainit failed\n");
@@ -524,14 +649,44 @@ static int sample_osd_init_isp(void)
 
 	if (SENSOR_NUM > IMPISP_TOTAL_ONE) {
 		chnNum = 1;
-		g_main_timehandle = IMP_ISP_Tuning_CreateOsdRgn(chnNum, NULL);
-		if (g_main_timehandle < 0) {
+		g_sec_timehandle = IMP_ISP_Tuning_CreateOsdRgn(chnNum, NULL);
+		if (g_sec_timehandle < 0) {
 			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_CreateOsdRgn failed\n");
 			return -1;
 		}
 
-		g_main_pichandle = IMP_ISP_Tuning_CreateOsdRgn(chnNum, NULL);
-		if (g_main_pichandle < 0) {
+		g_sec_pichandle = IMP_ISP_Tuning_CreateOsdRgn(chnNum, NULL);
+		if (g_sec_pichandle < 0) {
+			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_CreateOsdRgn failed\n");
+			return -1;
+		}
+	}
+
+	if (SENSOR_NUM > IMPISP_TOTAL_TWO) {
+		chnNum = 2;
+		g_thr_timehandle = IMP_ISP_Tuning_CreateOsdRgn(chnNum, NULL);
+		if (g_thr_timehandle < 0) {
+			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_CreateOsdRgn failed\n");
+			return -1;
+		}
+
+		g_thr_pichandle = IMP_ISP_Tuning_CreateOsdRgn(chnNum, NULL);
+		if (g_thr_pichandle < 0) {
+			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_CreateOsdRgn failed\n");
+			return -1;
+		}
+	}
+
+	if (SENSOR_NUM > IMPISP_TOTAL_THR) {
+		chnNum = 3;
+		g_fou_timehandle = IMP_ISP_Tuning_CreateOsdRgn(chnNum, NULL);
+		if (g_fou_timehandle < 0) {
+			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_CreateOsdRgn failed\n");
+			return -1;
+		}
+
+		g_fou_pichandle = IMP_ISP_Tuning_CreateOsdRgn(chnNum, NULL);
+		if (g_fou_pichandle < 0) {
 			IMP_LOG_ERR(TAG, "IMP_ISP_Tuning_CreateOsdRgn failed\n");
 			return -1;
 		}
@@ -554,11 +709,29 @@ static int sample_osd_exit_isp()
 
 	if (SENSOR_NUM > IMPISP_TOTAL_ONE) {
 		chnNum = 1;
-		IMP_ISP_Tuning_ShowOsdRgn(chnNum, g_main_timehandle, showflg);
-		IMP_ISP_Tuning_DestroyOsdRgn(chnNum, g_main_timehandle);
+		IMP_ISP_Tuning_ShowOsdRgn(chnNum, g_sec_timehandle, showflg);
+		IMP_ISP_Tuning_DestroyOsdRgn(chnNum, g_sec_timehandle);
 
-		IMP_ISP_Tuning_ShowOsdRgn(chnNum, g_main_pichandle, showflg);
-		IMP_ISP_Tuning_DestroyOsdRgn(chnNum, g_main_pichandle);
+		IMP_ISP_Tuning_ShowOsdRgn(chnNum, g_sec_pichandle, showflg);
+		IMP_ISP_Tuning_DestroyOsdRgn(chnNum, g_sec_pichandle);
+	}
+
+	if (SENSOR_NUM > IMPISP_TOTAL_TWO) {
+		chnNum = 2;
+		IMP_ISP_Tuning_ShowOsdRgn(chnNum, g_thr_timehandle, showflg);
+		IMP_ISP_Tuning_DestroyOsdRgn(chnNum, g_thr_timehandle);
+
+		IMP_ISP_Tuning_ShowOsdRgn(chnNum, g_thr_pichandle, showflg);
+		IMP_ISP_Tuning_DestroyOsdRgn(chnNum, g_thr_pichandle);
+	}
+
+	if (SENSOR_NUM > IMPISP_TOTAL_THR) {
+		chnNum = 3;
+		IMP_ISP_Tuning_ShowOsdRgn(chnNum, g_fou_timehandle, showflg);
+		IMP_ISP_Tuning_DestroyOsdRgn(chnNum, g_fou_timehandle);
+
+		IMP_ISP_Tuning_ShowOsdRgn(chnNum, g_fou_pichandle, showflg);
+		IMP_ISP_Tuning_DestroyOsdRgn(chnNum, g_fou_pichandle);
 	}
 
 	return ret;

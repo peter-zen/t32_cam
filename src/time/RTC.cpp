@@ -1,6 +1,9 @@
 #include "RTC.h"
-#include <memory>  // 包含 std::shared_ptr 所需头文件
-#include <mutex>   // 包含 std::call_once 和 std::once_flag 所需头文件
+#include <memory>
+#include <mutex>
+#include <time.h>
+#include <fstream>
+#include "Logger.h"
 
 std::shared_ptr<RTC> RTC::getInstance()
 {
@@ -9,10 +12,6 @@ std::shared_ptr<RTC> RTC::getInstance()
 	std::call_once(flag, []() { instance.reset(new RTC()); });
 	return instance;
 }
-
-#include <time.h>
-#include <fstream>
-#include "Logger.h"
 
 bool RTC::setTime(const struct tm &time)
 {

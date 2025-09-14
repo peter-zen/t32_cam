@@ -649,7 +649,7 @@ typedef enum {
  * 定义H.264和H.265编码Channel设置ROI参数
  */
 typedef struct {
-	uint32_t	u32Index;	/**< ROI区域索引值，支持0-7 */
+	uint32_t	u32Index;	/**< ROI区域索引值，支持0-15 */
 	bool		bEnable;	/**< 是否使能本区域ROI功能 */
 	bool		bRelatedQp;	/**< 0：绝对ROI，1：相对ROI */
 	int			s32Qp;		/**< ROI区域的相对或绝对qp值 */
@@ -1499,7 +1499,8 @@ int IMP_Encoder_GetChnROI(int encChn, IMPEncoderROIAttr *pstVencRoiAttr);
  * 设置通道Map ROI属性
  *
  * @param[in] encChn 编码Channel号,取值范围: [0, @ref NR_MAX_ENC_CHN - 1]
- * @param[out] pstVencMapRoiCfg Map ROI属性参数
+ * @param[in] pstVencMapRoiCfg Map ROI属性参数
+ * @param[in] list 算法输出映射表
  *
  * @retval 0 成功
  * @retval 非0 失败

@@ -1,6 +1,12 @@
 #include "Power.h"
-#include <memory>  // 包含 std::shared_ptr 所需头文件
-#include <mutex>   // 包含 std::call_once 和 std::once_flag 所需头文件
+#include <memory>
+#include <mutex>
+#include <csignal>
+#include <unistd.h>
+#include <cstdlib>
+#include <sys/types.h>
+#include "Logger.h"
+#include "Misc.h"
 
 std::shared_ptr<Power> Power::getInstance()
 {
@@ -20,5 +26,8 @@ Power::~Power()
 
 void Power::requestShutdown()
 {
-    //TODO: shutdown
+    // Send SIGTERM signal to current process to notify shutdown
+    pid_t pid = getpid();
+    Logger::log(LogLevel::INFO, "Sending shutdown signal to process %d", pid);
+    kill(pid, SIGTERM); 
 }

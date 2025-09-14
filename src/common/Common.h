@@ -1,5 +1,9 @@
 #ifndef COMMON_H
 #define COMMON_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 //device config
 #define INI_SECTION_DEVICE "DEVICE"
 #define INI_KEY_PID "PID"
@@ -62,7 +66,7 @@
 #define PTYPE_ETHERNET	8
 
 //disk
-#define DISK_PATHNAME "."
+#define DISK_PATHNAME "/mnt/sdcard/"
 
 //error code
 enum error_code {
@@ -125,8 +129,8 @@ enum {
 	SNAP_IMG_SIZE_12M,
 	SNAP_IMG_SIZE_18M,
 	SNAP_IMG_SIZE_24M,
-	SNAP_IMG_SIZE_32M,	
-	SNAP_IMG_SIZE_42M,	
+	SNAP_IMG_SIZE_32M,
+	SNAP_IMG_SIZE_42M,
 	SNAP_IMG_SIZE_MAX,
 };
 enum {
@@ -138,4 +142,21 @@ enum {
 	VIDEO_SIZE_4K2K_30FPS,
 	VIDEO_SIZE_MAX,
 };
+
+static struct {
+	uint16_t width,height;
+} SnapImgSize[SNAP_IMG_SIZE_MAX]= {
+	{1920,1080}, /* 2M */
+	{2560,1440}, /* 4M */
+	{2592,1944}, /* 5M */
+	{3840,2160}, /* 8M */
+	{4800,2700}, /* 12M */
+	{5760,3240}, /* 18M */
+	{6400,3600}, /* 24M */
+	{7680,4320}, /* 32M */
+};
+
+#ifdef __cplusplus
+}
+#endif
 #endif

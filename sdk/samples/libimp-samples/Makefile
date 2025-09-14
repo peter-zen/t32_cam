@@ -42,6 +42,7 @@ SAMPLES = sample-Ai-AEC \
 		  sample-Encoder-video \
 		  sample-KernEnc-video \
 		  sample-Snap-Kernel-yuv \
+		  sample-Snap-Kernel-raw \
 		  sample-ISP-flip \
 		  sample-OSD \
 		  sample-Ao \
@@ -66,6 +67,9 @@ SAMPLES = sample-Ai-AEC \
 		  sample-Temperature \
 		  sample-OSD-2BIT \
 		  sample-Atlas-Encoder-video \
+		  sample-Soft-photosensitive \
+		  sample-Encoder-ldc-video \
+		  sample-AutoIR
 
 all: 	$(SAMPLES)
 
@@ -217,7 +221,18 @@ sample-Atlas-Encoder-video: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a $(S
 	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) $(SDK_LIB_DIR)/libsysutils.a  -lpthread -lm -lrt
 	$(STRIP) $@
 
-%.o:%.c sample-common.h
+sample-Soft-photosensitive: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o sample-Soft-photosensitive.o
+	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) -lpthread -lm -lrt
+	$(STRIP) $@
+sample-Encoder-ldc-video: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a $(SDK_LIB_DIR)/libsysutils.a sample-common.o sample-Encoder-ldc-video.o
+	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) $(SDK_LIB_DIR)/libsysutils.a  -lpthread -lm -lrt
+	$(STRIP) $@
+
+sample-AutoIR: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o sample-AutoIR.o
+	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) -lpthread -lm -lrt
+	$(STRIP) $@
+
+%.o:%.c sample-common.h ldclut.h
 	$(CC) -c $(CFLAGS) $< -o $@
 
 clean:

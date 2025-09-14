@@ -53,12 +53,14 @@ void RemoteCtrlClient::receiveFunction()
 			Logger::log(LogLevel::WARNING, "Remote controller disconnect, retrying connection for 120s");
 			if (connect(120) == -1) {
 				Logger::log(LogLevel::ERROR, "Retry connection error");
+				is_connected = false;
 				break;
 			}
 		}
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	}
+	recv_thread_run = false;
 }
 
 int RemoteCtrlClient::receiveCommand(char *buffer, size_t length)
@@ -139,232 +141,210 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 	json_item["ENV_HT"] = "";
 	json_item["ENV_IT"] = "";
 	json_item["ENV_II"] = "";
-
+	vid_max_size = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_MVIDEO, 8);
+	pic_max_size = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_MPIC, 12);
+	Logger::log(LogLevel::INFO, "RemoteCtrlClient: vid_max_size: %d, pic_max_size: %d", vid_max_size, pic_max_size);
 	// Program Type
 	json_item["Program_Type"] = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
 
 	// Shooting mode
 	json_item["CAM_Mode"] = settings->realCameraMode;
+	if (pic_max_size != 0) {
+		// Image size
+		uint8_t still_size = settings->stillSize;
+		if (pic_max_size == 32 || pic_max_size == 42) {
+			json_array.append("2M/1920*1080");
+			json_array.append("4M/2560*1440");
+			json_array.append("5M/2592*1944");
+			json_array.append("8M/3840*2160");
+			json_array.append("12M/4800*2700");
+			json_array.append("18M/5760*3240");
+			json_array.append("24M/6400*3600");
+			json_array.append("32M/7680*4320");
+			json_array.append("42M/8640*4864");
+			if (still_size > SNAP_IMG_SIZE_42M) {
+				still_size = SNAP_IMG_SIZE_42M;
+			}
+		} else if (pic_max_size == 24) {
+			json_array.append("2M/1920*1080");
+			json_array.append("4M/2560*1440");
+			json_array.append("5M/2592*1944");
+			json_array.append("8M/3840*2160");
+			json_array.append("12M/4800*2700");
+			json_array.append("18M/5760*3240");
+			json_array.append("24M/6400*3600");
+			if (still_size > SNAP_IMG_SIZE_24M) {
+				still_size = SNAP_IMG_SIZE_24M;
+			}
+		} else if (18 == pic_max_size) {
+			json_array.append("2M/1920*1080");
+			json_array.append("4M/2560*1440");
+			json_array.append("5M/2592*1944");
+			json_array.append("8M/3840*2160");
+			json_array.append("12M/4800*2700");
+			json_array.append("18M/5760*3240");
 
-	// Image size
-	uint8_t still_size = settings->stillSize;
-	if (pic_max_size == 0 || pic_max_size == 32 || pic_max_size == 42) {
-		json_array.append("2M/1920*1080");
-		json_array.append("4M/2560*1440");
-#if SP5K_SENSOR_SONYIMX335 || SP5K_SENSOR_GC5623
-		json_array.append("5M/2592*1944");
-#endif
-		json_array.append("8M/3840*2160");
-		json_array.append("12M/4800*2700");
-		json_array.append("18M/5760*3240");
-		json_array.append("24M/6400*3600");
-		json_array.append("32M/7680*4320");
-#if SP5K_SENSOR_SONYIMX317_MIPI || SP5K_SENSOR_GC8613
-		json_array.append("42M/8640*4864");
-		if (still_size > SNAP_IMG_SIZE_42M) {
-			still_size = SNAP_IMG_SIZE_42M;
-		}
-#else
-		if (still_size > SNAP_IMG_SIZE_32M) {
-			still_size = SNAP_IMG_SIZE_32M;
-		}
-#endif
-	} else if (pic_max_size == 24) {
-		json_array.append("2M/1920*1080");
-		json_array.append("4M/2560*1440");
-#if SP5K_SENSOR_SONYIMX335 || SP5K_SENSOR_GC5623
-		json_array.append("5M/2592*1944");
-#endif
-		json_array.append("8M/3840*2160");
-		json_array.append("12M/4800*2700");
-		json_array.append("18M/5760*3240");
-		json_array.append("24M/6400*3600");
-		if (still_size > SNAP_IMG_SIZE_24M) {
-			still_size = SNAP_IMG_SIZE_24M;
-		}
-	} else if (18 == pic_max_size) {
-		json_array.append("2M/1920*1080");
-		json_array.append("4M/2560*1440");
-#if SP5K_SENSOR_SONYIMX335 || SP5K_SENSOR_GC5623
-		json_array.append("5M/2592*1944");
-#endif /* SP5K_SENSOR_SONYIMX335 or GC5623 */
-		json_array.append("8M/3840*2160");
-		json_array.append("12M/4800*2700");
-		json_array.append("18M/5760*3240");
+			if (still_size > SNAP_IMG_SIZE_18M) {
+				still_size = SNAP_IMG_SIZE_18M;
+			}
+		} else if (12 == pic_max_size) {
+			json_array.append("2M/1920*1080");
+			json_array.append("4M/2560*1440");
+			json_array.append("5M/2592*1944");
+			json_array.append("8M/3840*2160");
+			json_array.append("12M/4800*2700");
 
-		if (still_size > SNAP_IMG_SIZE_18M) {
-			still_size = SNAP_IMG_SIZE_18M;
-		}
-	} else if (12 == pic_max_size) {
-		json_array.append("2M/1920*1080");
-		json_array.append("4M/2560*1440");
-#if SP5K_SENSOR_SONYIMX335 || SP5K_SENSOR_GC5623
-		json_array.append("5M/2592*1944");
-#endif /* SP5K_SENSOR_SONYIMX335 or GC5623 */
-		json_array.append("8M/3840*2160");
-		json_array.append("12M/4800*2700");
+			if (still_size > SNAP_IMG_SIZE_12M) {
+				still_size = SNAP_IMG_SIZE_12M;
+			}
+		} else if (8 == pic_max_size) {
+			json_array.append("2M/1920*1080");
+			json_array.append("4M/2560*1440");
+			json_array.append("5M/2592*1944");
+			json_array.append("8M/3840*2160");
 
-		if (still_size > SNAP_IMG_SIZE_12M) {
-			still_size = SNAP_IMG_SIZE_12M;
+			if (still_size > SNAP_IMG_SIZE_8M) {
+				still_size = SNAP_IMG_SIZE_8M;
+			}
 		}
-	} else if (8 == pic_max_size) {
-		json_array.append("2M/1920*1080");
-		json_array.append("4M/2560*1440");
-#if SP5K_SENSOR_SONYIMX335 || SP5K_SENSOR_GC5623
-		json_array.append("5M/2592*1944");
-#endif /* SP5K_SENSOR_SONYIMX335 or GC5623 */
-		json_array.append("8M/3840*2160");
+		else if (5 == pic_max_size) {
+			json_array.append("2M/1920*1080");
+			json_array.append("4M/2560*1440");
+			json_array.append("5M/2592*1944");
 
-		if (still_size > SNAP_IMG_SIZE_8M) {
-			still_size = SNAP_IMG_SIZE_8M;
+			if (still_size > SNAP_IMG_SIZE_5M) {
+				still_size = SNAP_IMG_SIZE_5M;
+			}
 		}
+		else if (4 == pic_max_size) {
+			json_array.append("2M/1920*1080");
+			json_array.append("4M/2560*1440");
+
+			if (still_size > SNAP_IMG_SIZE_4M) {
+				still_size = SNAP_IMG_SIZE_4M;
+			}
+		} else if (2 == pic_max_size) {
+			json_array.append("2M/1920*1080");
+
+			if (still_size > SNAP_IMG_SIZE_2M) {
+				still_size = SNAP_IMG_SIZE_2M;
+			}
+		} else {
+			json_array.append("2M/1920*1080");
+			json_array.append("4M/2560*1440");
+			json_array.append("5M/2592*1944");
+			json_array.append("8M/3840*2160");
+			json_array.append("12M/4800*2700");
+			json_array.append("18M/5760*3240");
+			json_array.append("24M/6400*3600");
+			json_array.append("32M/7680*4320");
+			json_array.append("42M/8640*4864");
+
+			if (still_size > SNAP_IMG_SIZE_42M) {
+				still_size = SNAP_IMG_SIZE_42M;
+			}
+		}
+
+		json_item_sub["options"] = json_array;
+		json_item_sub["Selected"] = still_size + 1;
+		json_item["CAM_ImageSize"] = json_item_sub;
+
+		// Burst shooting
+		json_item["CAM_Shooting"] = settings->burstNumber;
+		// Shooting limitations
+		json_item["CAM_MaxShooting"] = settings->shootingLimits;
 	}
-#if SP5K_SENSOR_SONYIMX335 || SP5K_SENSOR_GC5623
-	else if (5 == pic_max_size) {
-		json_array.append("2M/1920*1080");
-		json_array.append("4M/2560*1440");
-		json_array.append("5M/2592*1944");
-
-		if (still_size > SNAP_IMG_SIZE_5M) {
-			still_size = SNAP_IMG_SIZE_5M;
-		}
-	}
-#endif
-	else if (4 == pic_max_size) {
-		json_array.append("2M/1920*1080");
-		json_array.append("4M/2560*1440");
-
-		if (still_size > SNAP_IMG_SIZE_4M) {
-			still_size = SNAP_IMG_SIZE_4M;
-		}
-	} else if (2 == pic_max_size) {
-		json_array.append("2M/1920*1080");
-
-		if (still_size > SNAP_IMG_SIZE_2M) {
-			still_size = SNAP_IMG_SIZE_2M;
-		}
-	} else {
-		json_array.append("2M/1920*1080");
-		json_array.append("4M/2560*1440");
-#if SP5K_SENSOR_SONYIMX335 || SP5K_SENSOR_GC5623
-		json_array.append("5M/2592*1944");
-#endif /* SP5K_SENSOR_SONYIMX335 or GC5623 */
-		json_array.append("8M/3840*2160");
-		json_array.append("12M/4800*2700");
-		json_array.append("18M/5760*3240");
-		json_array.append("24M/6400*3600");
-		json_array.append("32M/7680*4320");
-#if SP5K_SENSOR_SONYIMX317_MIPI || SP5K_SENSOR_GC8613
-		json_array.append("42M/8640*4864");
-
-		if (still_size > SNAP_IMG_SIZE_42M) {
-			still_size = SNAP_IMG_SIZE_42M;
-		}
-#else /* SP5K_SENSOR_SONYIMX317 or GC8613 */
-
-		if (still_size > SNAP_IMG_SIZE_32M) {
-			still_size = SNAP_IMG_SIZE_32M;
-		}
-#endif
-	}
-
-	json_item_sub["options"] = json_array;
-	json_item_sub["Selected"] = still_size + 1;
-	json_item["CAM_ImageSize"] = json_item_sub;
-
-	// Burst shooting
-	json_item["CAM_Shooting"] = settings->burstNumber;
-
+	
 	// Video size
 	json_array.clear();
 	
-	uint8_t video_size = settings->videoSize;
-	if (vid_max_size == 0 || vid_max_size == 8 || vid_max_size == 4) {
-		json_array.append("720P/30FPS");
-		json_array.append("720P/60FPS");
-#ifdef VIDEO_SIZE_HD_120FPS
-		json_array.append("720P/120FPS");
-#endif
-#ifdef VIDEO_SIZE_HD_240FPS
-		json_array.append("720P/240FPS");
-#endif
-		json_array.append("1080P/30FPS");
-		json_array.append("1080P/60FPS");
-#ifdef VIDEO_SIZE_FHD_120FPS
-		json_array.append("1080P/120FPS");
-#endif
-		json_array.append("2K/30FPS");
-		json_array.append("4K/30FPS");
-		if (video_size > VIDEO_SIZE_4K2K_30FPS) {
-			video_size = VIDEO_SIZE_4K2K_30FPS;
-		}
-	} else if (2 == vid_max_size) {
-		json_array.append("720P/30FPS");
-		json_array.append("720P/60FPS");
-#ifdef VIDEO_SIZE_HD_120FPS
-		json_array.append("720P/120FPS");
-#endif
-#ifdef VIDEO_SIZE_HD_240FPS
-		json_array.append("720P/240FPS");
-#endif
-		json_array.append("1080P/30FPS");
-		json_array.append("1080P/60FPS");
-#ifdef VIDEO_SIZE_FHD_120FPS
-		json_array.append("1080P/120FPS");
-#endif
-		json_array.append("2K/30FPS");
+	if (vid_max_size != 0) {
+		uint8_t video_size = settings->videoSize;
+		if (vid_max_size == 8 || vid_max_size == 4) {
+			json_array.append("720P/30FPS");
+			json_array.append("720P/60FPS");
+	#ifdef VIDEO_SIZE_HD_120FPS
+			json_array.append("720P/120FPS");
+	#endif
+	#ifdef VIDEO_SIZE_HD_240FPS
+			json_array.append("720P/240FPS");
+	#endif
+			json_array.append("1080P/30FPS");
+			json_array.append("1080P/60FPS");
+	#ifdef VIDEO_SIZE_FHD_120FPS
+			json_array.append("1080P/120FPS");
+	#endif
+			json_array.append("2K/30FPS");
+			json_array.append("4K/30FPS");
+			if (video_size > VIDEO_SIZE_4K2K_30FPS) {
+				video_size = VIDEO_SIZE_4K2K_30FPS;
+			}
+		} else if (2 == vid_max_size) {
+			json_array.append("720P/30FPS");
+			json_array.append("720P/60FPS");
+	#ifdef VIDEO_SIZE_HD_120FPS
+			json_array.append("720P/120FPS");
+	#endif
+	#ifdef VIDEO_SIZE_HD_240FPS
+			json_array.append("720P/240FPS");
+	#endif
+			json_array.append("1080P/30FPS");
+			json_array.append("1080P/60FPS");
+	#ifdef VIDEO_SIZE_FHD_120FPS
+			json_array.append("1080P/120FPS");
+	#endif
+			json_array.append("2K/30FPS");
 
-		if (video_size > VIDEO_SIZE_2K_30FPS) {
-			video_size = VIDEO_SIZE_2K_30FPS;
-		}
-	} else if (1 == vid_max_size) {
-		json_array.append("720P/30FPS");
-		json_array.append("720P/60FPS");
-#ifdef VIDEO_SIZE_HD_120FPS
-		json_array.append("720P/120FPS");
-#endif
-#ifdef VIDEO_SIZE_HD_240FPS
-		json_array.append("720P/240FPS");
-#endif
-		json_array.append("1080P/30FPS");
-		json_array.append("1080P/60FPS");
-#ifdef VIDEO_SIZE_FHD_120FPS
-		json_array.append("1080P/120FPS");
-#endif
+			if (video_size > VIDEO_SIZE_2K_30FPS) {
+				video_size = VIDEO_SIZE_2K_30FPS;
+			}
+		} else if (1 == vid_max_size) {
+			json_array.append("720P/30FPS");
+			json_array.append("720P/60FPS");
+	#ifdef VIDEO_SIZE_HD_120FPS
+			json_array.append("720P/120FPS");
+	#endif
+	#ifdef VIDEO_SIZE_HD_240FPS
+			json_array.append("720P/240FPS");
+	#endif
+			json_array.append("1080P/30FPS");
+			json_array.append("1080P/60FPS");
+	#ifdef VIDEO_SIZE_FHD_120FPS
+			json_array.append("1080P/120FPS");
+	#endif
 
-		if (video_size > VIDEO_SIZE_FHD_60FPS) {
-			video_size = VIDEO_SIZE_FHD_60FPS;
-		}
-	} else {
-		json_array.append("720P/30FPS");
-		json_array.append("720P/60FPS");
-#ifdef VIDEO_SIZE_HD_120FPS
-		json_array.append("720P/120FPS");
-#endif
-#ifdef VIDEO_SIZE_HD_240FPS
-		json_array.append("720P/240FPS");
-#endif
-		json_array.append("1080P/30FPS");
-		json_array.append("1080P/60FPS");
-#ifdef VIDEO_SIZE_FHD_120FPS
-		json_array.append("1080P/120FPS");
-#endif
-		json_array.append("2K/30FPS");
-		json_array.append("4K/30FPS");
+			if (video_size > VIDEO_SIZE_FHD_60FPS) {
+				video_size = VIDEO_SIZE_FHD_60FPS;
+			}
+		} else {
+			json_array.append("720P/30FPS");
+			json_array.append("720P/60FPS");
+	#ifdef VIDEO_SIZE_HD_120FPS
+			json_array.append("720P/120FPS");
+	#endif
+	#ifdef VIDEO_SIZE_HD_240FPS
+			json_array.append("720P/240FPS");
+	#endif
+			json_array.append("1080P/30FPS");
+			json_array.append("1080P/60FPS");
+	#ifdef VIDEO_SIZE_FHD_120FPS
+			json_array.append("1080P/120FPS");
+	#endif
+			json_array.append("2K/30FPS");
+			json_array.append("4K/30FPS");
 
-		if (video_size > VIDEO_SIZE_4K2K_30FPS) {
-			video_size = VIDEO_SIZE_4K2K_30FPS;
+			if (video_size > VIDEO_SIZE_4K2K_30FPS) {
+				video_size = VIDEO_SIZE_4K2K_30FPS;
+			}
 		}
+
+		json_item_sub["options"] = json_array;
+		json_item_sub["Selected"] = video_size + 1;
+		json_item["CAM_VideoSize"] = json_item_sub;
+
+		// Video length
+		json_item["CAM_VideoLength"] = (settings->videoLength_h << 8) + settings->videoLength_l;
 	}
-
-	json_item_sub["options"] = json_array;
-	json_item_sub["Selected"] = video_size + 1;
-	json_item["CAM_VideoSize"] = json_item_sub;
-
-	// Video length
-	json_item["CAM_VideoLength"] = (settings->videoLength_h << 8) + settings->videoLength_l;
-	// Shooting limitations
-	json_item["CAM_MaxShooting"] = settings->shootingLimits;
 
 	// PIR trigger settings
 	json_item["PIR_Enable"] = settings->pirEn;

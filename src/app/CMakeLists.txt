@@ -4,45 +4,22 @@ file(GLOB MEDIA_APP_SOURCES "${SOURCES}/app/media_app.cpp")
 
 include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../logger
         ${CMAKE_CURRENT_SOURCE_DIR}/../common
+        ${CMAKE_CURRENT_SOURCE_DIR}/../setting
+        ${CMAKE_CURRENT_SOURCE_DIR}/../env
+        ${CMAKE_CURRENT_SOURCE_DIR}/../devconf
+        ${CMAKE_CURRENT_SOURCE_DIR}/../misc
+        ${CMAKE_CURRENT_SOURCE_DIR}/../network
         ${CMAKE_CURRENT_SOURCE_DIR}/../mcu
         ${CMAKE_CURRENT_SOURCE_DIR}/../disk
         ${CMAKE_CURRENT_SOURCE_DIR}/../time
         ${CMAKE_CURRENT_SOURCE_DIR}/../power
+        ${CMAKE_CURRENT_SOURCE_DIR}/../media/snap
+        ${CMAKE_CURRENT_SOURCE_DIR}/../media/video
+        ${CMAKE_CURRENT_SOURCE_DIR}/../media/rtsp
         ${THIRD_PARTY_PATH}/jsoncpp/include
         ${SDK_INC_PATH}/systemcall
-)
-# Link libraries
-set(COMMON_LIBS
-    common
-    crc16
-    md5
-    jsoncpp
-)
-
-set(MEDIA_LIBS
-    media_snap
-)
-set(NET_LIBS 
-    network
-)
-
-set(MISC_LIBS
-    mcu
-    power
-    disk
-)
-
-set(SDK_LIBS
-    system_call
-    imp
-    alog
-)
-
-set(STD_LIBS
-    rt
-    gcc
-    stdc++  
 )
 
 link_directories(
@@ -56,20 +33,64 @@ add_executable(htc_media_app ${MEDIA_APP_SOURCES})
 # Link libraries
 target_link_libraries(htc_main_app 
     PRIVATE
-    ${MEDIA_LIBS}
-    ${NET_LIBS}
-    ${COMMON_LIBS}
-    ${MISC_LIBS}
-    ${SDK_LIBS}
-    ${STD_LIBS}
+
+    #media libs
+    media_snap
+    media_recorder
+    media_rtsp
+
+    #net libs
+    network
+
+    #common libs
+    misc
+    common
+    setting
+    env
+    devconf
+    base64
+    crc16
+    md5
+    jsoncpp
+    logger
+
+    #misc libs
+    mcu
+    power
+    disk
+
+    #sdk libs
+    system_call
+    imp
+    alog
+
+    #std libs
+    rt
+    gcc
+    stdc++
 )
 
 target_link_libraries(htc_media_app 
     PRIVATE
-    ${MEDIA_LIBS}
-    ${COMMON_LIBS}
-    ${SDK_LIBS}
-    ${STD_LIBS}
+
+    #media libs
+    media_snap
+
+    #common libs
+    setting
+    env
+    jsoncpp
+    logger
+    
+    #sdk libs
+    system_call
+    imp
+    alog
+
+    #std libs
+    rt
+    gcc
+    stdc++
 )
 
 # Set output directory

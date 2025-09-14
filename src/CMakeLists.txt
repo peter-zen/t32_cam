@@ -15,7 +15,13 @@ link_directories(
 #set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
 
 # Include subdirectory for common
+add_subdirectory(logger)
 add_subdirectory(common)
+add_subdirectory(env)
+add_subdirectory(devconf)
+add_subdirectory(misc)
+add_subdirectory(base64)
+add_subdirectory(setting)
 add_subdirectory(media)
 add_subdirectory(network)
 add_subdirectory(power)

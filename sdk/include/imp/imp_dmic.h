@@ -376,7 +376,7 @@ int IMP_DMIC_GetVol(int dmicDevId, int dmicChnId, int *dmicVol);
 *
 *	@param[in] dmicDevId 麦克阵列音频设备号.
 *	@param[in] dmicChnId 麦克阵列音频输入通道号.
-*	@param[out] dmicGain  麦克阵列音频输入增益.
+*	@param[in] dmicGain  麦克阵列音频输入增益.
 *
 *   @retval 0 success.
 *   @retval non-0 failure.

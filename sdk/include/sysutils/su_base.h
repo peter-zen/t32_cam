@@ -120,6 +120,7 @@ typedef struct SUPM_Init_Cfg{
 		};
 	}init;
 }SUPM_Init_Cfg_t;
+
 /**
  * @fn int SU_Base_GetModelNumber(SUModelNum *modelNum)
  *
@@ -127,7 +128,7 @@ typedef struct SUPM_Init_Cfg{
  *
  * @param[out]: modelNum 设备型号结构体指针.
  *
- * @retval 0 成功. 非0 失败.
+ * @retval: 0 成功. 非0 失败.
  *
  * @remarks: 无
  *
@@ -140,9 +141,9 @@ int SU_Base_GetModelNumber(SUModelNum *modelNum);
  *
  * @brief: 获取设备版本.
  *
- * @param[out] version 设备版本结构体指针.
+ * @param[out]: version 设备版本结构体指针.
  *
- * @retval 0 成功.非0 失败.
+ * @retval: 0 成功.非0 失败.
  *
  * @remarks: 无
  *
@@ -157,11 +158,11 @@ int SU_Base_GetVersion(SUVersion *version);
  *
  * @param[out] devID 设备ID结构体指针.
  *
- * @retval 0 成功. 非0 失败.
+ * @retval: 0 成功. 非0 失败.
  *
  * @remarks: 无
  *
- * @attention 每颗CPU芯片的设备ID是唯一的.
+ * @attention: 每颗CPU芯片的设备ID是唯一的.
  */
 int SU_Base_GetDevID(SUDevID *devID);
 
@@ -172,7 +173,7 @@ int SU_Base_GetDevID(SUDevID *devID);
  *
  * @param[in] time 系统时间结构体指针.
  *
- * @retval 0 成功. 非0 失败.
+ * @retval: 0 成功. 非0 失败.
  *
  * @remarks: 无
  *
@@ -187,11 +188,11 @@ int SU_Base_GetTime(SUTime *time);
  *
  * @param[out] time 系统时间结构体指针.
  *
- * @retval 0 成功. 非0 失败.
+ * @retval: 0 成功. 非0 失败.
  *
  * @remarks: 无
  *
- * @attention 系统时间参数需在合理范围，否则函数调用失败.
+ * @attention: 系统时间参数需在合理范围，否则函数调用失败.
  */
 int SU_Base_SetTime(SUTime *time);
 
@@ -203,11 +204,11 @@ int SU_Base_SetTime(SUTime *time);
  * @param[in] suTime 系统时间结构体指针.
  * @param[out] rawTime Raw时间(从1970-01-01 00:00:00开始算起).
  *
- * @retval 0 成功. 非0 失败.
+ * @retval: 0 成功. 非0 失败.
  *
- * @remarks 此函数可以用在设置相对秒数的Alarm.
+ * @remarks: 此函数可以用在设置相对秒数的Alarm.
  *
- * @attention 无.
+ * @attention: 无.
  */
 int SU_Base_SUTime2Raw(SUTime *suTime, uint32_t *rawTime);
 
@@ -219,11 +220,11 @@ int SU_Base_SUTime2Raw(SUTime *suTime, uint32_t *rawTime);
  * @param[in] rawTime Raw时间(从1970-01-01 00:00:00开始算起).
  * @param[out] suTime 系统时间结构体指针.
  *
- * @retval 0 成功. retval 非0 失败.
+ * @retval: 0 成功. retval 非0 失败.
  *
- * @remarks 此函数可以用在设置相对秒数的Alarm.
+ * @remarks: 此函数可以用在设置相对秒数的Alarm.
  *
- * @attention 无.
+ * @attention: 无.
  */
 int SU_Base_Raw2SUTime(uint32_t *rawTime, SUTime *suTime);
 
@@ -234,11 +235,11 @@ int SU_Base_Raw2SUTime(uint32_t *rawTime, SUTime *suTime);
  *
  * @param[in] time 系统时间结构体指针.
  *
- * @retval 0 成功. 非0 失败.
+ * @retval: 0 成功. 非0 失败.
  *
- * @remarks 暂支持24小时内的闹钟设定.
+ * @remarks: 暂支持24小时内的闹钟设定.
  *
- * @attention 系统时间参数需在合理范围，否则函数调用失败.
+ * @attention: 系统时间参数需在合理范围，否则函数调用失败.
  */
 int SU_Base_SetAlarm(SUTime *time);
 
@@ -249,11 +250,11 @@ int SU_Base_SetAlarm(SUTime *time);
  *
  * @param[out] time 系统时间结构体指针.
  *
- * @retval 0 成功. 非0 失败.
+ * @retval: 0 成功. 非0 失败.
  *
- * @remarks 无.
+ * @remarks: 无.
  *
- * @attention 无.
+ * @attention: 无.
  */
 int SU_Base_GetAlarm(SUTime *time);
 
@@ -266,7 +267,7 @@ int SU_Base_GetAlarm(SUTime *time);
  *
  * @retval: 0 成功. 非0 失败.
  *
- * @remarks 调用该函数之前，请调用SU_Base_GetAlarm（SUTime *time）设定闹钟时间.
+ * @remarks: 调用该函数之前，请调用SU_Base_GetAlarm（SUTime *time）设定闹钟时间.
  *
  * @attention: 调用该函数之前，请调用SU_Base_GetAlarm（SUTime *time）设定闹钟时间.
  * 如果闹钟时间在当前系统时间之前返回失败.
@@ -295,11 +296,11 @@ int SU_Base_DisableAlarm(void);
  *
  * @param[in] timeoutMsec超时时间, 单位: 毫秒.
  *
- * @retval 0 成功. 非0 失败.
+ * @retval: 0 成功. 非0 失败.
  *
- * @remarks 调用该函数后，程序会进入阻塞状态，一直到闹钟响应退出或超时退出.
+ * @remarks: 调用该函数后，程序会进入阻塞状态，一直到闹钟响应退出或超时退出.
  *
- * @attention 无.
+ * @attention: 无.
  */
 int SU_Base_PollingAlarm(uint32_t timeoutMsec);
 
@@ -308,14 +309,14 @@ int SU_Base_PollingAlarm(uint32_t timeoutMsec);
  *
  * @brief: 设备关机.
  *
- * @param 无.
+ * @param: 无.
  *
- * @retval 0 成功. 非0 失败.
+ * @retval: 0 成功. 非0 失败.
  *
- * @remarks 调用该函数后设备会立即关机并关闭主电源.
+ * @remarks: 调用该函数后设备会立即关机并关闭主电源.
  *
- * @attention 在调用此函数之前请确保已保存所有文件.
- */
+ * @attention: 在调用此函数之前请确保已保存所有文件.
+ **/
 int SU_Base_Shutdown(void);
 
 /**
@@ -330,11 +331,11 @@ int SU_Base_Shutdown(void);
  * @remarks: 无
  *
  * @attention: 调用该函数后设备会立即重启.在调用此函数之前请确保已保存所有文件.
- */
+ **/
 int SU_Base_Reboot(void);
 
 /**
- * @fn: int SU_Base_Suspend(void)
+ * @fn: int SU_Base_Suspend()
  *
  * @brief: 调用该函数后设备会立即进入休眠,函数正常退出后说明系统已经唤醒.
  *
@@ -347,9 +348,8 @@ int SU_Base_Reboot(void);
  * @attention: 注意,为了保护Suspend的安全. 加入了wake lock/unlock机制
  * 所以直接调用SU_Base_Suspend可能并不会直接进入睡眠(主要判断wake锁是否释放完毕)
  * 详细请查看文档wake
- */
+ **/
 int SU_Base_Suspend();
-
 
 /**
  * @fn: int SU_Base_SetWkupMode(SUWkup mode)
@@ -363,14 +363,13 @@ int SU_Base_Suspend();
  * @remarks: 无
  *
  * @attention:调用SU_Base_Suspend之前调用该函数
- * */
+ **/
 int SU_Base_SetWkupMode(SUWkup mode);
-
 
 /**
  * @fn: void SU_Base_CtlPwrDown();
  *
- * @brief: 控制T41 SoC PWRON 引脚拉低.
+ * @brief: 控制T32 SoC PWRON 引脚拉低.
  *
  * @param  无
  *
@@ -379,10 +378,10 @@ int SU_Base_SetWkupMode(SUWkup mode);
  * @remarks: 无
  *
  * @attention: 注意一旦调用此接口,意味着RTC将不在读写
- */
+ **/
 int SU_Base_CtlPwrDown(void);
 
-/*
+/**
  * @fn:int SU_Base_GetWkupMode(void)
  *
  * @brief: 获取本次真实唤醒方式
@@ -396,9 +395,14 @@ int SU_Base_CtlPwrDown(void);
  *   WKUP_KEY = 2   按键唤醒
  *
  * @attention: 无
- * */
+ **/
 
 int SU_Base_GetWkupMode(void);
+
+/*
+ * System PM related interfaces
+ *
+ * */
 
 /*
  * @fn: int SU_PM_Init(SUPM_Init_Cfg_t *cfg_p);
@@ -495,7 +499,7 @@ int SU_PM_GetListenLockNums(void);
 int SU_PM_AddThreadListen(void);
 
 /*
- * @fn: int SU_PM_DelThreadListen(tpid)
+ * @fn: int SU_PM_DelThreadListen(int tpid)
  *
  * @brief: 将调用的线程删除监听队列
  *
@@ -672,6 +676,10 @@ int SU_PM_Get_CPUOnlineNums();
  * @attention: 无
  * */
 void SU_PM_Sleep(unsigned int msec);
+
+/**
+ * @}
+ */
 
 
 

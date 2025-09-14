@@ -10,16 +10,17 @@ include_directories(
         ${SDK_INC_PATH}/systemcall
         ${SDK_INC_PATH}/sysutils
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../logger
         ${THIRD_PARTY_PATH}/crc16/include
         ${THIRD_PARTY_PATH}/jsoncpp/include
 )
 
-# Create static library
+# Create library
 add_library(common SHARED ${SOURCE_FILES})
 
 target_link_libraries(common PRIVATE system_call crc16 pthread)
 
-# Set the output directory for the static library
+# Set the output directory for the library
 set_target_properties(common PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )

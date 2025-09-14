@@ -15,7 +15,7 @@ class Client {
 	virtual int connect(unsigned int timeout_ms);
 	virtual int start();
 	virtual int stop();
-
+	virtual bool isConnected();
     protected:
 	virtual int sendMessage(int message_type, const std::string &message);
 	virtual void receiveFunction();
@@ -36,6 +36,7 @@ class Client {
 	std::unique_ptr<char[]> recv_buffer;
 	size_t recv_buffer_size;
 	size_t send_buffer_size;
+	bool is_connected;
 };
 }
 #endif

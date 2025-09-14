@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.16)
 
 # Specify the toolchain file
 set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/toolchain.cmake")
@@ -18,6 +18,9 @@ set(SDK_INC_PATH "${SDK_PATH}/include" CACHE PATH "Relative include path")
 set(SOURCES "${PROJECT_ROOT}/src" CACHE STRING "Source files for the project")
 set(THIRD_PARTY_PATH "${PROJECT_ROOT}/third_party" CACHE STRING "Third party libraries")
 
+#Set options
+add_definitions(-DRTC_EXIST=0)
+
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
@@ -27,7 +30,9 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED True)
 
 add_definitions(
+    -O2
     -Wall
+    -march=mips32r2
 )
 
 # Include subdirectory for common

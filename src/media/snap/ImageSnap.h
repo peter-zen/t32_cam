@@ -6,14 +6,12 @@
 #include <vector>
 #include <thread>
 #include <functional>
+#include "media_common.h"
+
+#define SNAP_SENSOR_CHN_NUM  0
 
 namespace media
 {
-enum class RunMode {
-    BLOCKING,
-    NON_BLOCKING
-};
-
 class ImageSnapParams {
 	public:
 	ImageSnapParams();
@@ -53,9 +51,9 @@ class ImageSnap {
         bool snap(int chnNum, const std::vector<std::string> &filenames);
         bool initJpeg();
         bool uninitJpeg();
+        bool sensorFilter(int index);
         ImageSnapParams params;
         bool initialized;
-		RunMode runMode;
         std::vector<std::thread> threads;
 };
 }

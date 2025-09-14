@@ -12,24 +12,26 @@
 #include <sys/types.h>
 #include <json/json.h>
 #include "ImageSnap.h"
+#include "EnvManager.h"
+#include "Settings.h"
 #include "Logger.h"
+#include "StringConvert.h"
 #include "system_call.h"
-
+#include "app.h"
+#include "Common.h"
 using namespace media;
 
-#define QUICK_SNAP_DIR   "/tmp/quick_snap/"
-
-std::string getCurrentTimeFormatted()
+static std::string getCurrentTimeFormatted()
 {
-    auto now = std::chrono::system_clock::now();
-    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    time_t now = time(nullptr);
+    struct tm* time_info = localtime(&now);
     
     std::stringstream ss;
-    ss << std::put_time(std::localtime(&in_time_t), "%Y%m%d_%H%M%S");
+    ss << std::put_time(time_info, "%Y%m%d_%H%M%S");
     return ss.str();
 }
 
-bool createDirectory(const std::string& path, mode_t mode)
+static bool createDirectory(const std::string& path, mode_t mode)
 {
     std::string tempPath;
     for (char c : path) {
@@ -54,7 +56,7 @@ bool createDirectory(const std::string& path, mode_t mode)
     return true;
 }
 
-bool startApp(const std::string& command)
+static bool startApp(const std::string& command)
 {
     int ret = 0;
     ret = system_call_init();
@@ -75,25 +77,62 @@ bool startApp(const std::string& command)
 
 int main(int argc, char* argv[])
 {
+    //show timestamp
+    struct timespec ts0;
+    if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts0) != -1) {
+        Logger::log(LogLevel::INFO, "main entry at %ld ms", ts0.tv_sec * 1000 + ts0.tv_nsec / 1000000);
+    }
+
     auto dirPath = std::string(QUICK_SNAP_DIR);
     if (!createDirectory(dirPath, 0777)) {
         Logger::log(LogLevel::ERROR, "Failed to create directory: %s", dirPath.c_str());
         return -1;
     }
+    #if RTC_EXIST
     std::string timeStr = getCurrentTimeFormatted();
     dirPath += timeStr;
+    #else
+    dirPath += "pic";
+    #endif
     if (!createDirectory(dirPath, 0777)) {
         Logger::log(LogLevel::ERROR, "Failed to create directory: %s", dirPath.c_str());
         return -1;
     }
+
+    if (!EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME)) {
+        Logger::log(LogLevel::ERROR, "Failed to parse env file: %s", ENV_FILE_PATHNAME);
+        return -1;
+    }
+    std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
+    if (setting_file_path.empty()) {
+        Logger::log(LogLevel::ERROR, "Failed to get setting file path");
+        return -1;
+    }
     
-    std::vector<std::string> fileNames = {
-        dirPath + "/" + timeStr + "_1.JPG",
-        //dirPath + "/" + timeStr + "_2.JPG",
-        //dirPath + "/" + timeStr + "_3.JPG",
-    };
-    
+    bool load_success = Settings::getInstance()->loadFromJsonFile(setting_file_path);
+    if (!load_success) {
+        Logger::log(LogLevel::ERROR, "Failed to load setting file: %s", setting_file_path.c_str());
+        return -1;
+    }
+
+    auto burstNumber = Settings::getInstance()->burstNumber;
+    if (burstNumber <= 0) {
+        Logger::log(LogLevel::ERROR, "Invalid burst number: %d", burstNumber);
+        return -1;
+    }
+
+    std::vector<std::string> fileNames;
+    for (int i = 0; i < burstNumber; i++) {
+        #if RTC_EXIST
+        fileNames.push_back(dirPath + "/" + timeStr + "_" + to_string_custom(i + 1) + ".JPG");
+        #else
+        fileNames.push_back(dirPath + "/" + to_string_custom(i + 1) + ".JPG");
+        #endif
+    }
+    auto snapSizeIndex = Settings::getInstance()->stillSize;
     auto snap_param = ImageSnapParams();
+    snap_param.setImageSize(SnapImgSize[snapSizeIndex].width, SnapImgSize[snapSizeIndex].height);
+    Logger::log(LogLevel::INFO, "Snap image size: %d x %d", SnapImgSize[snapSizeIndex].width, SnapImgSize[snapSizeIndex].height);
     auto imageSnap = std::make_shared<ImageSnap>(snap_param);
     if (!imageSnap->snap(fileNames)) {
         Logger::log(LogLevel::ERROR, "Failed to snap images");
@@ -111,9 +150,13 @@ int main(int argc, char* argv[])
     for (const auto& fileName : fileNames) {
         imageArray.append(std::string(fileName.substr(fileName.find_last_of("/") + 1)));
     }
+    #if RTC_EXIST
     root["files"] = imageArray;
     root["dir"] = timeStr;
-    
+    #else
+    root["files"] = imageArray;
+    root["dir"] = "pic";
+    #endif
     std::string jsonFilePath = std::string(QUICK_SNAP_DIR) + "info.json";
     std::ofstream jsonFile(jsonFilePath);
     if (!jsonFile.is_open()) {
@@ -127,7 +170,6 @@ int main(int argc, char* argv[])
     jsonFile.close();
     
     // call htc_main_app
-    //startApp("/mnt/huntcam/bin/htc_main_app --snap");
-    startApp("/usr/bin/htc_main_app --snap");
+    startApp("htc_main_app -qs");
     return 0;
 }

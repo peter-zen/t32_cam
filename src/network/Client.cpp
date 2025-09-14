@@ -153,6 +153,7 @@ int Client::connect(unsigned int timeout_ms)
     }
 
     Logger::log(LogLevel::INFO, "Socket(%s:%d) init ok, %d", server_address.c_str(), server_port, socket_fd);
+    is_connected = true;
 	return start();
 }
 
@@ -166,11 +167,17 @@ int Client::start()
 
 int Client::stop()
 {
+    is_connected = false;
 	recv_thread_run = false;
 	if (recv_thread && recv_thread->joinable()) {
 		recv_thread->join();
 	}
 	return EC_SUCCESS;
+}
+
+bool Client::isConnected()
+{
+    return is_connected;
 }
 
 int Client::sendMessage(int message_type, const std::string &message)
@@ -219,8 +226,10 @@ void Client::receiveFunction()
 			continue;
 		}
 
-		if (receiveCommand(recv_buffer.get(), recv_buffer_size)) {
+		if (receiveCommand(recv_buffer.get(), recv_buffer_size)> 0) {
 			processCommand(recv_buffer, ret);
+		} else {
+		    is_connected = false;
 		}
 	}
 }

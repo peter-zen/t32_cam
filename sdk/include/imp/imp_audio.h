@@ -1592,7 +1592,7 @@ int IMP_ADEC_ReleaseStream(int adChn,IMPAudioStream *stream);
 
  * @param[in] audioDevId 音频输入设备号.
  * @param[in] aiChn 音频输入通道号.
- * @param[in] aigain 音频通道输入增益.
+ * @param[in] aiGain 音频通道输入增益.
 
  * 范围[0 ~ 31],对应[-18dB ~ 28.5dB],步长1.5dB.
 
@@ -1605,7 +1605,7 @@ int IMP_ADEC_ReleaseStream(int adChn,IMPAudioStream *stream);
  * 被设置为0.如果值大于31,aiGain的值会被设置为31.
 
  */
- int IMP_AI_SetGain(int audioDevId, int aiChn, int aigain);
+ int IMP_AI_SetGain(int audioDevId, int aiChn, int aiGain);
 
 /**
  * @fn int IMP_AI_GetGain(int audioDevId, int aiChn, int *aiGain)
@@ -1614,7 +1614,7 @@ int IMP_ADEC_ReleaseStream(int adChn,IMPAudioStream *stream);
 
  * @param[in] audioDevId 音频输入设备号.
  * @param[in] aiChn 音频输入通道号.
- * @param[out] aigain 音频通道输入增益属性指针.
+ * @param[out] aiGain 音频通道输入增益属性指针.
 
  * @retval 0 成功.
  * @retval 非0 失败.
@@ -1623,7 +1623,7 @@ int IMP_ADEC_ReleaseStream(int adChn,IMPAudioStream *stream);
 
  * @attention 无.
  */
- int IMP_AI_GetGain(int audioDevId, int aiChn, int *aigain);
+ int IMP_AI_GetGain(int audioDevId, int aiChn, int *aiGain);
 
 /**
  * @fn int IMP_AI_SetDigitalGain(int audioDevId, int aiChn, int dgain)

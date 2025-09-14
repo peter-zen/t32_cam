@@ -32,8 +32,8 @@ class RemoteCtrlClient : public Client {
 
     private:
 	bool remote_is_mobile_app;
-	uint32_t vid_max_size = 8; // 8M
-	uint32_t pic_max_size = 42;	// 42M
+	uint32_t vid_max_size;
+	uint32_t pic_max_size;
 };
 }
 #endif // REMOTE_CTRL_CLIENT_H

@@ -12,13 +12,13 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Create static library
+# Create library
 add_library(media_common SHARED ${SOURCE_FILES})
 
 # link libraries
 #target_link_libraries(media_common PRIVATE media_common)
 
-# Set the output directory for the static library
+# Set the output directory for the library
 set_target_properties(media_common PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )

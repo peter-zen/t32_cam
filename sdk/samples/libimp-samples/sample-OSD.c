@@ -25,13 +25,13 @@ extern struct chn_conf chn[];
 extern int direct_switch;
 extern int gosd_enable;
 
-static int osd_show(void);
+static int osd_show(int grpNum);
 static void *update_thread(void *p);
-static IMPRgnHandle *sample_osd_init(int grpNum);
-static int sample_osd_exit(IMPRgnHandle *prHander, int grpNum);
+static int sample_osd_init(int grpNum);
+static int sample_osd_exit(int grpNum);
 
-static int grpNum = 0;
-static IMPRgnHandle *prHander;
+static int grpNum[FS_CHN_NUM] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+static IMPRgnHandle prHander[FS_CHN_NUM][5];
 
 int main(int argc, char *argv[])
 {
@@ -39,10 +39,7 @@ int main(int argc, char *argv[])
 	int ret = 0;
 
 	direct_switch = 0;
-	/* only show OSD in chn0 */
-	chn[0].enable = 1;
-	chn[1].enable = 0;
-	chn[2].enable = 0;
+	/* only show OSD in per sensor chn0, others need modify code */
 
 	gosd_enable = 1;
 	/* Step.1 System init */
@@ -77,37 +74,50 @@ int main(int argc, char *argv[])
 	}
 
 	/* Step.4 OSD init */
-	if (IMP_OSD_CreateGroup(grpNum) < 0) {
-		IMP_LOG_ERR(TAG, "OSD CreateGroup(%d) failed\n", grpNum);
-		return -1;
+	for (i = 0; i < FS_CHN_NUM; i++) {
+		if (chn[i].enable) {
+			if (IMP_OSD_CreateGroup(grpNum[i]) < 0) {
+				IMP_LOG_ERR(TAG, "OSD CreateGroup(%d) failed\n", grpNum[i]);
+				return -1;
+			}
+		}
 	}
 
-	prHander = sample_osd_init(grpNum);
-	if (prHander <= 0) {
-		IMP_LOG_ERR(TAG, "osd init failed\n");
-		return -1;
+	for (i = 0; i < FS_CHN_NUM; i++) {
+		if (chn[i].enable) {
+			sample_osd_init(grpNum[i]);
+		}
 	}
 
 	/* Step.5 Bind */
-	IMPCell osd = { DEV_ID_OSD, grpNum, 0 };
-	ret = IMP_System_Bind(&chn[0].framesource_chn, &osd);
-	if (ret < 0) {
-		IMP_LOG_ERR(TAG, "Bind framesource%d and osd%d failed\n", chn[0].framesource_chn.groupID, osd.groupID);
-		return -1;
-	}
+	for (i = 0; i < FS_CHN_NUM; i++) {
+		if (chn[i].enable) {
+			IMPCell osd = { DEV_ID_OSD, grpNum[i], 0 };
+			ret = IMP_System_Bind(&chn[i].framesource_chn, &osd);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "Bind framesource%d and osd%d failed\n", chn[i].framesource_chn.groupID, osd.groupID);
+				return -1;
+			}
 
-	ret = IMP_System_Bind(&osd, &chn[0].imp_encoder);
-	if (ret < 0) {
-		IMP_LOG_ERR(TAG, "Bind osd%d and encoder%d failed\n", osd.groupID, chn[0].imp_encoder.groupID);
-		return -1;
+			ret = IMP_System_Bind(&osd, &chn[i].imp_encoder);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "Bind osd%d and encoder%d failed\n", osd.groupID, chn[i].imp_encoder.groupID);
+				return -1;
+			}
+		}
 	}
 
 	/* Step.6 Create OSD bgramap update thread */
-	pthread_t tid;
-	ret = pthread_create(&tid, NULL, update_thread, NULL);
-	if (ret) {
-		IMP_LOG_ERR(TAG, "update_thread create failed\n");
-		return -1;
+
+	pthread_t tid[FS_CHN_NUM];
+	for (i = 0; i < FS_CHN_NUM; i++) {
+		if (chn[i].enable) {
+			ret = pthread_create(&tid[i], NULL, update_thread, (void *)i);
+			if (ret) {
+				IMP_LOG_ERR(TAG, "update_thread create failed\n");
+				return -1;
+			}
+		}
 	}
 
 	/* Step.7 Stream On */
@@ -132,27 +142,42 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-	pthread_cancel(tid);
-	pthread_join(tid, NULL);
 
-	/* Step.8 UnBind */
-	ret = IMP_System_UnBind(&osd, &chn[0].imp_encoder);
-	if (ret < 0) {
-		IMP_LOG_ERR(TAG, "UnBind osd%d and encoder%d failed\n", osd.groupID, chn[0].imp_encoder.groupID);
-		return -1;
+	for (i = 0; i < FS_CHN_NUM; i++) {
+		if (chn[i].enable) {
+			pthread_cancel(tid[i]);
+			pthread_join(tid[i], NULL);
+		}
 	}
 
-	ret = IMP_System_UnBind(&chn[0].framesource_chn, &osd);
-	if (ret < 0) {
-		IMP_LOG_ERR(TAG, "UnBind framesource%d and osd%d failed\n", chn[0].framesource_chn.groupID, osd.groupID);
-		return -1;
+	/* Step.8 UnBind */
+
+	for (i = 0; i < FS_CHN_NUM; i++) {
+		if (chn[i].enable) {
+			IMPCell osd = { DEV_ID_OSD, grpNum[i], 0 };
+			ret = IMP_System_UnBind(&osd, &chn[i].imp_encoder);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "UnBind osd%d and encoder%d failed\n", osd.groupID, chn[i].imp_encoder.groupID);
+				return -1;
+			}
+
+			ret = IMP_System_UnBind(&chn[i].framesource_chn, &osd);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "UnBind framesource%d and osd%d failed\n", chn[i].framesource_chn.groupID, osd.groupID);
+				return -1;
+			}
+		}
 	}
 
 	/* Step.9 OSD exit */
-	ret = sample_osd_exit(prHander, grpNum);
-	if (ret < 0) {
-		IMP_LOG_ERR(TAG, "osd exit failed\n");
-		return -1;
+	for (i = 0; i < FS_CHN_NUM; i++) {
+		if (chn[i].enable) {
+			ret = sample_osd_exit(i);
+			if (ret < 0) {
+				IMP_LOG_ERR(TAG, "osd exit failed\n");
+				return -1;
+			}
+		}
 	}
 
 	/* Step.10 Encoder exit */
@@ -161,6 +186,7 @@ int main(int argc, char *argv[])
 		IMP_LOG_ERR(TAG, "Video exit failed\n");
 		return -1;
 	}
+
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
 			ret = IMP_Encoder_DestroyGroup(chn[i].index);
@@ -188,33 +214,37 @@ int main(int argc, char *argv[])
 	return 0;
 }
 
-static int osd_show(void)
+static int osd_show(int grpNum)
 {
 	int ret = 0;
 
-	ret = IMP_OSD_ShowRgn(prHander[0], grpNum, 1);
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][0], grpNum, 1);
 	if (ret != 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn timeStamp failed\n");
 		return -1;
 	}
-	ret = IMP_OSD_ShowRgn(prHander[1], grpNum, 1);
+
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][1], grpNum, 1);
 	if (ret != 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn Logo failed\n");
 		return -1;
 	}
-	ret = IMP_OSD_ShowRgn(prHander[2], grpNum, 1);
+
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][2], grpNum, 1);
 	if (ret != 0) {
-		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn Cover failed\n");
+		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn Logo failed\n");
 		return -1;
 	}
-	ret = IMP_OSD_ShowRgn(prHander[3], grpNum, 1);
+
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][3], grpNum, 1);
 	if (ret != 0) {
-		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn Rect failed\n");
+		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn Logo failed\n");
 		return -1;
 	}
-	ret = IMP_OSD_ShowRgn(prHander[4], grpNum, 1);
+
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][4], grpNum, 1);
 	if (ret != 0) {
-		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn Line failed\n");
+		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn Logo failed\n");
 		return -1;
 	}
 
@@ -223,22 +253,25 @@ static int osd_show(void)
 
 static void *update_thread(void *p)
 {
-	int i = 0, j = 0;
+	int j = 0;
 	int ret = 0;
+	int grpNum = (int)p;
 
 	/* generate time */
 	char DateStr[40];
 	time_t currTime;
 	struct tm *currDate;
 	void *dateData = NULL;
-	char *data = NULL;
-	IMPOSDRgnAttr rAttr;
 
-	ret = osd_show();
+	char *data = NULL;
+        IMPOSDRgnAttr rAttr;
+
+	ret = osd_show(grpNum);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "OSD show failed\n");
 		return NULL;
 	}
+
 
 	while(1) {
 		int penpos = 0;
@@ -246,7 +279,7 @@ static void *update_thread(void *p)
 		int fontadv = 0;
 		unsigned int len = 0;
 
-		ret = IMP_OSD_GetRgnAttr(prHander[0], &rAttr);
+		ret = IMP_OSD_GetRgnAttr(prHander[grpNum][0], &rAttr);
 
 		data = (void *)rAttr.data.bitmapData;
 		time(&currTime);
@@ -254,64 +287,64 @@ static void *update_thread(void *p)
 		memset(DateStr, 0, 40);
 		strftime(DateStr, 40, "%Y-%m-%d %I:%M:%S", currDate);
 		len = strlen(DateStr);
-		for (i = 0; i < len; i++) {
+		for (int i = 0; i < len; i++) {
 			switch (DateStr[i]) {
-				case '0' ... '9':
+			case '0' ... '9':
 #ifdef SUPPORT_COLOR_REVERSE
-					if (rAttr.fontData.colType[i] == 1) {
-						dateData = (void *)gBitmap_black[DateStr[i] - '0'].pdata;
-					} else {
-						dateData = (void *)gBitmap[DateStr[i] - '0'].pdata;
-					}
-#else
+				if (rAttr.fontData.colType[i] == 1) {
+					dateData = (void *)gBitmap_black[DateStr[i] - '0'].pdata;
+				} else {
 					dateData = (void *)gBitmap[DateStr[i] - '0'].pdata;
-#endif
-					fontadv = gBitmap[DateStr[i] - '0'].width;
-					penpos_t += gBitmap[DateStr[i] - '0'].width;
-					break;
-				case '-':
-#ifdef SUPPORT_COLOR_REVERSE
-					if (rAttr.fontData.colType[i] == 1) {
-						dateData = (void *)gBitmap_black[10].pdata;
-					} else {
-						dateData = (void *)gBitmap[10].pdata;
-					}
+				}
 #else
+				dateData = (void *)gBitmap[DateStr[i] - '0'].pdata;
+#endif
+				fontadv = gBitmap[DateStr[i] - '0'].width;
+				penpos_t += gBitmap[DateStr[i] - '0'].width;
+				break;
+			case '-':
+#ifdef SUPPORT_COLOR_REVERSE
+				if (rAttr.fontData.colType[i] == 1) {
+					dateData = (void *)gBitmap_black[10].pdata;
+				} else {
 					dateData = (void *)gBitmap[10].pdata;
-#endif
-					fontadv = gBitmap[10].width;
-					penpos_t += gBitmap[10].width;
-					break;
-				case ' ':
-					dateData = (void *)gBitmap[11].pdata;
-					fontadv = gBitmap[11].width;
-					penpos_t += gBitmap[11].width;
-					break;
-				case ':':
-#ifdef SUPPORT_COLOR_REVERSE
-					if (rAttr.fontData.colType[i] == 1) {
-						dateData = (void *)gBitmap_black[12].pdata;
-					} else {
-						dateData = (void *)gBitmap[12].pdata;
-					}
+				}
 #else
-					dateData = (void *)gBitmap[12].pdata;
+				dateData = (void *)gBitmap[10].pdata;
 #endif
-					fontadv = gBitmap[12].width;
-					penpos_t += gBitmap[12].width;
-					break;
-				default:
-					break;
+				fontadv = gBitmap[10].width;
+				penpos_t += gBitmap[10].width;
+				break;
+			case ' ':
+				dateData = (void *)gBitmap[11].pdata;
+				fontadv = gBitmap[11].width;
+				penpos_t += gBitmap[11].width;
+				break;
+			case ':':
+#ifdef SUPPORT_COLOR_REVERSE
+				if (rAttr.fontData.colType[i] == 1) {
+					dateData = (void *)gBitmap_black[12].pdata;
+				} else {
+					dateData = (void *)gBitmap[12].pdata;
+				}
+#else
+				dateData = (void *)gBitmap[12].pdata;
+#endif
+				fontadv = gBitmap[12].width;
+				penpos_t += gBitmap[12].width;
+				break;
+			default:
+				break;
 			}
 #ifdef SUPPORT_RGB555LE
 			for (j = 0; j < OSD_REGION_HEIGHT; j++) {
 				memcpy((void *)((uint16_t *)data + j*OSD_LETTER_NUM*OSD_REGION_WIDTH + penpos_t),
-						(void *)((uint16_t *)dateData + j*fontadv), fontadv*sizeof(uint16_t));
+				       (void *)((uint16_t *)dateData + j*fontadv), fontadv*sizeof(uint16_t));
 			}
 #else
 			for (j = 0; j < gBitmapHight; j++) {
 				memcpy((void *)(data + j*OSD_LETTER_NUM*OSD_REGION_WIDTH + penpos),
-						(void *)(dateData + j*fontadv), fontadv);
+				       (void *)(dateData + j*fontadv), fontadv);
 			}
 			penpos = penpos_t;
 #endif
@@ -323,65 +356,57 @@ static void *update_thread(void *p)
 	return NULL;
 }
 
-static IMPRgnHandle *sample_osd_init(int grpNum)
+static int sample_osd_init(int grpNum)
 {
 	int ret = 0;
-	IMPRgnHandle *prHander = NULL;
 	IMPRgnHandle rHanderFont = 0;
 	IMPRgnHandle rHanderLogo = 0;
 	IMPRgnHandle rHanderCover = 0;
 	IMPRgnHandle rHanderRect = 0;
 	IMPRgnHandle rHanderLine = 0;
 
-	prHander = malloc(5 * sizeof(IMPRgnHandle));
-	if (prHander <= 0) {
-		IMP_LOG_ERR(TAG, "malloc failed\n");
-		return NULL;
-	}
-
 	rHanderFont = IMP_OSD_CreateRgn(NULL);
 	if (rHanderFont == INVHANDLE) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_CreateRgn TimeStamp failed\n");
-		return NULL;
+		return -1;
 	}
-
 	/* query osd rgn create status */
 	IMPOSDRgnCreateStat stStatus;
 	memset(&stStatus, 0x0, sizeof(IMPOSDRgnCreateStat));
 	ret = IMP_OSD_RgnCreate_Query(rHanderFont, &stStatus);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_RgnCreate_Query failed\n");
-		return NULL;
+		return -1;
 	}
 
 	rHanderLogo = IMP_OSD_CreateRgn(NULL);
 	if (rHanderLogo == INVHANDLE) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_CreateRgn Logo failed\n");
-		return NULL;
+		return -1;
 	}
 
 	rHanderCover = IMP_OSD_CreateRgn(NULL);
 	if (rHanderCover == INVHANDLE) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_CreateRgn Cover failed\n");
-		return NULL;
+		return -1;
 	}
 
 	rHanderRect = IMP_OSD_CreateRgn(NULL);
 	if (rHanderRect == INVHANDLE) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_CreateRgn Rect failed\n");
-		return NULL;
+		return -1;
 	}
 
 	rHanderLine = IMP_OSD_CreateRgn(NULL);
 	if (rHanderLine == INVHANDLE) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_CreateRgn Line failed\n");
-		return NULL;
+		return -1;
 	}
 
 	ret = IMP_OSD_RegisterRgn(rHanderFont, grpNum, NULL);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IVS IMP_OSD_RegisterRgn failed\n");
-		return NULL;
+		return -1;
 	}
 
 	/* query osd rgn register status */
@@ -390,31 +415,31 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	ret = IMP_OSD_RgnRegister_Query(rHanderFont, grpNum,&stRigStatus);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_RgnRegister_Query failed\n");
-		return NULL;
+		return -1;
 	}
 
 	ret = IMP_OSD_RegisterRgn(rHanderLogo, grpNum, NULL);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IVS IMP_OSD_RegisterRgn failed\n");
-		return NULL;
+		return -1;
 	}
 
 	ret = IMP_OSD_RegisterRgn(rHanderCover, grpNum, NULL);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IVS IMP_OSD_RegisterRgn failed\n");
-		return NULL;
+		return -1;
 	}
 
 	ret = IMP_OSD_RegisterRgn(rHanderRect, grpNum, NULL);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IVS IMP_OSD_RegisterRgn failed\n");
-		return NULL;
+		return -1;
 	}
 
 	ret = IMP_OSD_RegisterRgn(rHanderLine, grpNum, NULL);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IVS IMP_OSD_RegisterRgn failed\n");
-		return NULL;
+		return -1;
 	}
 
 	/* Font */
@@ -433,27 +458,27 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	rAttrFont.data.bitmapData = valloc(20 * OSD_REGION_WIDTH * OSD_REGION_HEIGHT * sizeof(uint32_t));
 	if (rAttrFont.data.bitmapData == NULL) {
 		IMP_LOG_ERR(TAG, "alloc rAttr.data.bitmapData TimeStamp failed\n");
-		return NULL;
+		return -1;
 	}
 	ret = IMP_OSD_SetRgnAttr(rHanderFont, &rAttrFont);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr TimeStamp failed\n");
-		return NULL;
+		return -1;
 	}
 	IMPOSDGrpRgnAttr grAttrFont;
 	if (IMP_OSD_GetGrpRgnAttr(rHanderFont, grpNum, &grAttrFont) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_GetGrpRgnAttr Logo failed\n");
-		return NULL;
+		return -1;
 	}
 	memset(&grAttrFont, 0, sizeof(IMPOSDGrpRgnAttr));
 	grAttrFont.show = 0;
 	/* Disable Font global alpha, only use pixel alpha. */
-	grAttrFont.gAlphaEn = 1;
+	grAttrFont.gAlphaEn = 0;
 	grAttrFont.fgAlhpa = 0xff;
 	grAttrFont.layer = 3;
 	if (IMP_OSD_SetGrpRgnAttr(rHanderFont, grpNum, &grAttrFont) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetGrpRgnAttr Logo failed\n");
-		return NULL;
+		return -1;
 	}
 
 	int j = 0;
@@ -482,12 +507,12 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	ret = IMP_OSD_SetRgnAttr(rHanderLogo, &rAttrLogo);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr Logo failed\n");
-		return NULL;
+		return -1;
 	}
 	IMPOSDGrpRgnAttr grAttrLogo;
 	if (IMP_OSD_GetGrpRgnAttr(rHanderLogo, grpNum, &grAttrLogo) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_GetGrpRgnAttr Logo failed\n");
-		return NULL;
+		return -1;
 	}
 	memset(&grAttrLogo, 0, sizeof(IMPOSDGrpRgnAttr));
 	grAttrLogo.show = 0;
@@ -497,7 +522,7 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	grAttrLogo.layer = 2;
 	if (IMP_OSD_SetGrpRgnAttr(rHanderLogo, grpNum, &grAttrLogo) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetGrpRgnAttr Logo failed\n");
-		return NULL;
+		return -1;
 	}
 
 	/* Cover */
@@ -513,12 +538,12 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	ret = IMP_OSD_SetRgnAttr(rHanderCover, &rAttrCover);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr Cover failed\n");
-		return NULL;
+		return -1;
 	}
 	IMPOSDGrpRgnAttr grAttrCover;
 	if (IMP_OSD_GetGrpRgnAttr(rHanderCover, grpNum, &grAttrCover) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_GetGrpRgnAttr Cover failed\n");
-		return NULL;
+		return -1;
 	}
 	memset(&grAttrCover, 0, sizeof(IMPOSDGrpRgnAttr));
 	grAttrCover.show = 0;
@@ -528,7 +553,7 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	grAttrCover.layer = 2;
 	if (IMP_OSD_SetGrpRgnAttr(rHanderCover, grpNum, &grAttrCover) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetGrpRgnAttr Cover failed\n");
-		return NULL;
+		return -1;
 	}
 
 	/* Rect */
@@ -545,12 +570,12 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	ret = IMP_OSD_SetRgnAttr(rHanderRect, &rAttrRect);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr Rect failed\n");
-		return NULL;
+		return -1;
 	}
 	IMPOSDGrpRgnAttr grAttrRect;
 	if (IMP_OSD_GetGrpRgnAttr(rHanderRect, grpNum, &grAttrRect) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_GetGrpRgnAttr Rect failed\n");
-		return NULL;
+		return -1;
 	}
 	memset(&grAttrRect, 0, sizeof(IMPOSDGrpRgnAttr));
 	grAttrRect.show = 0;
@@ -559,7 +584,7 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	grAttrRect.scaley = 1;
 	if (IMP_OSD_SetGrpRgnAttr(rHanderRect, grpNum, &grAttrRect) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetGrpRgnAttr Rect failed\n");
-		return NULL;
+		return -1;
 	}
 
 	/* Line */
@@ -567,8 +592,8 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	memset(&rAttrLine, 0, sizeof(IMPOSDRgnAttr));
 	rAttrLine.type = OSD_REG_HORIZONTAL_LINE;
 	rAttrLine.rect.p0.x = 300;
-	rAttrLine.rect.p0.y = 300;
-	rAttrLine.rect.p1.x = rAttrLine.rect.p0.x + 100 - 1;
+	rAttrLine.rect.p0.y = 200;
+	rAttrLine.rect.p1.x = rAttrLine.rect.p0.x + 300 - 1;
 	rAttrLine.rect.p1.y = rAttrLine.rect.p0.y;
 	rAttrLine.fmt = PIX_FMT_MONOWHITE;
 	rAttrLine.data.lineRectData.color = OSD_IPU_GREEN;
@@ -576,12 +601,12 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	ret = IMP_OSD_SetRgnAttr(rHanderLine, &rAttrLine);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetRgnAttr Line failed\n");
-		return NULL;
+		return -1;
 	}
 	IMPOSDGrpRgnAttr grAttrLine;
 	if (IMP_OSD_GetGrpRgnAttr(rHanderLine, grpNum, &grAttrLine) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_GetGrpRgnAttr Line failed\n");
-		return NULL;
+		return -1;
 	}
 	memset(&grAttrLine, 0, sizeof(IMPOSDGrpRgnAttr));
 	grAttrLine.show = 0;
@@ -590,85 +615,89 @@ static IMPRgnHandle *sample_osd_init(int grpNum)
 	grAttrLine.scaley = 1;
 	if (IMP_OSD_SetGrpRgnAttr(rHanderLine, grpNum, &grAttrLine) < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_SetGrpRgnAttr Line failed\n");
-		return NULL;
+		return -1;
 	}
 
 	ret = IMP_OSD_Start(grpNum);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_Start TimeStamp, Logo, Cover and Rect failed\n");
-		return NULL;
+		return -1;
 	}
 
-	prHander[0] = rHanderFont;
-	prHander[1] = rHanderLogo;
-	prHander[2] = rHanderCover;
-	prHander[3] = rHanderRect;
-	prHander[4] = rHanderLine;
+	prHander[grpNum][0] = rHanderFont;
+	prHander[grpNum][1] = rHanderLogo;
+	prHander[grpNum][2] = rHanderCover;
+	prHander[grpNum][3] = rHanderRect;
+	prHander[grpNum][4] = rHanderLine;
 
-	return prHander;
+	return 0;
 }
 
-static int sample_osd_exit(IMPRgnHandle *prHander, int grpNum)
+static int sample_osd_exit(int grpNum)
 {
 	int ret = 0;
 
-	ret = IMP_OSD_ShowRgn(prHander[0], grpNum, 0);
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][0], grpNum, 0);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn close timeStamp failed\n");
 	}
 
-	ret = IMP_OSD_ShowRgn(prHander[1], grpNum, 0);
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][1], grpNum, 0);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn close Logo failed\n");
 	}
 
-	ret = IMP_OSD_ShowRgn(prHander[2], grpNum, 0);
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][2], grpNum, 0);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn close cover failed\n");
 	}
 
-	ret = IMP_OSD_ShowRgn(prHander[3], grpNum, 0);
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][3], grpNum, 0);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn close Rect failed\n");
 	}
 
-	ret = IMP_OSD_UnRegisterRgn(prHander[0], grpNum);
+	ret = IMP_OSD_ShowRgn(prHander[grpNum][4], grpNum, 0);
+	if (ret < 0) {
+		IMP_LOG_ERR(TAG, "IMP_OSD_ShowRgn close Rect failed\n");
+	}
+
+	ret = IMP_OSD_UnRegisterRgn(prHander[grpNum][0], grpNum);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_UnRegisterRgn timeStamp failed\n");
 	}
 
-	ret = IMP_OSD_UnRegisterRgn(prHander[0], grpNum);
-	if (ret < 0) {
-		IMP_LOG_ERR(TAG, "IMP_OSD_UnRegisterRgn timeStamp failed\n");
-	}
-
-	ret = IMP_OSD_UnRegisterRgn(prHander[1], grpNum);
+	ret = IMP_OSD_UnRegisterRgn(prHander[grpNum][1], grpNum);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_UnRegisterRgn logo failed\n");
 	}
 
-	ret = IMP_OSD_UnRegisterRgn(prHander[2], grpNum);
+	ret = IMP_OSD_UnRegisterRgn(prHander[grpNum][2], grpNum);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_UnRegisterRgn Cover failed\n");
 	}
 
-	ret = IMP_OSD_UnRegisterRgn(prHander[3], grpNum);
+	ret = IMP_OSD_UnRegisterRgn(prHander[grpNum][3], grpNum);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_UnRegisterRgn Rect failed\n");
 	}
 
-	IMP_OSD_DestroyRgn(prHander[0]);
-	IMP_OSD_DestroyRgn(prHander[1]);
-	IMP_OSD_DestroyRgn(prHander[2]);
-	IMP_OSD_DestroyRgn(prHander[3]);
+	ret = IMP_OSD_UnRegisterRgn(prHander[grpNum][4], grpNum);
+	if (ret < 0) {
+		IMP_LOG_ERR(TAG, "IMP_OSD_UnRegisterRgn Rect failed\n");
+	}
+
+	IMP_OSD_DestroyRgn(prHander[grpNum][0]);
+	IMP_OSD_DestroyRgn(prHander[grpNum][1]);
+	IMP_OSD_DestroyRgn(prHander[grpNum][2]);
+	IMP_OSD_DestroyRgn(prHander[grpNum][3]);
+	IMP_OSD_DestroyRgn(prHander[grpNum][4]);
 
 	ret = IMP_OSD_DestroyGroup(grpNum);
 	if (ret < 0) {
 		IMP_LOG_ERR(TAG, "IMP_OSD_DestroyGroup failed\n");
 		return -1;
 	}
-	free(prHander);
-	prHander = NULL;
 
 	return 0;
 }

@@ -8,3 +8,7 @@
 ## run cmake
 - cmake -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake ..
 - make
+
+# How to build sdk/samples/libimp-samples/
+- cd sdk/samples/libimp-samples/
+- make CROSS_COMPILE=/home/zengping/t32/bsp/toolchain/mips-gcc540-glibc222-cmake3.16.3-r3.3.7.mxu2.cve/bin/mips-linux-uclibc-gnu-
