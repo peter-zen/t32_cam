@@ -15,6 +15,9 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../disk
         ${CMAKE_CURRENT_SOURCE_DIR}/../time
         ${CMAKE_CURRENT_SOURCE_DIR}/../power
+        ${CMAKE_CURRENT_SOURCE_DIR}/../gpio
+        ${CMAKE_CURRENT_SOURCE_DIR}/../workmode
+        ${CMAKE_CURRENT_SOURCE_DIR}/../daynight
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/snap
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/video
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/rtsp
@@ -52,12 +55,15 @@ target_link_libraries(htc_main_app
     crc16
     md5
     jsoncpp
+    daynight
+    workmode
     logger
 
     #misc libs
     mcu
     power
     disk
+    time
 
     #sdk libs
     system_call
@@ -80,6 +86,8 @@ target_link_libraries(htc_media_app
     setting
     env
     jsoncpp
+    daynight
+    workmode
     logger
     
     #sdk libs

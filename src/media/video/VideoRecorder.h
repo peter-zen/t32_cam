@@ -58,6 +58,7 @@ class VideoRecorder {
         bool uninitVideo();
         bool sensorFilter(int index);
         ssize_t getNALSize(uint8_t *buf, ssize_t size);
+        bool daynight_switch(bool on);
         VideoRecorderParams params;
         bool initialized;
         std::vector<std::thread> threads;

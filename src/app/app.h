@@ -1,8 +1,10 @@
-#ifndef __APP_H__
-#define __APP_H__
+#ifndef APP_H
+#define APP_H
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include "Common.h"
+#include "GPIO.h"
 
 #define QUICK_SNAP_DIR   "/tmp/quick_snap/"
 #define QUICK_SNAP_INFO_FILE   QUICK_SNAP_DIR"info.json"
@@ -12,7 +14,8 @@ extern "C" {
 #define NETIF_NAME "wlan0"
 #define ENV_FILE_PATHNAME "/config/htc/env.ini"
 //#define ENV_FILE_PATHNAME "/mnt/sdcard/res/env.ini"
+
 #ifdef __cplusplus
 }
 #endif
-#endif /* __APP_H__ */
+#endif /* APP_H */

@@ -58,6 +58,7 @@ class RtspServer {
         bool sensorFilter(int index);
         bool start(int chnNum, int payloadType);
         bool extractSpsPps(const uint8_t* h264Data, size_t dataSize, std::vector<uint8_t>& sps, std::vector<uint8_t>& pps);
+        bool daynight_switch(bool on);
         bool initialized;
         bool pullFrameThreadRun;
         std::shared_ptr<std::thread> pullFrameThread;

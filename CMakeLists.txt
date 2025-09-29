@@ -19,7 +19,15 @@ set(SOURCES "${PROJECT_ROOT}/src" CACHE STRING "Source files for the project")
 set(THIRD_PARTY_PATH "${PROJECT_ROOT}/third_party" CACHE STRING "Third party libraries")
 
 #Set options
-add_definitions(-DRTC_EXIST=0)
+add_definitions(-DRTC_EXIST=1)
+
+# set sensor type
+#add_definitions(-DSENSOR_TYPE_SC4366P)
+add_definitions(-DSENSOR_TYPE_GC4653)
+
+# set WiFi type
+#add_definitions(-DWIFI_TYPE_CYW43012)
+add_definitions(-DWIFI_TYPE_RTL8189FS)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 11)

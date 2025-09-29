@@ -777,7 +777,7 @@ void RemoteCtrlClient::handleEnterWorkingModeCommand(const Json::Value &root)
 	
 	sendMessage(MSG_RC_ENTER_WORK_MODE, message);
 
-	Power::getInstance()->requestShutdown();
+	Power::getInstance()->requestChangeMode();
 }
 void RemoteCtrlClient::handleGetHwInfoCommand(const Json::Value &root)
 {

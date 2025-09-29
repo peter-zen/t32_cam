@@ -52,6 +52,7 @@ class ImageSnap {
         bool initJpeg();
         bool uninitJpeg();
         bool sensorFilter(int index);
+        bool daynight_switch(bool on);
         ImageSnapParams params;
         bool initialized;
         std::vector<std::thread> threads;

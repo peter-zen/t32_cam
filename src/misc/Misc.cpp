@@ -13,6 +13,7 @@
 #include "Misc.h"
 #include "Logger.h"
 #include "system_call.h"
+#include "StringConvert.h"
 
 std::string Misc::netifname;
 std::mutex Misc::syscall_mutex;
@@ -255,7 +256,13 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 	}
 
 	if (!already_inited_wifi) {
-		std::string command = "insmod /system/cywdhd.ko firmware_path=/system/cyfmac43012-sdio.bin nvram_path=/system/cyfmac43012-sdio.txt clm_path=/system/cyfmac43012-sdio.clm_blob";
+#if defined(WIFI_TYPE_CYW43012)
+		std::string command = "insmod /system/bin/wifi/cywdhd.ko firmware_path=/system/bin/wifi/cyfmac43012-sdio.bin nvram_path=/system/bin/wifi/cyfmac43012-sdio.txt clm_path=/system/bin/wifi/cyfmac43012-sdio.clm_blob";
+#elif defined(WIFI_TYPE_RTL8189FS)
+		std::string command = "insmod /system/bin/wifi/8189fs.ko";
+#else
+		#error "Unknown WiFi type"
+#endif
 		ret = system_call((char*)command.c_str(), 1000);
 		if(ret < 0) {
 			system_call_exit();
@@ -264,10 +271,16 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 		}
 		already_inited_wifi = true;
 	}
-	
+	int timeout = 15;
 	Logger::log(LogLevel::INFO, "Connecting to WiFi: %s ", ssid.c_str());
+	#if defined(WIFI_TYPE_CYW43012)
     std::string command = "speedy --wifi_ssid " + ssid + " --wifi_pass " + password;
-    ret = system_call((char*)command.c_str(), 10000);
+	#elif defined(WIFI_TYPE_RTL8189FS)
+	std::string command = "wpa_conn wlan0 " + ssid + " " + password + " " + to_string_custom(timeout);
+	#else
+		#error "Unknown WiFi type"
+	#endif
+    ret = system_call((char*)command.c_str(), timeout*1000 + 5000);
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "Connect to WiFi: %s error", ssid.c_str());
 			return false;

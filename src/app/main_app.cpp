@@ -26,18 +26,25 @@
 #include "MCU.h"
 #include "Disk.h"
 #include "StringConvert.h"
+#include "WorkMode.h"
 #include "app.h"
+#include "DayNightSwitch.h"
+#include "Power.h"
+#include "AutoRelease.h"
+#include "RTC.h"
 
 using namespace network;
 using namespace media;
+static std::shared_ptr<DayNightSwitch> daynight_switch;
+std::shared_ptr<GPIO> gpio_rgb_led;
 
 static std::string getCurrentTimeFormatted()
 {
     time_t now = time(nullptr);
-    struct tm* time_info = localtime(&now);
+    struct tm* nowtime = localtime(&now);
     
     std::stringstream ss;
-    ss << std::put_time(time_info, "%Y%m%d_%H%M%S");
+    ss << std::put_time(nowtime, "%Y%m%d_%H%M%S");
     Misc::getDateTime();
     return ss.str();
 }
@@ -87,8 +94,6 @@ static int generateDescInfo(std::vector<std::string>& files, std::string& desc_i
     std::ostringstream oss;
 	oss << std::put_time(localtime(&tv.tv_sec), "%Y-%m-%dT%H:%M:%S.000+08:00");
 	std::string current_time_str = oss.str();
-
-    int val = 0;
 
     Json::Value json_root;
     json_root["F_UploadedTag"] = 0;
@@ -333,6 +338,15 @@ static void signalHandler(int signal)
         Logger::log(LogLevel::INFO, "Received SIGTERM, shutting down...");
     }
     if (!already_in_exit_flow) {
+        if (daynight_switch) {
+            daynight_switch->controlIRLed(DayNightState::DAY);
+            daynight_switch->controlIRCut(DayNightState::DAY);
+        }
+
+        if (gpio_rgb_led) {
+            gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
+        }
+
         // Stop RTSP server if it's running
         if (RtspServer::getInstance()->isRunning()) {
             Logger::log(LogLevel::INFO, "Stopping RTSP server...");
@@ -347,58 +361,142 @@ static void signalHandler(int signal)
                 Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
             }
         }
-        
+
         already_in_exit_flow = true;
     }
     
     if (signal == SIGTERM) {
-        Logger::log(LogLevel::INFO, "Waiting 3 seconds before power off...");
-        sleep(3);
-        Logger::log(LogLevel::INFO, "Power off");
-        Misc::poweroff();
-        while(1);
+        if (Power::getInstance()->isChangeModeRequested()) {
+            Logger::log(LogLevel::INFO, "Change mode requested, not powering off");
+            auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
+            if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
+                || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
+                Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
+            }
+
+            WorkMode::setWorkingMode(workingMode::WORKING_MODE_UPLOAD_ONLY);
+
+            Misc::reboot();
+            while(1);
+        } else {
+            auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
+            if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
+                || !gpio_power_hold.setValue(GPIO_VALUE::LOW)) {
+                Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
+            }
+            Logger::log(LogLevel::INFO, "Waiting 2 seconds before power off...");
+            sleep(2);
+            Logger::log(LogLevel::INFO, "Power off from signal handler");
+            Misc::poweroff();
+            while(1);
+        }
     }
 }
 
 int main(int argc, char* argv[])
 {
+    enum workingMode working_mode = workingMode::WORKING_MODE_MAX;
+
+    daynight_switch = DayNightSwitch::getInstance();
+    if (daynight_switch) {
+        daynight_switch->setCdsPins(CDS_SENSOR_PIN);
+        daynight_switch->setIRLedPins(IR_LED_PIN);
+        daynight_switch->setIRCutPins(IR_CUT_ENABLE_PIN, IR_CUT_CTRL_PIN);
+    }
+
+    gpio_rgb_led = std::make_shared<GPIO>(RGB_LED_PIN);
+    if (!gpio_rgb_led->exportGPIO() || !gpio_rgb_led->setDirection(GPIO_DIRECTION::OUTPUT)) {
+        Logger::log(LogLevel::ERROR, "export or set gpio(%d) direction output failed", RGB_LED_PIN);
+        gpio_rgb_led = nullptr;
+    }
+
+    AutoRelease auto_release([]() {
+        // Use the static variable directly without capturing
+        if (daynight_switch) {
+            daynight_switch->controlISP(DayNightState::DAY);
+            daynight_switch->controlIRCut(DayNightState::DAY);
+            daynight_switch->controlIRLed(DayNightState::DAY);
+        }
+    });
+    
+    // Register signal handler for CTRL+C
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
+
     int command = CMD_HELP;
     if (argc < 2 || std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help") {  
         printUsage(argv);
         return -1;
     }
 
-    if (std::string(argv[1]) == "-w" || std::string(argv[1]) == "--wifi") {
-        command = CMD_CONNECT_WIFI;
-    } else if (std::string(argv[1]) == "-d" || std::string(argv[1]) == "--dhcp") { 
-        command = CMD_DHCP;
-    } else if (std::string(argv[1]) == "-s" || std::string(argv[1]) == "--snap") {
-        command = CMD_SNAP;
-    } else if (std::string(argv[1]) == "-qs" || std::string(argv[1]) == "--quick-snap") {
-        command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_SNAP | CMD_UPLOAD;
-    } else if (std::string(argv[1]) == "-r" || std::string(argv[1]) == "--record") {
-        command = CMD_RECORD;
-    } else if (std::string(argv[1]) == "-a" || std::string(argv[1]) == "--auth") { 
-        command = CMD_AUTH;
-    } else if (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--heartbeat") {
-        command = CMD_HEARTBEAT;
-    } else if (std::string(argv[1]) == "-u" || std::string(argv[1]) == "--upload") {
-        command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
-    } else if (std::string(argv[1]) == "-m" || std::string(argv[1]) == "--mobile") {
-        command = CMD_MOBILE;
-    } else if (std::string(argv[1]) == "-n" || std::string(argv[1]) == "--ntp") {
-        command = CMD_CONNECT_WIFI | CMD_NTP;
-    } else if (std::string(argv[1]) == "-rs" || std::string(argv[1]) == "--rtsp-server") {
-        command = CMD_RTSP_SERVER;
+    if (argc != 3) {
+        if (std::string(argv[1]) == "-w" || std::string(argv[1]) == "--wifi") {
+            command = CMD_CONNECT_WIFI;
+        } else if (std::string(argv[1]) == "-d" || std::string(argv[1]) == "--dhcp") { 
+            command = CMD_DHCP;
+        } else if (std::string(argv[1]) == "-s" || std::string(argv[1]) == "--snap") {
+            command = CMD_SNAP;
+        } else if (std::string(argv[1]) == "-qs" || std::string(argv[1]) == "--quick-snap") {
+            command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_SNAP | CMD_UPLOAD;
+        } else if (std::string(argv[1]) == "-r" || std::string(argv[1]) == "--record") {
+            command = CMD_RECORD;
+        } else if (std::string(argv[1]) == "-a" || std::string(argv[1]) == "--auth") { 
+            command = CMD_AUTH;
+        } else if (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--heartbeat") {
+            command = CMD_HEARTBEAT;
+        } else if (std::string(argv[1]) == "-u" || std::string(argv[1]) == "--upload") {
+            command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
+        } else if (std::string(argv[1]) == "-m" || std::string(argv[1]) == "--mobile") {
+            command = CMD_MOBILE;
+        } else if (std::string(argv[1]) == "-n" || std::string(argv[1]) == "--ntp") {
+            command = CMD_CONNECT_WIFI | CMD_NTP;
+        } else if (std::string(argv[1]) == "-rs" || std::string(argv[1]) == "--rtsp-server") {
+            command = CMD_RTSP_SERVER;
+        } else {
+            printUsage(argv);
+            return -1;
+        }
     } else {
-        printUsage(argv);
-        return -1;
+        if (std::string(argv[1]) == "-wm" || std::string(argv[1]) == "--work-mode") {
+            working_mode = (enum workingMode)stoi_custom(argv[2]);
+            switch (working_mode) {
+                case WORKING_MODE_SNAP_ONLY:
+                    command = CMD_SNAP;
+                    break;
+                case WORKING_MODE_UPLOAD_ONLY:
+                    command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
+                    if (gpio_rgb_led) {
+                        gpio_rgb_led->asyncBlink(60);
+                    }
+                    break;
+                case WORKING_MODE_TEST_ONLY:
+                    {
+                        auto daynight_state = daynight_switch->getDayNightState();
+                        daynight_switch->controlIRCut(daynight_state);
+                        daynight_switch->controlIRLed(daynight_state);
+                        if (gpio_rgb_led) {
+                            gpio_rgb_led->asyncBlink(30);
+                        }
+                        command = CMD_MOBILE;
+                    }
+                    break;
+                case WORKING_MODE_SNAP_UPLOAD:
+                    command = CMD_SNAP | CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
+                    break;
+                default:
+                    Logger::log(LogLevel::ERROR, "%s Invalid working mode %d, power off", __func__, working_mode);
+                    //Power::getInstance()->requestShutdown();
+                    sleep(10);
+                    return -1;
+            }
+        } else {
+            Logger::log(LogLevel::ERROR, "%s Invalid command %s, power off", __func__, argv[1]);
+            Power::getInstance()->requestShutdown();
+            sleep(10);
+            return -1;
+        }
     }
-
-    // Register signal handler for CTRL+C
-    signal(SIGINT, signalHandler);
-    signal(SIGTERM, signalHandler);
-
+    
     Misc::setNetworkInterfaceName(NETIF_NAME);
     EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);
     std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
@@ -409,7 +507,7 @@ int main(int argc, char* argv[])
     //mount sdcard
     if (!Misc::mountSDCard(SD_CARD_PATH)) {
         Logger::log(LogLevel::ERROR, "mount sdcard error");
-        goto exit;
+        goto main_exit;
     }
    
 
@@ -432,37 +530,40 @@ int main(int argc, char* argv[])
         Logger::log(LogLevel::INFO, "ntp server: %s", ntp_server.c_str());
         if (ntp_server.empty()) {
             Logger::log(LogLevel::ERROR, "ntp server is empty");
-            goto exit;
+            goto main_exit;
         }
         Misc::ntpSync(ntp_server);
         
         // Wait until system time is synchronized (year > 1970)
-        const int MAX_WAIT_SECONDS = 60; // Maximum wait time 60 seconds
+        const int MAX_WAIT_SECONDS = 30; // Maximum wait time 30 seconds
         const int CHECK_INTERVAL = 2;    // Check every 2 seconds
         int wait_time = 0;
-        
+        struct tm* nowtime = nullptr;
         while (wait_time < MAX_WAIT_SECONDS) {
             time_t now = time(nullptr);
-            struct tm* time_info = localtime(&now);
+            nowtime = localtime(&now);
             
             // Check if year is greater than 1970
-            if (time_info->tm_year + 1900 > 1970) {
+            if (nowtime->tm_year + 1900 > 1970) {
                 Logger::log(LogLevel::INFO, "System time synchronized: %d-%02d-%02d %02d:%02d:%02d",
-                           time_info->tm_year + 1900, time_info->tm_mon + 1, time_info->tm_mday,
-                           time_info->tm_hour, time_info->tm_min, time_info->tm_sec);
+                           nowtime->tm_year + 1900, nowtime->tm_mon + 1, nowtime->tm_mday,
+                           nowtime->tm_hour, nowtime->tm_min, nowtime->tm_sec);
                 break;
             }
             
             Logger::log(LogLevel::INFO, "Waiting for system time synchronization, current year: %d, waited %d seconds", 
-                       time_info->tm_year + 1900, wait_time);
+                       nowtime->tm_year + 1900, wait_time);
             sleep(CHECK_INTERVAL);
             wait_time += CHECK_INTERVAL;
         }
         
         if (wait_time >= MAX_WAIT_SECONDS) {
             Logger::log(LogLevel::WARNING, "Timeout waiting for system time synchronization after %d seconds", MAX_WAIT_SECONDS);
-            goto exit;
+            goto main_exit;
         }
+        #if RTC_EXIST
+        RTC::getInstance()->setTime(*nowtime);
+        #endif
     }
 
     if (command & CMD_SNAP) {
@@ -476,7 +577,7 @@ int main(int argc, char* argv[])
             std::string errs;
             if (!Json::parseFromStream(readerBuilder, jsonFile, &root, &errs)) {
                 Logger::log(LogLevel::ERROR, "Parse json file failed");
-                goto exit;
+                goto main_exit;
             } 
             auto dir = root["dir"].asString();
             auto files = root["files"];
@@ -492,7 +593,7 @@ int main(int argc, char* argv[])
 
             if (!Misc::createDirectory(newpath) || !Misc::createDirectory(MEDIA_UPLOAD_PATH) || !Misc::moveFile(oldpath, newpath)) {
                 Logger::log(LogLevel::ERROR, "move %s to %s failed", oldpath.c_str(), newpath.c_str());
-                goto exit;
+                goto main_exit;
             }
 
             //create desc file
@@ -539,13 +640,13 @@ int main(int argc, char* argv[])
         auto remoteCtrlServerIp = Misc::getGatewayAddress(Misc::getNetworkInterfaceName());
         if (remoteCtrlServerIp.empty()) {
             std::cout << "Failed to get gateway IP address" << std::endl;
-            goto exit;
+            goto main_exit;
         }
         auto remoteCtrlServerPort = 7788;
         remoteCtrlClient = std::make_shared<RemoteCtrlClient>(remoteCtrlServerIp, remoteCtrlServerPort);
         if (EC_SUCCESS != remoteCtrlClient->connect(3000)) {
             Logger::log(LogLevel::ERROR, "connect [%s:%d] failed", remoteCtrlServerIp.c_str(), remoteCtrlServerPort);
-            goto exit;
+            goto main_exit;
         }
         
         bool sessionClosed = false;
@@ -584,20 +685,16 @@ int main(int argc, char* argv[])
         mgmtServClient = std::make_shared<MgmtServClient>(mgmtServerAddr, mgmtServerPort);
         if (EC_SUCCESS != mgmtServClient->connect(3000)) {
             Logger::log(LogLevel::ERROR, "connect [%s:%d] failed", mgmtServerAddr.c_str(), mgmtServerPort);
-            goto exit;
+            goto main_exit;
         } else {
             Logger::log(LogLevel::INFO, "connect [%s:%d] success", mgmtServerAddr.c_str(), mgmtServerPort);
         }
 
         if (EC_SUCCESS != mgmtServClient->authenticate()) {
             Logger::log(LogLevel::ERROR, "auth failed");
-            goto exit;
+            goto main_exit;
         } else {
             Logger::log(LogLevel::INFO, "auth success");
-        }
-
-        if (command & CMD_AUTH) {
-            sleep(10);
         }
     }
 
@@ -609,7 +706,9 @@ int main(int argc, char* argv[])
         bool descfile_uploaded = false;
         //assume we have a storage server same as mgmt server
         storageServClient = mgmtServClient->newStorageServClient();
-        
+        if (gpio_rgb_led) {
+            gpio_rgb_led->setConstant(GPIO_VALUE::HIGH);
+        }
         auto desc_filenames = Misc::listFilenames(MEDIA_UPLOAD_PATH);
         for (auto &desc_filename : desc_filenames) {
             Logger::log(LogLevel::INFO, "desc_filename %s", desc_filename.c_str());
@@ -712,8 +811,13 @@ int main(int argc, char* argv[])
             } 
         }
 
-exit:
+main_exit:
     Settings::getInstance()->saveToJsonFile(setting_file_path);
-
+    if (gpio_rgb_led) {
+        gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
+    }
+    Logger::log(LogLevel::INFO, "Power off From Main function");
+    Misc::poweroff();
+    while(1);
     return 0;
 }

@@ -62,7 +62,7 @@ extern "C"
 #define SENSOR_NUM                  IMPISP_TOTAL_ONE            //sensor total number (one/two/thr/four)
 
 /************************************ first sensor *************************************************/
-#if 1
+#ifdef SENSOR_TYPE_SC4336P
 #define FIRST_SNESOR_NAME           		"sc4336p"            //sensor name (match with snesor driver name)
 #define FIRST_I2C_ADDR              		0x30                //sensor i2c address
 #define FIRST_I2C_ADAPTER_ID                0                           //sensor controller number used (0/1/2/3)
@@ -84,6 +84,30 @@ extern "C"
 #define FIRST_SENSOR_FRAME_RATE_DEN         1
 #define FIRST_SENSOR_WIDTH_SECOND           1280
 #define FIRST_SENSOR_HEIGHT_SECOND          720
+#define FIRST_SENSOR_WIDTH_THIRD            1280
+#define FIRST_SENSOR_HEIGHT_THIRD           720
+#elif defined (SENSOR_TYPE_GC4653)
+#define FIRST_SNESOR_NAME                   "gc4653"                    //sensor name (match with snesor driver name)
+#define FIRST_I2C_ADDR                      0x29                        //sensor i2c address
+#define FIRST_I2C_ADAPTER_ID                0                           //sensor controller number used (0/1/2/3)
+#define FIRST_SENSOR_WIDTH                  2560                        //sensor width
+#define FIRST_SENSOR_HEIGHT                 1440                        //sensor height
+#define FIRST_RST_GPIO                      -1                 //sensor reset gpio
+#define FIRST_PWDN_GPIO                     -1                          //sensor pwdn gpio
+#define FIRST_POWER_GPIO                    -1                          //sensor power gpio
+#define FIRST_SWITCH_GPIO                   -1                 //sensor switch gpio
+#define FIRST_SENSOR_ID                     0                           //sensor index
+#define FIRST_VIDEO_INTERFACE               IMPISP_SENSOR_VI_MIPI_CSI0  //sensor interface type (dvp/csi0/csi1)
+#define FIRST_MCLK                          IMPISP_SENSOR_MCLK0         //sensor clk source (mclk0/mclk1/mclk2)
+#define FIRST_DEFAULT_BOOT                  0                           //sensor default mode(0/1/2/3/4)
+#define CHN0_EN                             1                           //sensor0，output0
+#define CHN1_EN                             0                           //sensor0，output1
+#define CHN2_EN                             0                           //sensor0, output2
+#define FIRST_CROP_EN                       0
+#define FIRST_SENSOR_FRAME_RATE_NUM         15
+#define FIRST_SENSOR_FRAME_RATE_DEN         1
+#define FIRST_SENSOR_WIDTH_SECOND           720
+#define FIRST_SENSOR_HEIGHT_SECOND          576
 #define FIRST_SENSOR_WIDTH_THIRD            1280
 #define FIRST_SENSOR_HEIGHT_THIRD           720
 #else

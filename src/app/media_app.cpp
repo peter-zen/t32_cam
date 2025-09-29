@@ -19,6 +19,9 @@
 #include "system_call.h"
 #include "app.h"
 #include "Common.h"
+#include "WorkMode.h"
+#include "AutoRelease.h"
+
 using namespace media;
 
 static std::string getCurrentTimeFormatted()
@@ -65,7 +68,7 @@ static bool startApp(const std::string& command)
         return false;
     }
 
-	ret = system_call((char*)command.c_str(), 5000);
+	ret = system_call((char*)command.c_str(), 500);
 	if(ret < 0) {
         Logger::log(LogLevel::ERROR, "call %s error", command.c_str());
 	}
@@ -75,13 +78,9 @@ static bool startApp(const std::string& command)
     return ret < 0 ? false : true;
 }
 
-int main(int argc, char* argv[])
+int quick_snap()
 {
-    //show timestamp
-    struct timespec ts0;
-    if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts0) != -1) {
-        Logger::log(LogLevel::INFO, "main entry at %ld ms", ts0.tv_sec * 1000 + ts0.tv_nsec / 1000000);
-    }
+    int ret = 0;
 
     auto dirPath = std::string(QUICK_SNAP_DIR);
     if (!createDirectory(dirPath, 0777)) {
@@ -168,8 +167,42 @@ int main(int argc, char* argv[])
     std::unique_ptr<Json::StreamWriter> jsonWriter(writerBuilder.newStreamWriter());
     jsonWriter->write(root, &jsonFile);
     jsonFile.close();
+
+    return 0;
+}
+
+int main(int argc, char* argv[])
+{
+    //show timestamp
+    struct timespec ts0;
+    if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts0) != -1) {
+        Logger::log(LogLevel::INFO, "main entry at %ld ms", ts0.tv_sec * 1000 + ts0.tv_nsec / 1000000);
+    }
+
+    auto working_mode = workingMode::WORKING_MODE_MAX;
+    {
+        auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
+        if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
+            || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
+            Logger::log(LogLevel::ERROR, "Failed to set power hold pin");
+            goto main_exit;
+        }
+    }
     
+    //get working mode
+    WorkMode::setWorkingModePins(WORKING_MODE_CHECK_PIN_0, WORKING_MODE_CHECK_PIN_1);
+    working_mode = WorkMode::getWorkingMode();
+
+    if (working_mode == workingMode::WORKING_MODE_SNAP_ONLY || working_mode == workingMode::WORKING_MODE_SNAP_UPLOAD) {
+        if (quick_snap() < 0) {
+            Logger::log(LogLevel::ERROR, "Failed to quick snap");
+            working_mode = workingMode::WORKING_MODE_MAX;
+        }
+    }
+
+main_exit: 
     // call htc_main_app
-    startApp("htc_main_app -qs");
+    std::string command = "htc_main_app -wm " + to_string_custom((int)working_mode);
+    startApp(command);
     return 0;
 }

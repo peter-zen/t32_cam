@@ -14,6 +14,7 @@
 #include "sample-common.h"
 #include "RtspServer.h"
 #include "rtsp.h"
+#include "DayNightSwitch.h"
 
 using namespace media;
 
@@ -273,6 +274,9 @@ bool RtspServer::start()
 		}
         return false;
     }
+
+	//day-night switch
+	daynight_switch(true);
 
     /* Step.6 Get stream */
 	this->pullFrameThreadRun = true;
@@ -901,4 +905,31 @@ void RtspServer::registerOnsessionClosedCallback(std::function<void(void)> callb
 bool RtspServer::isRunning(void)
 {
     return !!is_server_running(this->rtsp_server);
+}
+
+bool RtspServer::daynight_switch(bool on)
+{
+    auto daynight_controller = DayNightSwitch::getInstance();
+    if (!daynight_controller) {
+        return false;
+    }
+
+    daynight_controller->setCdsPins(CDS_SENSOR_PIN);
+    daynight_controller->setIRLedPins(IR_LED_PIN);
+    daynight_controller->setIRCutPins(IR_CUT_ENABLE_PIN, IR_CUT_CTRL_PIN);
+
+    if (on) {
+        auto daynight_state = daynight_controller->getDayNightState();
+        daynight_controller->controlISP(daynight_state);
+        daynight_controller->controlIRCut(daynight_state);
+        daynight_controller->controlIRLed(daynight_state);
+		daynight_controller->startAutoSwithch();
+    } else {
+        daynight_controller->controlISP(DayNightState::DAY);
+        daynight_controller->controlIRCut(DayNightState::DAY);
+        daynight_controller->controlIRLed(DayNightState::DAY);
+		daynight_controller->suspendAutoSwitch();
+    }
+
+    return true;
 }

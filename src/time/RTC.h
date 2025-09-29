@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <time.h>
+#include <string>
 
 class RTC {
     public:
@@ -15,5 +16,8 @@ class RTC {
 	RTC();
 	RTC(const RTC &) = delete;
 	RTC &operator=(const RTC &) = delete;
+    
+	int m_rtc_fd;           // RTC device file descriptor
+	std::string m_rtc_device;  // RTC device path
 };
 #endif

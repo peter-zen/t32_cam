@@ -9,6 +9,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../../common
         ${CMAKE_CURRENT_SOURCE_DIR}/../common
         ${CMAKE_CURRENT_SOURCE_DIR}/../../logger
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../daynight
         ${SDK_INC_PATH}
         ${SDK_INC_PATH}/imp
         ${SDK_INC_PATH}/sysutils

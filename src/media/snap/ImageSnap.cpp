@@ -13,6 +13,8 @@
 #include "sample-common.h"
 #include <vector>
 #include <thread>
+#include "DayNightSwitch.h"
+
 using namespace media;
 
 extern "C" {
@@ -132,6 +134,7 @@ bool ImageSnap::initialize()
 void ImageSnap::deinitialize()
 {
     if (initialized) {
+        daynight_switch(false);
         for (auto& thread : threads) {
             if (thread.joinable()) {
                 thread.join();
@@ -208,6 +211,9 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
         }
         return false;
     }
+
+    /* day-night switch */
+    daynight_switch(true);
 
     bool result = true;
 
@@ -436,6 +442,31 @@ bool ImageSnap::uninitJpeg(void)
                 return false;
             }
         }
+    }
+
+    return true;
+}
+
+bool ImageSnap::daynight_switch(bool on)
+{
+    auto daynight_controller = DayNightSwitch::getInstance();
+    if (!daynight_controller) {
+        return false;
+    }
+
+    daynight_controller->setCdsPins(CDS_SENSOR_PIN);
+    daynight_controller->setIRLedPins(IR_LED_PIN);
+    daynight_controller->setIRCutPins(IR_CUT_ENABLE_PIN, IR_CUT_CTRL_PIN);
+
+    if (on) {
+        auto daynight_state = daynight_controller->getDayNightState();
+        daynight_controller->controlISP(daynight_state);
+        daynight_controller->controlIRCut(daynight_state);
+        daynight_controller->controlIRLed(daynight_state);
+    } else {
+        daynight_controller->controlISP(DayNightState::DAY);
+        daynight_controller->controlIRCut(DayNightState::DAY);
+        daynight_controller->controlIRLed(DayNightState::DAY);
     }
 
     return true;

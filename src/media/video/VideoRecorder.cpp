@@ -13,6 +13,7 @@
 #include "sample-common.h"
 #include "minimp4.h"
 #include "VideoRecorder.h"
+#include "DayNightSwitch.h"
 
 using namespace media;
 
@@ -105,6 +106,7 @@ bool VideoRecorder::setParams(const VideoRecorderParams& params) {
 bool VideoRecorder::initialize()
 {
     int ret = 0;
+	int width = 0, height = 0;
 
 	/* Step.1 System init */
 	ret = sample_system_init();
@@ -113,6 +115,14 @@ bool VideoRecorder::initialize()
 		return false;
 	}
     Logger::log(LogLevel::DEBUG, "System init success");
+
+	this->params.getVideoSize(width, height);
+    Logger::log(LogLevel::INFO, "Video width:%d height:%d", width, height);
+	chn[VIDEO_RECORDER_CHN_NUM].fs_chn_attr.scaler.enable = 1;
+    chn[VIDEO_RECORDER_CHN_NUM].fs_chn_attr.scaler.outwidth = width;
+    chn[VIDEO_RECORDER_CHN_NUM].fs_chn_attr.scaler.outheight = height;
+    chn[VIDEO_RECORDER_CHN_NUM].fs_chn_attr.picWidth = width;
+    chn[VIDEO_RECORDER_CHN_NUM].fs_chn_attr.picHeight = height;
 
     /* Step.2 FrameSource init */
     ret = sample_framesource_init();
@@ -201,6 +211,7 @@ bool VideoRecorder::record(const std::string &filename, int duration)
     return record(filename, nullptr, duration);
 }
 
+
 bool VideoRecorder::record(const std::string &filename, std::function<void(bool)> onRecordDone, int duration)
 {
     if (!initialized) {
@@ -222,6 +233,9 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
         }
         return false;
     }
+
+	//day-night switch
+	daynight_switch(true);
 
     /* Step.6 Get stream */
     bool result = true;
@@ -427,7 +441,6 @@ bool VideoRecorder::initVideo()
 	IMPFSChnAttr *imp_chn_attr_tmp;
 	IMPEncoderCHNAttr channel_attr;
 	IMPFSI2DAttr i2d_attr;
-	int width = 0, height = 0;
 
 	if (chn[VIDEO_RECORDER_CHN_NUM].enable) {
 		imp_chn_attr_tmp = &chn[VIDEO_RECORDER_CHN_NUM].fs_chn_attr;
@@ -462,10 +475,8 @@ bool VideoRecorder::initVideo()
 			enc_attr->bufSize = s32picWidth * s32picHeight * 3 / 4;
 		}
 		enc_attr->profile   = 1;
-		this->params.getVideoSize(width, height);
-        Logger::log(LogLevel::INFO, "VideoRecorder", "Video width:%d height:%d", width, height);
-		enc_attr->picWidth  = width;//s32picWidth;
-		enc_attr->picHeight = height;//s32picHeight;
+		enc_attr->picWidth  = s32picWidth;
+		enc_attr->picHeight = s32picHeight;
 		rc_attr = &channel_attr.rcAttr;
 		rc_attr->attrHSkip.hSkipAttr.skipType = IMP_Encoder_STYPE_N1X;
 		rc_attr->attrHSkip.hSkipAttr.m = 3;
@@ -783,5 +794,32 @@ ssize_t VideoRecorder::getNALSize(uint8_t *buf, ssize_t size)
 bool VideoRecorder::stopRecorder()
 {
     stopRecording = true;
+    return true;
+}
+
+bool VideoRecorder::daynight_switch(bool on)
+{
+    auto daynight_controller = DayNightSwitch::getInstance();
+    if (!daynight_controller) {
+        return false;
+    }
+
+    daynight_controller->setCdsPins(CDS_SENSOR_PIN);
+    daynight_controller->setIRLedPins(IR_LED_PIN);
+    daynight_controller->setIRCutPins(IR_CUT_ENABLE_PIN, IR_CUT_CTRL_PIN);
+
+    if (on) {
+        auto daynight_state = daynight_controller->getDayNightState();
+        daynight_controller->controlISP(daynight_state);
+        daynight_controller->controlIRCut(daynight_state);
+        daynight_controller->controlIRLed(daynight_state);
+		daynight_controller->startAutoSwithch();
+    } else {
+        daynight_controller->controlISP(DayNightState::DAY);
+        daynight_controller->controlIRCut(DayNightState::DAY);
+        daynight_controller->controlIRLed(DayNightState::DAY);
+		daynight_controller->suspendAutoSwitch();
+    }
+
     return true;
 }

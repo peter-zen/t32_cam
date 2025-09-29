@@ -53,7 +53,7 @@ class Settings {
 
 	uint8_t cameraMode;
 	uint8_t realCameraMode;
-	uint8_t burstNumber;
+	uint8_t burstNumber=1;
 	uint8_t shootingLimits;
 	uint8_t videoLength_h;
 	uint8_t videoLength_l;

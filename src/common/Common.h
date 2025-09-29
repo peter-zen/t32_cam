@@ -4,6 +4,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 //device config
 #define INI_SECTION_DEVICE "DEVICE"
 #define INI_KEY_PID "PID"
@@ -155,6 +156,31 @@ static struct {
 	{6400,3600}, /* 24M */
 	{7680,4320}, /* 32M */
 };
+
+//pin definition
+#define PA(x)  (0 * 32 + (x))  // Port A
+#define PB(x)  (1 * 32 + (x))  // Port B
+#define PC(x)  (2 * 32 + (x))  // Port C
+
+//working mode check pins
+#define WORKING_MODE_CHECK_PIN_0  PC(9)
+#define WORKING_MODE_CHECK_PIN_1  PC(8)
+
+//power hold pin
+#define POWER_HOLD_PIN  PB(15)
+
+//CDS sensor pin
+#define CDS_SENSOR_PIN  PA(10)
+
+//IR-CUT pins
+#define IR_CUT_ENABLE_PIN    PB(13)
+#define IR_CUT_CTRL_PIN    PB(14)
+
+//IR LED pin
+#define IR_LED_PIN      PB(10)
+
+//RGB LED pins
+#define RGB_LED_PIN   PB(11)
 
 #ifdef __cplusplus
 }
