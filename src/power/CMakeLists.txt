@@ -9,12 +9,13 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../logger
         ${CMAKE_CURRENT_SOURCE_DIR}/../misc
+        ${CMAKE_CURRENT_SOURCE_DIR}/../setting
         ${THIRD_PARTY_PATH}/crc16/include
         ${THIRD_PARTY_PATH}/jsoncpp/include
 )
 
 # link libraries
-target_link_libraries(power PRIVATE common)
+target_link_libraries(power PRIVATE common setting logger misc)
 
 # Set the output directory for the library
 set_target_properties(power PROPERTIES

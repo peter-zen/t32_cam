@@ -89,6 +89,7 @@ target_link_libraries(htc_media_app
     daynight
     workmode
     logger
+    time
     
     #sdk libs
     system_call

@@ -21,8 +21,19 @@
 #include "Common.h"
 #include "WorkMode.h"
 #include "AutoRelease.h"
+#include "RTC.h"
 
 using namespace media;
+
+static bool isRTCWorkWell()
+{
+    #if RTC_EXIST
+        struct tm nowtime;
+        return RTC::getInstance()->getTime(nowtime);
+    #else
+        return false;
+    #endif
+}
 
 static std::string getCurrentTimeFormatted()
 {
@@ -78,7 +89,7 @@ static bool startApp(const std::string& command)
     return ret < 0 ? false : true;
 }
 
-int quick_snap()
+int quick_snap(bool is_rtc_work_well)
 {
     int ret = 0;
 
@@ -87,30 +98,16 @@ int quick_snap()
         Logger::log(LogLevel::ERROR, "Failed to create directory: %s", dirPath.c_str());
         return -1;
     }
-    #if RTC_EXIST
+
     std::string timeStr = getCurrentTimeFormatted();
-    dirPath += timeStr;
-    #else
-    dirPath += "pic";
-    #endif
-    if (!createDirectory(dirPath, 0777)) {
-        Logger::log(LogLevel::ERROR, "Failed to create directory: %s", dirPath.c_str());
-        return -1;
+    if (is_rtc_work_well) {
+        dirPath += timeStr;
+    } else {
+        dirPath += "pic";
     }
 
-    if (!EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME)) {
-        Logger::log(LogLevel::ERROR, "Failed to parse env file: %s", ENV_FILE_PATHNAME);
-        return -1;
-    }
-    std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
-    if (setting_file_path.empty()) {
-        Logger::log(LogLevel::ERROR, "Failed to get setting file path");
-        return -1;
-    }
-    
-    bool load_success = Settings::getInstance()->loadFromJsonFile(setting_file_path);
-    if (!load_success) {
-        Logger::log(LogLevel::ERROR, "Failed to load setting file: %s", setting_file_path.c_str());
+    if (!createDirectory(dirPath, 0777)) {
+        Logger::log(LogLevel::ERROR, "Failed to create directory: %s", dirPath.c_str());
         return -1;
     }
 
@@ -122,11 +119,11 @@ int quick_snap()
 
     std::vector<std::string> fileNames;
     for (int i = 0; i < burstNumber; i++) {
-        #if RTC_EXIST
-        fileNames.push_back(dirPath + "/" + timeStr + "_" + to_string_custom(i + 1) + ".JPG");
-        #else
-        fileNames.push_back(dirPath + "/" + to_string_custom(i + 1) + ".JPG");
-        #endif
+        if (is_rtc_work_well) {
+            fileNames.push_back(dirPath + "/" + timeStr + "_" + to_string_custom(i + 1) + ".JPG");
+        } else {
+            fileNames.push_back(dirPath + "/" + to_string_custom(i + 1) + ".JPG");
+        }
     }
     auto snapSizeIndex = Settings::getInstance()->stillSize;
     auto snap_param = ImageSnapParams();
@@ -149,13 +146,13 @@ int quick_snap()
     for (const auto& fileName : fileNames) {
         imageArray.append(std::string(fileName.substr(fileName.find_last_of("/") + 1)));
     }
-    #if RTC_EXIST
-    root["files"] = imageArray;
-    root["dir"] = timeStr;
-    #else
-    root["files"] = imageArray;
-    root["dir"] = "pic";
-    #endif
+    if (is_rtc_work_well) {
+        root["files"] = imageArray;
+        root["dir"] = timeStr;
+    } else {
+        root["files"] = imageArray;
+        root["dir"] = "pic";
+    }
     std::string jsonFilePath = std::string(QUICK_SNAP_DIR) + "info.json";
     std::ofstream jsonFile(jsonFilePath);
     if (!jsonFile.is_open()) {
@@ -173,13 +170,42 @@ int quick_snap()
 
 int main(int argc, char* argv[])
 {
+    bool rtc_work_well = true;
+    bool load_success = false;
+    auto working_mode = workingMode::WORKING_MODE_MAX;
+    std::string setting_file_path;
     //show timestamp
     struct timespec ts0;
     if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts0) != -1) {
         Logger::log(LogLevel::INFO, "main entry at %ld ms", ts0.tv_sec * 1000 + ts0.tv_nsec / 1000000);
     }
 
-    auto working_mode = workingMode::WORKING_MODE_MAX;
+    if (!EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME)) {
+        Logger::log(LogLevel::ERROR, "Failed to parse env file: %s", ENV_FILE_PATHNAME);
+        goto main_exit;
+    }
+
+    setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
+    if (setting_file_path.empty()) {
+        Logger::log(LogLevel::ERROR, "Failed to get setting file path");
+        goto main_exit;
+    }
+
+    load_success = Settings::getInstance()->loadFromJsonFile(setting_file_path);
+    if (!load_success) {
+        Logger::log(LogLevel::ERROR, "Failed to load setting file: %s", setting_file_path.c_str());
+        goto main_exit;
+    }
+
+    
+    Logger::log(LogLevel::INFO, "force_upload = %d", Settings::getInstance()->force_upload);
+    if (Settings::getInstance()->force_upload == 1) {
+        working_mode = workingMode::WORKING_MODE_UPLOAD_ONLY;
+        Settings::getInstance()->force_upload = 0;
+        Settings::getInstance()->saveToJsonFile(setting_file_path);
+        goto main_exit;
+    }
+
     {
         auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
         if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
@@ -188,13 +214,15 @@ int main(int argc, char* argv[])
             goto main_exit;
         }
     }
-    
+
+    rtc_work_well = isRTCWorkWell();
+
     //get working mode
     WorkMode::setWorkingModePins(WORKING_MODE_CHECK_PIN_0, WORKING_MODE_CHECK_PIN_1);
     working_mode = WorkMode::getWorkingMode();
 
     if (working_mode == workingMode::WORKING_MODE_SNAP_ONLY || working_mode == workingMode::WORKING_MODE_SNAP_UPLOAD) {
-        if (quick_snap() < 0) {
+        if (quick_snap(rtc_work_well) < 0) {
             Logger::log(LogLevel::ERROR, "Failed to quick snap");
             working_mode = workingMode::WORKING_MODE_MAX;
         }
@@ -202,7 +230,7 @@ int main(int argc, char* argv[])
 
 main_exit: 
     // call htc_main_app
-    std::string command = "htc_main_app -wm " + to_string_custom((int)working_mode);
+    std::string command = "htc_main_app -wm " + to_string_custom((int)working_mode) + " -rtc " + to_string_custom(rtc_work_well);
     startApp(command);
     return 0;
 }

@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include "Logger.h"
 #include "Misc.h"
+#include "Settings.h"
 
 std::shared_ptr<Power> Power::getInstance()
 {
@@ -40,6 +41,7 @@ void Power::requestShutdown()
 void Power::requestChangeMode()
 {
     changeModeRequested = true;
+    Settings::getInstance()->force_upload = 1;
     // Send SIGTERM signal to current process to notify shutdown
     pid_t pid = getpid();
     Logger::log(LogLevel::INFO, "Sending shutdown signal to process %d", pid);

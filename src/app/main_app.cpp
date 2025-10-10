@@ -306,9 +306,11 @@ static void printUsage(char *argv[])
     std::cout << "  -hb, --heartbeat\tSend a heartbeat message to the management server" << std::endl;
     std::cout << "  -s, --snap\t\tSnap an image" << std::endl;
     std::cout << "  -u, --upload\t\tUpload a file to the storage server" << std::endl;
-    //std::cout << "  -r, --record\t\tRecord a video" << std::endl;
+    std::cout << "  -r, --record\t\tRecord a video" << std::endl;
     std::cout << "  -m, --mobile\t\tConnect to the mobile network" << std::endl;
     std::cout << "  -rs, --rtsp-server\tStart the RTSP server" << std::endl;
+    std::cout << "  -grtc, --get-rtc\tGet RTC time" << std::endl;
+    std::cout << "  -srtc, --set-rtc\tSet RTC time" << std::endl;
 }
 
 #define CMD_HELP 0
@@ -322,6 +324,8 @@ static void printUsage(char *argv[])
 #define CMD_MOBILE (1 << 7)
 #define CMD_RTSP_SERVER (1 << 8)
 #define CMD_NTP (1 << 9)
+#define CMD_GET_RTC (1 << 10)
+#define CMD_SET_RTC (1 << 11)
 
 static bool already_in_exit_flow = false;
 static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
@@ -362,6 +366,10 @@ static void signalHandler(int signal)
             }
         }
 
+        remoteCtrlClient = nullptr;
+        mgmtServClient = nullptr;
+        storageServClient = nullptr;
+
         already_in_exit_flow = true;
     }
     
@@ -374,8 +382,7 @@ static void signalHandler(int signal)
                 Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
             }
 
-            WorkMode::setWorkingMode(workingMode::WORKING_MODE_UPLOAD_ONLY);
-
+            sleep(10);
             Misc::reboot();
             while(1);
         } else {
@@ -395,6 +402,8 @@ static void signalHandler(int signal)
 
 int main(int argc, char* argv[])
 {
+    bool update_config_exists = false;
+    bool is_rtc_work_well = true;
     enum workingMode working_mode = workingMode::WORKING_MODE_MAX;
 
     daynight_switch = DayNightSwitch::getInstance();
@@ -429,7 +438,7 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    if (argc != 3) {
+    if (argc != 5) {
         if (std::string(argv[1]) == "-w" || std::string(argv[1]) == "--wifi") {
             command = CMD_CONNECT_WIFI;
         } else if (std::string(argv[1]) == "-d" || std::string(argv[1]) == "--dhcp") { 
@@ -452,13 +461,19 @@ int main(int argc, char* argv[])
             command = CMD_CONNECT_WIFI | CMD_NTP;
         } else if (std::string(argv[1]) == "-rs" || std::string(argv[1]) == "--rtsp-server") {
             command = CMD_RTSP_SERVER;
+        } else if (std::string(argv[1]) == "-grtc" || std::string(argv[1]) == "--get-rtc") {
+            command = CMD_GET_RTC;
+        } else if (std::string(argv[1]) == "-srtc" || std::string(argv[1]) == "--set-rtc") {
+            command = CMD_SET_RTC;
         } else {
             printUsage(argv);
             return -1;
         }
     } else {
-        if (std::string(argv[1]) == "-wm" || std::string(argv[1]) == "--work-mode") {
+        if ((std::string(argv[1]) == "-wm" || std::string(argv[1]) == "--work-mode") && (std::string(argv[3]) == "-rtc" || std::string(argv[3]) == "--rtc-status")) {
             working_mode = (enum workingMode)stoi_custom(argv[2]);
+            is_rtc_work_well = (bool)stoi_custom(argv[4]);
+            Logger::log(LogLevel::INFO, "%s working mode %d, rtc status %d", __func__, working_mode, is_rtc_work_well);
             switch (working_mode) {
                 case WORKING_MODE_SNAP_ONLY:
                     command = CMD_SNAP;
@@ -509,18 +524,73 @@ int main(int argc, char* argv[])
         Logger::log(LogLevel::ERROR, "mount sdcard error");
         goto main_exit;
     }
-   
+    
+    //update config
+    // First, check if update config file exists by opening it
+    {   // Use a scope to ensure file is closed before moving
+        std::fstream update_config_file(UPDATE_CONFIG_FILE_PATHNAME, std::ios::in);
+        update_config_exists = update_config_file.is_open();
+        if (update_config_exists) {
+            Logger::log(LogLevel::INFO, "Update config file exists, preparing to update config");
+            update_config_file.close();  // Close file before moving
+        }
+    }
+    
+    // Now that file is closed, attempt to move it
+    if (update_config_exists) {
+        if (!Misc::moveFile(UPDATE_CONFIG_FILE_PATHNAME, CONFIG_FILE_PATHNAME)) {
+            Logger::log(LogLevel::ERROR, "Failed to update config file");
+        } else {
+            Logger::log(LogLevel::INFO, "Successfully updated config file");
+            config->flush_control(false);
+            goto main_exit;
+        }
+    }
+
+    //RTC
+    if (command & CMD_GET_RTC) {
+        struct tm now;
+        if(!RTC::getInstance()->getTime(now)) {
+            Logger::log(LogLevel::ERROR, "get RTC time error");
+        } else {
+            Logger::log(LogLevel::INFO, "RTC time: %d-%02d-%02d %02d:%02d:%02d",
+                   now.tm_year + 1900, now.tm_mon + 1, now.tm_mday,
+                   now.tm_hour, now.tm_min, now.tm_sec);
+        }
+    }
+
+    if (command & CMD_SET_RTC) {
+        std::string rtc_time = argv[2];
+        struct tm timeinfo = {0};
+        // Parse the string into struct tm
+        if (strptime(rtc_time.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr) {
+            Logger::log(LogLevel::ERROR, "Failed to parse time string: %s", rtc_time.c_str());
+        } else {
+            // strptime already correctly sets tm_year (years since 1900) and tm_mon (0-11)
+            if (!RTC::getInstance()->setTime(timeinfo)) {
+                Logger::log(LogLevel::ERROR, "set RTC time: %s error", rtc_time.c_str());
+            } else {
+                Logger::log(LogLevel::INFO, "set RTC time: %s success", rtc_time.c_str());
+            }
+        }
+    }
 
     //connect wifi
     if (command & CMD_CONNECT_WIFI) {
         auto wifi_ssid = config->get(INI_SECTION_SYS, INI_KEY_UPID, "");
         auto wifi_pwd = config->get(INI_SECTION_SYS, INI_KEY_PWD, "");
-        Misc::connectWifi(wifi_ssid, wifi_pwd);
+        if (!Misc::connectWifi(wifi_ssid, wifi_pwd)) {
+            Logger::log(LogLevel::ERROR, "connect wifi error");
+            goto main_exit;
+        }
     }
 
     //dhcp
     if (command & CMD_DHCP) {
-        Misc::startDHCP();
+        if (!Misc::startDHCP()) {
+            Logger::log(LogLevel::ERROR, "start dhcp error");
+            goto main_exit;
+        }
     }
 
     if (command & CMD_NTP) {
@@ -532,7 +602,10 @@ int main(int argc, char* argv[])
             Logger::log(LogLevel::ERROR, "ntp server is empty");
             goto main_exit;
         }
-        Misc::ntpSync(ntp_server);
+        if (!Misc::ntpSync(ntp_server)) {
+            Logger::log(LogLevel::ERROR, "ntp sync error");
+            goto main_exit;
+        }
         
         // Wait until system time is synchronized (year > 1970)
         const int MAX_WAIT_SECONDS = 30; // Maximum wait time 30 seconds
@@ -561,9 +634,10 @@ int main(int argc, char* argv[])
             Logger::log(LogLevel::WARNING, "Timeout waiting for system time synchronization after %d seconds", MAX_WAIT_SECONDS);
             goto main_exit;
         }
-        #if RTC_EXIST
-        RTC::getInstance()->setTime(*nowtime);
-        #endif
+
+        if (is_rtc_work_well) {
+            RTC::getInstance()->setTime(*nowtime);
+        }
     }
 
     if (command & CMD_SNAP) {
@@ -582,14 +656,15 @@ int main(int argc, char* argv[])
             auto dir = root["dir"].asString();
             auto files = root["files"];
             std::string oldpath = QUICK_SNAP_DIR + dir + "/*";
-            #if RTC_EXIST
-            std::string newpath =  MEDIA_TARGET_PATH + dir;
-            std::string upload_path = MEDIA_UPLOAD_PATH + dir;
-            #else
-            std::string timeStr = getCurrentTimeFormatted();
-            std::string newpath =  MEDIA_TARGET_PATH + timeStr;
-            std::string upload_path = MEDIA_UPLOAD_PATH + timeStr;
-            #endif
+            std::string newpath, upload_path, timeStr;
+            if (is_rtc_work_well) {
+                newpath =  MEDIA_TARGET_PATH + dir;
+                upload_path = MEDIA_UPLOAD_PATH + dir;
+            } else {
+                timeStr = getCurrentTimeFormatted();
+                newpath =  MEDIA_TARGET_PATH + timeStr;
+                upload_path = MEDIA_UPLOAD_PATH + timeStr;
+            }
 
             if (!Misc::createDirectory(newpath) || !Misc::createDirectory(MEDIA_UPLOAD_PATH) || !Misc::moveFile(oldpath, newpath)) {
                 Logger::log(LogLevel::ERROR, "move %s to %s failed", oldpath.c_str(), newpath.c_str());
@@ -597,15 +672,16 @@ int main(int argc, char* argv[])
             }
 
             //create desc file
-            for (auto & file : files) { 
-                #if RTC_EXIST
-                auto filename = newpath + "/" + file.asString();
-                #else
-                auto oldname = newpath + "/" + file.asString();
-                auto filename = newpath + "/" + timeStr + "_" + file.asString();
-                Logger::log(LogLevel::INFO, "rename %s to %s", oldname.c_str(), filename.c_str());
-                Misc::moveFile(oldname, filename);
-                #endif
+            for (auto & file : files) {
+                std::string filename; 
+                if (is_rtc_work_well) {
+                    filename = newpath + "/" + file.asString();
+                } else {
+                    auto oldname = newpath + "/" + file.asString();
+                    filename = newpath + "/" + timeStr + "_" + file.asString();
+                    Logger::log(LogLevel::INFO, "rename %s to %s", oldname.c_str(), filename.c_str());
+                    Misc::moveFile(oldname, filename);
+                }
                 file_names.push_back(filename);
             }
 

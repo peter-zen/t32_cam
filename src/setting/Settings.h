@@ -9,7 +9,7 @@
 
 
 class Settings {
-    public:
+public:
 	static std::shared_ptr<Settings> getInstance();
 
 	/**
@@ -26,7 +26,7 @@ class Settings {
 	 */
 	bool loadFromJsonFile(const std::string& filePath);
 
-    public:
+public:
 	uint8_t stillSize;
 	uint8_t stillQuality;
 	uint8_t stillDriverMode;
@@ -141,7 +141,8 @@ class Settings {
 	/* int variables */
 	int setting_mark;
 	int enable_firmware_update;
-    private:
+	int force_upload;//0: no force upload, 1: force upload
+private:
 	Settings(const Settings &) = delete;
 	Settings &operator=(const Settings &) = delete;
 	Settings() = default;

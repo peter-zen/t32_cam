@@ -14,7 +14,8 @@ extern "C" {
 #define NETIF_NAME "wlan0"
 #define ENV_FILE_PATHNAME "/config/htc/env.ini"
 //#define ENV_FILE_PATHNAME "/mnt/sdcard/res/env.ini"
-
+#define CONFIG_FILE_PATHNAME "/config/htc/config.ini"
+#define UPDATE_CONFIG_FILE_PATHNAME SD_CARD_PATH"update_config.ini"
 #ifdef __cplusplus
 }
 #endif

@@ -263,10 +263,9 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 #else
 		#error "Unknown WiFi type"
 #endif
-		ret = system_call((char*)command.c_str(), 1000);
+		ret = system_call((char*)command.c_str(), 10000);
 		if(ret < 0) {
-			system_call_exit();
-			Logger::log(LogLevel::ERROR, "%s error", command);
+			Logger::log(LogLevel::ERROR, "%s error", command.c_str());
 			return false;
 		}
 		already_inited_wifi = true;
@@ -274,9 +273,9 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 	int timeout = 15;
 	Logger::log(LogLevel::INFO, "Connecting to WiFi: %s ", ssid.c_str());
 	#if defined(WIFI_TYPE_CYW43012)
-    std::string command = "speedy --wifi_ssid " + ssid + " --wifi_pass " + password;
+    std::string command = "/system/bin/wifi/speedy --wifi_ssid " + ssid + " --wifi_pass " + password;
 	#elif defined(WIFI_TYPE_RTL8189FS)
-	std::string command = "wpa_conn wlan0 " + ssid + " " + password + " " + to_string_custom(timeout);
+	std::string command = "/system/bin/wifi/wpa_conn wlan0 " + ssid + " " + password + " " + to_string_custom(timeout) + " " + to_string_custom(1);
 	#else
 		#error "Unknown WiFi type"
 	#endif
@@ -304,9 +303,8 @@ bool Misc::startDHCP()
 		}
 	}
 	
-	std::string command = "udhcpc -i " + netifname;
-	system_call((char*)command.c_str(), 10000);
-	Logger::log(LogLevel::INFO, "dhcp done");
+	std::string command = "udhcpc -i " + netifname + " -t " + to_string_custom(10);
+	ret = system_call((char*)command.c_str(), 20000);
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "dhcp on %s error", netifname.c_str());
 			return false;
@@ -332,7 +330,6 @@ bool Misc::ntpSync(const std::string& ntp_server)
 	
 	std::string command = "busybox ntpd -p " + ntp_server;
 	ret = system_call((char*)command.c_str(), 10000);
-	Logger::log(LogLevel::INFO, "ntp sync done");
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "ntp sync error");
 			return false;
@@ -358,7 +355,6 @@ bool Misc::getDateTime()
 	
 	std::string command = "date";
 	ret = system_call((char*)command.c_str(), 10000);
-	Logger::log(LogLevel::INFO, "get date done");
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "date error");
 			return false;
@@ -384,7 +380,6 @@ bool Misc::setDateTime(const std::string &date)
 	
 	std::string command = "date -s " + date;
 	ret = system_call((char*)command.c_str(), 10000);
-	Logger::log(LogLevel::INFO, "get date done");
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "set date error");
 			return false;

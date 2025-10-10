@@ -28,7 +28,7 @@ static bool syscall_inited = false;
 int main(int argc, char *argv[]) {
     // Check for required arguments
     if (check_arguments(argc, argv) != 0) {
-        return 1;
+        return -1;
     }
     
     // Assign arguments to variables
@@ -36,6 +36,7 @@ int main(int argc, char *argv[]) {
     const char *WIFI_SSID = argv[2];
     const char *WIFI_PASSWORD = argv[3];
     int TIMEOUT = atoi(argv[4]);
+    int driver_loaded = atoi(argv[5]);
     
     // Define the output file path
     const char *CONFIG_FILE = "/config/profiles/wpa_supplicant.conf";
@@ -43,31 +44,31 @@ int main(int argc, char *argv[]) {
     // Ensure the directory exists
     if (create_directory("/config/profiles") != 0) {
         printf("Error: Failed to create directory for configuration\n");
-        return 1;
+        return -1;
     }
     
     // Generate wpa_supplicant configuration
     if (generate_wifi_config(WIFI_SSID, WIFI_PASSWORD, CONFIG_FILE) != 0) {
         printf("Error: Failed to generate WiFi configuration\n");
-        return 1;
+        return -1;
     }
-    
+ 
     // Load WiFi driver
-    if (load_wifi_driver("/system/bin/wifi/8189fs.ko") != 0) {
+    if (driver_loaded == 0 && load_wifi_driver("/system/bin/wifi/8189fs.ko") != 0) {
         printf("Error: Failed to load WiFi driver\n");
-        return 1;
+        return -1;
     }
-    
+
     // Connect WiFi
     if (connect_wifi(WIFI_IFNAME, CONFIG_FILE, TIMEOUT) != 0) {
         printf("Error: WiFi connection failed\n");
-        return 1;
+        return -1;
     }
  #if 0   
     // Configure DHCP
     if (configure_dhcp(WIFI_IFNAME, 20) != 0) {
         printf("Error: Failed to configure DHCP\n");
-        return 1;
+        return -1;
     }
     
     // Print IP address
@@ -77,10 +78,10 @@ int main(int argc, char *argv[]) {
 }
 
 int check_arguments(int argc, char *argv[]) {
-    if (argc != 5) {
-        printf("Error: Four arguments are required\n");
-        printf("Usage: %s <wifi_ifname> <wifi_ssid> <wifi_password> <timeout>\n", argv[0]);
-        return 1;
+    if (argc != 6) {
+        printf("Error: Five arguments are required\n");
+        printf("Usage: %s <wifi_ifname> <wifi_ssid> <wifi_password> <timeout> <driver_loaded>\n", argv[0]);
+        return -1;
     }
     return 0;
 }
@@ -97,7 +98,7 @@ int generate_wifi_config(const char *ssid, const char *password, const char *con
     int result = execute_command(cmd.c_str());
     if (result != 0) {
         printf("Error: Failed to generate WiFi configuration\n");
-        return 1;
+        return -1;
     }
 
     printf("WiFi configuration generated successfully\n");
@@ -125,7 +126,7 @@ int connect_wifi(const char *ifname, const char *config_file, int timeout) {
     int result = execute_command(cmd);
     if (result != 0) {
         printf("Error: Failed to initiate WiFi connection\n");
-        return 1;
+        return -1;
     }
     
     printf("WiFi connection successfully initiated\n");
@@ -189,7 +190,7 @@ int connect_wifi(const char *ifname, const char *config_file, int timeout) {
             printf("Current status: %s\n", (state_value != NULL) ? state_value : "unknown");
             free(conn_status);
         }
-        return 1;
+        return -1;
     }
     
     free(conn_status);

@@ -23,7 +23,8 @@ class DeviceConfig {
 			const char* const &value);
 		void set(const std::string &section, const std::string &key,
 			const std::string &value);
-
+        
+        void flush_control(bool permit);
         bool flush();
         ~DeviceConfig();
 
@@ -36,6 +37,7 @@ class DeviceConfig {
         std::unordered_map<std::string, std::unordered_map<std::string, std::string>> config_data;
         std::mutex config_mutex;
         std::string config_filename;
+        bool permit_flush;
 };
 
 #endif /* DEVICECONFIG_H */

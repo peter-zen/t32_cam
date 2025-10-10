@@ -871,8 +871,10 @@ void RemoteCtrlClient::handleGetSensorInfoCommand(const Json::Value &root)
 #endif
 */
 	//get datetime info
-	auto datetime = RTC::getInstance()->getTime();
-	strftime(tmp_buffer, sizeof(tmp_buffer), "%Y-%m-%dT%H:%M:%S.000", &datetime);
+	struct tm* datetime = nullptr;
+	time_t now = time(nullptr);
+    datetime = localtime(&now);
+	strftime(tmp_buffer, sizeof(tmp_buffer), "%Y-%m-%dT%H:%M:%S.000", datetime);
 	resp_root["datetime"] = tmp_buffer;
 
 	resp_root["status"] = 0;

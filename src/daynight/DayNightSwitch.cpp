@@ -25,11 +25,14 @@ DayNightSwitch::DayNightSwitch()
     this->dayNightState = DayNightState::DAY;
     this->autoSwitchThreadRunning = false;
     this->autoSwitchThreadSuspended = false;
+    this->autoSwitchThread = nullptr;
 }
 
 DayNightSwitch::~DayNightSwitch()
 {
-    stopAutoSwitch();
+    if (this->autoSwitchThread != nullptr) {
+        stopAutoSwitch();
+    }
 }
 
 void DayNightSwitch::setCdsPins(int pin)

@@ -9,7 +9,7 @@ class RTC {
     public:
 	static std::shared_ptr<RTC> getInstance();
 	bool setTime(const struct tm &time);
-	struct tm getTime();
+	bool getTime(struct tm &time);
 	~RTC();
 
     private:

@@ -134,7 +134,7 @@ bool Settings::saveToJsonFile(const std::string& filePath)
 	// Save int variables
 	root["setting_mark"] = this->setting_mark;
 	root["enable_firmware_update"] = this->enable_firmware_update;
-
+	root["force_upload"] = this->force_upload;
 	// Write to file with pretty printing
 	std::ofstream file(filePath);
 	if (!file.is_open()) {
@@ -297,6 +297,7 @@ bool Settings::loadFromJsonFile(const std::string& filePath)
 	// Load int variables
 	if (root.isMember("setting_mark")) this->setting_mark = root["setting_mark"].asInt();
 	if (root.isMember("enable_firmware_update")) this->enable_firmware_update = root["enable_firmware_update"].asInt();
+	if (root.isMember("force_upload")) this->force_upload = root["force_upload"].asInt();
 
 	return true;
 }

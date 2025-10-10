@@ -16,6 +16,7 @@ DeviceConfig::DeviceConfig()
 {
     config_filename = EnvManager::getInstance()->getEnv("CONFIG_FILE");
     parse(config_filename);
+    permit_flush = true;
 }
 
 DeviceConfig::~DeviceConfig()
@@ -62,9 +63,18 @@ bool DeviceConfig::parse(const std::string &configFile)
     return true;
 }
 
+void DeviceConfig::flush_control(bool permit)
+{
+    std::lock_guard<std::mutex> lock(config_mutex);
+    permit_flush = permit;
+}
+
 bool DeviceConfig::flush()
 {
     std::lock_guard<std::mutex> lock(config_mutex);
+    if (!permit_flush) {
+        return false;
+    }
 
     std::ofstream file(config_filename);
     if (!file.is_open()) {
