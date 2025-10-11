@@ -92,8 +92,8 @@ extern "C"
 #define FIRST_I2C_ADAPTER_ID                0                           //sensor controller number used (0/1/2/3)
 #define FIRST_SENSOR_WIDTH                  2560                        //sensor width
 #define FIRST_SENSOR_HEIGHT                 1440                        //sensor height
-#define FIRST_RST_GPIO                      -1                 //sensor reset gpio
-#define FIRST_PWDN_GPIO                     -1                          //sensor pwdn gpio
+#define FIRST_RST_GPIO                      GPIO_PA(20)                 //sensor reset gpio
+#define FIRST_PWDN_GPIO                     GPIO_PB(6)                          //sensor pwdn gpio
 #define FIRST_POWER_GPIO                    -1                          //sensor power gpio
 #define FIRST_SWITCH_GPIO                   -1                 //sensor switch gpio
 #define FIRST_SENSOR_ID                     0                           //sensor index
@@ -101,13 +101,13 @@ extern "C"
 #define FIRST_MCLK                          IMPISP_SENSOR_MCLK0         //sensor clk source (mclk0/mclk1/mclk2)
 #define FIRST_DEFAULT_BOOT                  0                           //sensor default mode(0/1/2/3/4)
 #define CHN0_EN                             1                           //sensor0，output0
-#define CHN1_EN                             0                           //sensor0，output1
+#define CHN1_EN                             1                           //sensor0，output1
 #define CHN2_EN                             0                           //sensor0, output2
 #define FIRST_CROP_EN                       0
 #define FIRST_SENSOR_FRAME_RATE_NUM         15
 #define FIRST_SENSOR_FRAME_RATE_DEN         1
-#define FIRST_SENSOR_WIDTH_SECOND           720
-#define FIRST_SENSOR_HEIGHT_SECOND          576
+#define FIRST_SENSOR_WIDTH_SECOND           1280
+#define FIRST_SENSOR_HEIGHT_SECOND          720
 #define FIRST_SENSOR_WIDTH_THIRD            1280
 #define FIRST_SENSOR_HEIGHT_THIRD           720
 #else

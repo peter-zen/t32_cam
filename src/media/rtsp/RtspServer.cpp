@@ -240,11 +240,7 @@ void RtspServer::deinitialize()
 
 bool RtspServer::stop()
 {
-	if (this->rtsp_server) {
-		stop_server(this->rtsp_server);
-		destroy_server(this->rtsp_server);
-		this->rtsp_server = nullptr;
-	}
+	
     
 	if (this->pullFrameThread) {
 		this->pullFrameThreadRun = false;
@@ -254,7 +250,14 @@ bool RtspServer::stop()
 		this->pullFrameThread = nullptr;
 	}
 	
-    sample_framesource_streamoff();
+	sample_framesource_streamoff();
+
+	if (this->rtsp_server) {
+		stop_server(this->rtsp_server);
+		destroy_server(this->rtsp_server);
+		this->rtsp_server = nullptr;
+	}
+	
 	return true;
 }
 

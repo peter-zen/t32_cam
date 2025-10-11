@@ -180,38 +180,28 @@ int main(int argc, char* argv[])
         Logger::log(LogLevel::INFO, "main entry at %ld ms", ts0.tv_sec * 1000 + ts0.tv_nsec / 1000000);
     }
 
-    if (!EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME)) {
-        Logger::log(LogLevel::ERROR, "Failed to parse env file: %s", ENV_FILE_PATHNAME);
-        goto main_exit;
-    }
-
-    setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
-    if (setting_file_path.empty()) {
-        Logger::log(LogLevel::ERROR, "Failed to get setting file path");
-        goto main_exit;
-    }
-
-    load_success = Settings::getInstance()->loadFromJsonFile(setting_file_path);
-    if (!load_success) {
-        Logger::log(LogLevel::ERROR, "Failed to load setting file: %s", setting_file_path.c_str());
-        goto main_exit;
-    }
-
-    
-    Logger::log(LogLevel::INFO, "force_upload = %d", Settings::getInstance()->force_upload);
-    if (Settings::getInstance()->force_upload == 1) {
-        working_mode = workingMode::WORKING_MODE_UPLOAD_ONLY;
-        Settings::getInstance()->force_upload = 0;
-        Settings::getInstance()->saveToJsonFile(setting_file_path);
-        goto main_exit;
-    }
-
     {
         auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
         if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
             || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
             Logger::log(LogLevel::ERROR, "Failed to set power hold pin");
             goto main_exit;
+        }
+    }
+
+    if (EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME)) {
+        setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
+        if (!setting_file_path.empty()) {
+            load_success = Settings::getInstance()->loadFromJsonFile(setting_file_path);
+            if (load_success) {
+                Logger::log(LogLevel::INFO, "force_upload = %d", Settings::getInstance()->force_upload);
+                if (Settings::getInstance()->force_upload == 1) {
+                    working_mode = workingMode::WORKING_MODE_UPLOAD_ONLY;
+                    Settings::getInstance()->force_upload = 0;
+                    Settings::getInstance()->saveToJsonFile(setting_file_path);
+                    goto main_exit;
+                }
+            }
         }
     }
 

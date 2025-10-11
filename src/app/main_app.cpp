@@ -351,11 +351,13 @@ static void signalHandler(int signal)
             gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
         }
 
+        #if 0
         // Stop RTSP server if it's running
         if (RtspServer::getInstance()->isRunning()) {
             Logger::log(LogLevel::INFO, "Stopping RTSP server...");
             RtspServer::getInstance()->stop();
         }
+        #endif
 
         std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
         if (setting_file_path.empty()) {
@@ -382,7 +384,7 @@ static void signalHandler(int signal)
                 Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
             }
 
-            sleep(10);
+            sleep(2);
             Misc::reboot();
             while(1);
         } else {
@@ -736,12 +738,12 @@ int main(int argc, char* argv[])
     }
 
     if (command & CMD_RTSP_SERVER) {
-        auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
-        auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
+        //auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
+        //auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
         //Misc::connectWifi(wifi_ssid, wifi_pwd);
-       // Misc::startDHCP();
-       bool sessionClosed = false;
-         RtspServer::getInstance()->registerOnsessionClosedCallback([&sessionClosed](void) {
+        //Misc::startDHCP();
+        bool sessionClosed = false;
+        RtspServer::getInstance()->registerOnsessionClosedCallback([&sessionClosed](void) {
             Logger::log(LogLevel::INFO, "session closed, stop rtsp server");
             sessionClosed = true;
         });
@@ -893,6 +895,12 @@ main_exit:
         gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
     }
     Logger::log(LogLevel::INFO, "Power off From Main function");
+    auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
+    if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
+        || !gpio_power_hold.setValue(GPIO_VALUE::LOW)) {
+        Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
+    }
+    auto_release.release();
     Misc::poweroff();
     while(1);
     return 0;

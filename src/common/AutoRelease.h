@@ -13,6 +13,13 @@ public:
             releaseFunc();
         }
     }
+
+    void release() {
+        if (releaseFunc) {
+            releaseFunc();
+            releaseFunc = nullptr;
+        }
+    }
 private:
     std::function<void()> releaseFunc;
 };

@@ -27,7 +27,7 @@ public:
 	bool loadFromJsonFile(const std::string& filePath);
 
 public:
-	uint8_t stillSize;
+	uint8_t stillSize = 1;
 	uint8_t stillQuality;
 	uint8_t stillDriverMode;
 	uint8_t stillStamp;
