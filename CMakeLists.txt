@@ -20,7 +20,7 @@ set(THIRD_PARTY_PATH "${PROJECT_ROOT}/third_party" CACHE STRING "Third party lib
 
 #Set options
 add_definitions(-DRTC_EXIST=1)
-
+add_definitions(-DDAEMON_ENABLE=0)
 # set sensor type
 #add_definitions(-DSENSOR_TYPE_SC4366P)
 add_definitions(-DSENSOR_TYPE_GC4653)
@@ -30,7 +30,7 @@ add_definitions(-DSENSOR_TYPE_GC4653)
 add_definitions(-DWIFI_TYPE_RTL8189FS)
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # Set C standard

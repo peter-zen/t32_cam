@@ -1,6 +1,7 @@
 # Compile executable
 file(GLOB MAIN_APP_SOURCES "${SOURCES}/app/main_app.cpp")
 file(GLOB MEDIA_APP_SOURCES "${SOURCES}/app/media_app.cpp")
+file (GLOB DAEMON_APP_SOURCES "${SOURCES}/app/daemon_app.cpp")
 
 include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -18,6 +19,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../gpio
         ${CMAKE_CURRENT_SOURCE_DIR}/../workmode
         ${CMAKE_CURRENT_SOURCE_DIR}/../daynight
+        ${CMAKE_CURRENT_SOURCE_DIR}/../daemon
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/snap
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/video
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/rtsp
@@ -32,6 +34,44 @@ link_directories(
 
 add_executable(htc_main_app ${MAIN_APP_SOURCES})
 add_executable(htc_media_app ${MEDIA_APP_SOURCES})
+add_executable(htc_daemon_app ${DAEMON_APP_SOURCES})
+
+# Link libraries
+target_link_libraries(htc_daemon_app 
+    PRIVATE
+
+    #common libs
+    daemon
+    misc
+    common
+    setting
+    env
+    devconf
+    base64
+    crc16
+    md5
+    jsoncpp
+    daynight
+    workmode
+    logger
+
+    #misc libs
+    mcu
+    power
+    disk
+    time
+
+    #sdk libs
+    system_call
+    imp
+    alog
+
+    #std libs
+    pthread
+    rt
+    gcc
+    stdc++
+)
 
 # Link libraries
 target_link_libraries(htc_main_app 
@@ -46,6 +86,7 @@ target_link_libraries(htc_main_app
     network
 
     #common libs
+    daemon
     misc
     common
     setting
@@ -109,6 +150,11 @@ set_target_properties(htc_main_app PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 set_target_properties(htc_media_app PROPERTIES 
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+set_target_properties(htc_daemon_app PROPERTIES 
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

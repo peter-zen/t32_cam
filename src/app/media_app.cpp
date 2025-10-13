@@ -91,8 +91,6 @@ static bool startApp(const std::string& command)
 
 int quick_snap(bool is_rtc_work_well)
 {
-    int ret = 0;
-
     auto dirPath = std::string(QUICK_SNAP_DIR);
     if (!createDirectory(dirPath, 0777)) {
         Logger::log(LogLevel::ERROR, "Failed to create directory: %s", dirPath.c_str());
@@ -218,7 +216,10 @@ int main(int argc, char* argv[])
         }
     }
 
-main_exit: 
+main_exit:
+    #if DAEMON_ENABLE
+    startApp("htc_daemon_app &");
+    #endif
     // call htc_main_app
     std::string command = "htc_main_app -wm " + to_string_custom((int)working_mode) + " -rtc " + to_string_custom(rtc_work_well);
     startApp(command);

@@ -35,6 +35,7 @@
 #include "Power.h"
 #include "AutoRelease.h"
 #include "RTC.h"
+#include "daemon_api.h"
 
 using namespace network;
 using namespace media;
@@ -662,6 +663,17 @@ int main(int argc, char* argv[])
         }
     }
     
+    #if DAEMON_ENABLE
+    // 注册到守护服务器
+    int pid = getpid();
+    int intervalMs = 2000;
+    if (registerToDaemonServer(pid, intervalMs)) {
+        Logger::log(LogLevel::INFO, "Registered to daemon server with PID=%d, interval=%dms", pid, intervalMs);
+    } else {
+        Logger::log(LogLevel::WARNING, "Failed to register to daemon server");
+    }
+    #endif
+
     Misc::setNetworkInterfaceName(NETIF_NAME);
     EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);
     std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
@@ -1062,7 +1074,7 @@ main_exit:
         Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
     }
     auto_release.release();
-    //Misc::poweroff();
-    //while(1);
+    Misc::poweroff();
+    while(1);
     return 0;
 }
