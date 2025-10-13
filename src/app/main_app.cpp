@@ -10,6 +10,9 @@
 #include <sys/time.h>
 #include <json/json.h>
 #include <csignal>
+#include <queue>
+#include <thread>
+#include <mutex>
 
 #include "MgmtServClient.h"
 #include "RemoteCtrlClient.h"
@@ -332,81 +335,222 @@ static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
 static std::shared_ptr<RemoteCtrlClient> remoteCtrlClient = nullptr;
 static std::shared_ptr<StorageServClient> storageServClient = nullptr;
 // Signal handler for CTRL+C
+// 信号处理消息结构体
+enum class SignalMessageType {
+    EXIT,        // 退出信号(SIGINT)
+    SHUTDOWN,    // 关闭信号(SIGTERM)
+    STOP_THREAD  // 停止工作线程
+};
+
+struct SignalMessage {
+    SignalMessageType type;
+    // 可以根据需要添加更多字段
+};
+
+struct SignalResult {
+    bool success;
+    // 可以根据需要添加更多字段
+};
+
+// 全局变量用于线程间通信
+std::queue<SignalMessage> signalMessageQueue;
+std::mutex messageMutex;
+std::condition_variable messageCondition;
+
+SignalResult signalResult;
+std::mutex resultMutex;
+std::condition_variable resultCondition;
+bool resultReady = false;
+
+// 工作线程函数，执行实际的信号处理逻辑
+static void signalHandlerThreadFunc() {
+    while (true) {
+        SignalMessage message;
+        
+        // 等待消息
+        {            
+            std::unique_lock<std::mutex> lock(messageMutex);
+            messageCondition.wait(lock, []{ return !signalMessageQueue.empty(); });
+            
+            message = signalMessageQueue.front();
+            signalMessageQueue.pop();
+        }
+        
+        // 处理消息
+        SignalResult result = {true};
+        
+        switch (message.type) {
+            case SignalMessageType::EXIT: {
+                Logger::log(LogLevel::INFO, "Processing SIGINT in worker thread...");
+                if (daynight_switch) {
+                    daynight_switch->controlISP(DayNightState::DAY);
+                    daynight_switch->controlIRLed(DayNightState::DAY);
+                    daynight_switch->controlIRCut(DayNightState::DAY);
+                }
+
+                if (gpio_rgb_led) {
+                    gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
+                }
+
+                std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
+                if (setting_file_path.empty()) {
+                    Logger::log(LogLevel::ERROR, "Failed to get setting file path");
+                    result.success = false;
+                } else {
+                    if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
+                        Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
+                        result.success = false;
+                    }
+                }
+
+                remoteCtrlClient = nullptr;
+                mgmtServClient = nullptr;
+                storageServClient = nullptr;
+
+                break;
+            }
+            
+            case SignalMessageType::SHUTDOWN: {
+                Logger::log(LogLevel::INFO, "Processing SIGTERM in worker thread...");
+                
+                if (daynight_switch) {
+                    daynight_switch->controlISP(DayNightState::DAY);
+                    daynight_switch->controlIRLed(DayNightState::DAY);
+                    daynight_switch->controlIRCut(DayNightState::DAY);
+                }
+
+                if (gpio_rgb_led) {
+                    gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
+                }
+
+                std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
+                if (setting_file_path.empty()) {
+                    Logger::log(LogLevel::ERROR, "Failed to get setting file path");
+                    result.success = false;
+                } else {
+                    if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
+                        Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
+                        result.success = false;
+                    }
+                }
+
+                remoteCtrlClient = nullptr;
+                mgmtServClient = nullptr;
+                storageServClient = nullptr;
+            
+                if (Power::getInstance()->isChangeModeRequested()) {
+                    Logger::log(LogLevel::INFO, "Change mode requested, not powering off");
+                    auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
+                    if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
+                        || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
+                        Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
+                        result.success = false;
+                    }
+                } else {
+                    auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
+                    if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
+                        || !gpio_power_hold.setValue(GPIO_VALUE::LOW)) {
+                        Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
+                        result.success = false;
+                    }
+                }
+                break;
+            }
+            
+            case SignalMessageType::STOP_THREAD: {
+                Logger::log(LogLevel::INFO, "Stopping signal handler thread...");
+                return; // 退出线程
+            }
+            
+            default:
+                Logger::log(LogLevel::WARNING, "Unknown signal message type");
+                result.success = false;
+                break;
+        }
+        
+        // 发送结果回signalHandler
+        {            
+            std::lock_guard<std::mutex> lock(resultMutex);
+            signalResult = result;
+            resultReady = true;
+        }
+        resultCondition.notify_one();
+    }
+}
+
 static void signalHandler(int signal)
 {
-   
+    if (already_in_exit_flow) {
+        return;
+    }
+    SignalMessage message;
     if (signal == SIGINT) {
-        Logger::log(LogLevel::INFO, "Received SIGINT, exiting...");
+        Logger::log(LogLevel::INFO, "Received SIGINT, sending to worker thread...");
+        message.type = SignalMessageType::EXIT;
     }
-    if (signal == SIGTERM) {
-        Logger::log(LogLevel::INFO, "Received SIGTERM, shutting down...");
+    else if (signal == SIGTERM) {
+        Logger::log(LogLevel::INFO, "Received SIGTERM, sending to worker thread...");
+        message.type = SignalMessageType::SHUTDOWN;
     }
-    if (!already_in_exit_flow) {
-        if (daynight_switch) {
-            daynight_switch->controlIRLed(DayNightState::DAY);
-            daynight_switch->controlIRCut(DayNightState::DAY);
-        }
-
-        if (gpio_rgb_led) {
-            gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
-        }
-
-        #if 0
-        // Stop RTSP server if it's running
-        if (RtspServer::getInstance()->isRunning()) {
-            Logger::log(LogLevel::INFO, "Stopping RTSP server...");
-            RtspServer::getInstance()->stop();
-        }
-        #endif
-
-        std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
-        if (setting_file_path.empty()) {
-            Logger::log(LogLevel::ERROR, "Failed to get setting file path");
-        } else {
-            if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
-                Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
-            }
-        }
-
-        remoteCtrlClient = nullptr;
-        mgmtServClient = nullptr;
-        storageServClient = nullptr;
-
-        already_in_exit_flow = true;
+    else {
+        Logger::log(LogLevel::WARNING, "Received unhandled signal: %d", signal);
+        return;
     }
     
+    // 将消息放入队列
+    {        
+        std::lock_guard<std::mutex> lock(messageMutex);
+        signalMessageQueue.push(message);
+    }
+    messageCondition.notify_one();
+    
+    // 等待工作线程完成处理并返回结果，最多等待2秒
+    {        
+        std::unique_lock<std::mutex> lock(resultMutex);
+        auto waitResult = resultCondition.wait_for(lock, std::chrono::seconds(2), []{ return resultReady; });
+        
+        if (!waitResult) {
+            // 超时处理
+            Logger::log(LogLevel::WARNING, "Signal processing timed out after 2 seconds");
+        } else {
+            // 处理结果
+            if (signalResult.success) {
+                Logger::log(LogLevel::INFO, "Signal processing completed successfully");
+            } else {
+                Logger::log(LogLevel::ERROR, "Signal processing completed with errors");
+            }
+            
+            // 重置结果标志
+            resultReady = false;
+        }
+    }
+    already_in_exit_flow = true;
     if (signal == SIGTERM) {
         if (Power::getInstance()->isChangeModeRequested()) {
-            Logger::log(LogLevel::INFO, "Change mode requested, not powering off");
-            auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
-            if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
-                || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
-                Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
-            }
-
+            Logger::log(LogLevel::INFO, "Waiting 2 seconds before reboot...");
             sleep(2);
             Misc::reboot();
             while(1);
         } else {
-            auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
-            if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
-                || !gpio_power_hold.setValue(GPIO_VALUE::LOW)) {
-                Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
-            }
             Logger::log(LogLevel::INFO, "Waiting 2 seconds before power off...");
             sleep(2);
-            Logger::log(LogLevel::INFO, "Power off from signal handler");
             Misc::poweroff();
             while(1);
         }
     }
 }
 
+// 工作线程全局变量
+std::thread signalHandlerThread;
+
 int main(int argc, char* argv[])
 {
     bool update_config_exists = false;
     bool is_rtc_work_well = true;
     enum workingMode working_mode = workingMode::WORKING_MODE_MAX;
+
+    // 启动信号处理工作线程
+    signalHandlerThread = std::thread(signalHandlerThreadFunc);
 
     daynight_switch = DayNightSwitch::getInstance();
     if (daynight_switch) {
@@ -427,6 +571,10 @@ int main(int argc, char* argv[])
             daynight_switch->controlISP(DayNightState::DAY);
             daynight_switch->controlIRCut(DayNightState::DAY);
             daynight_switch->controlIRLed(DayNightState::DAY);
+        }
+
+        if (gpio_rgb_led) {
+            gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
         }
     });
     
@@ -890,10 +1038,23 @@ int main(int argc, char* argv[])
         }
 
 main_exit:
-    Settings::getInstance()->saveToJsonFile(setting_file_path);
-    if (gpio_rgb_led) {
-        gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
+    // 停止信号处理工作线程
+    if (signalHandlerThread.joinable()) {
+        Logger::log(LogLevel::INFO, "Stopping signal handler thread...");
+        // 发送停止线程的消息
+        {
+            std::lock_guard<std::mutex> lock(messageMutex);
+            signalMessageQueue.push({SignalMessageType::STOP_THREAD});
+        }
+        messageCondition.notify_one();
+        
+        // 等待线程结束
+        signalHandlerThread.join();
+        Logger::log(LogLevel::INFO, "Signal handler thread stopped");
     }
+    
+    Settings::getInstance()->saveToJsonFile(setting_file_path);
+    
     Logger::log(LogLevel::INFO, "Power off From Main function");
     auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
     if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
@@ -901,7 +1062,7 @@ main_exit:
         Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
     }
     auto_release.release();
-    Misc::poweroff();
-    while(1);
+    //Misc::poweroff();
+    //while(1);
     return 0;
 }

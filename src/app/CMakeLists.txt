@@ -71,6 +71,7 @@ target_link_libraries(htc_main_app
     alog
 
     #std libs
+    pthread
     rt
     gcc
     stdc++
