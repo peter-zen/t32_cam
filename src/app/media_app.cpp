@@ -171,6 +171,7 @@ int main(int argc, char* argv[])
     bool rtc_work_well = true;
     bool load_success = false;
     auto working_mode = workingMode::WORKING_MODE_MAX;
+    #if !UVC_ENABLE
     std::string setting_file_path;
     //show timestamp
     struct timespec ts0;
@@ -215,6 +216,9 @@ int main(int argc, char* argv[])
             working_mode = workingMode::WORKING_MODE_MAX;
         }
     }
+#else
+    working_mode = workingMode::WORKING_MODE_UVC;
+#endif
 
 main_exit:
     #if DAEMON_ENABLE

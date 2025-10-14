@@ -7,6 +7,8 @@
 #include "Logger.h"
 #include "GPIO.h"
 #include "imp_isp.h"
+#include "Common.h"
+#include "DeviceConfig.h"
 
 std::shared_ptr<DayNightSwitch> DayNightSwitch::getInstance()
 {
@@ -92,6 +94,11 @@ bool DayNightSwitch::controlIRCut(DayNightState state)
         return false;
     }
 
+    auto wled = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_WLED, 0);
+    if (state == DayNightState::NIGHT && wled == 1) {
+        state = DayNightState::DAY;
+    }
+
     auto gpio_ircut_enable_pin = GPIO(irCutEnablePin);
     auto gpio_ircut_ctrl_pin = GPIO(irCutCtrlPin);
 
@@ -160,6 +167,11 @@ bool DayNightSwitch::controlISP(DayNightState state)
         return false;
     }
 
+    auto wled = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_WLED, 0);
+    if (state == DayNightState::NIGHT && wled == 1) {
+        state = DayNightState::DAY;
+    }
+
     IMP_ISP_Tuning_GetISPRunningMode(vinum, &pmode);
     if (state == DayNightState::DAY && pmode == IMPISP_RUNNING_MODE_NIGHT) {
         IMPISPRunningMode mode = IMPISP_RUNNING_MODE_DAY;
@@ -205,8 +217,7 @@ bool DayNightSwitch::startAutoSwithch()
             this->controlIRLed(this->dayNightState);
             this->controlISP(this->dayNightState);
             
-            // Sleep for 1 second
-            usleep(1000000);
+            std::this_thread::sleep_for(std::chrono::seconds(5));
         }
     });
     

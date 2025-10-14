@@ -12,12 +12,13 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../common
         ${CMAKE_CURRENT_SOURCE_DIR}/../logger
         ${CMAKE_CURRENT_SOURCE_DIR}/../gpio
+        ${CMAKE_CURRENT_SOURCE_DIR}/../devconf
 )
 
 # Create library
 add_library(daynight SHARED ${SOURCE_FILES})
 
-target_link_libraries(daynight PUBLIC logger)
+target_link_libraries(daynight PUBLIC devconf logger)
 # Set the output directory for the library
 set_target_properties(daynight PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"

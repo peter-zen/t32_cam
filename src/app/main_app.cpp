@@ -315,6 +315,7 @@ static void printUsage(char *argv[])
     std::cout << "  -rs, --rtsp-server\tStart the RTSP server" << std::endl;
     std::cout << "  -grtc, --get-rtc\tGet RTC time" << std::endl;
     std::cout << "  -srtc, --set-rtc\tSet RTC time" << std::endl;
+    std::cout << "  -uv, --uvc\t\tStart the UVC" << std::endl;
 }
 
 #define CMD_HELP 0
@@ -549,7 +550,7 @@ int main(int argc, char* argv[])
     bool update_config_exists = false;
     bool is_rtc_work_well = true;
     enum workingMode working_mode = workingMode::WORKING_MODE_MAX;
-
+    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
     // 启动信号处理工作线程
     signalHandlerThread = std::thread(signalHandlerThreadFunc);
 
@@ -649,6 +650,9 @@ int main(int argc, char* argv[])
                 case WORKING_MODE_SNAP_UPLOAD:
                     command = CMD_SNAP | CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
                     break;
+                case WORKING_MODE_UVC:
+                    command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_RTSP_SERVER;
+                    break;
                 default:
                     Logger::log(LogLevel::ERROR, "%s Invalid working mode %d, power off", __func__, working_mode);
                     //Power::getInstance()->requestShutdown();
@@ -675,7 +679,6 @@ int main(int argc, char* argv[])
     #endif
 
     Misc::setNetworkInterfaceName(NETIF_NAME);
-    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);
     std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
     if (!setting_file_path.empty()) {
         Settings::getInstance()->loadFromJsonFile(setting_file_path);
@@ -741,6 +744,10 @@ int main(int argc, char* argv[])
     if (command & CMD_CONNECT_WIFI) {
         auto wifi_ssid = config->get(INI_SECTION_SYS, INI_KEY_UPID, "");
         auto wifi_pwd = config->get(INI_SECTION_SYS, INI_KEY_PWD, "");
+        if (wifi_ssid.empty() || wifi_pwd.empty()) {
+            Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");
+            goto main_exit;
+        }
         if (!Misc::connectWifi(wifi_ssid, wifi_pwd)) {
             Logger::log(LogLevel::ERROR, "connect wifi error");
             goto main_exit;
@@ -873,6 +880,10 @@ int main(int argc, char* argv[])
     if (command & CMD_MOBILE) {
         auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
         auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
+        if (wifi_ssid.empty() || wifi_pwd.empty()) {
+            Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");
+            goto main_exit;
+        }
         Misc::connectWifi(wifi_ssid, wifi_pwd);
         Misc::startDHCP();
         auto remoteCtrlServerIp = Misc::getGatewayAddress(Misc::getNetworkInterfaceName());
