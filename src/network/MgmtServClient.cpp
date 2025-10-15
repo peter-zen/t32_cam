@@ -27,6 +27,8 @@
 #include "Usb4gDongle.h"
 #include "Disk.h"
 #include "StringConvert.h"
+#include "Misc.h"
+#include "Timezone.h"
 
 using namespace network;
 
@@ -652,9 +654,8 @@ int MgmtServClient::sendHeartbeat(const std::string &message)
 	auto pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
 	auto comm_code = Settings::getInstance()->comm_code;
 
-	std::ostringstream oss;
-	oss << std::put_time(localtime(&tv.tv_sec), "%Y-%m-%dT%H:%M:%S.000+08:00");
-	std::string time_str = oss.str();
+	// Use the reusable function to format current time with dynamic timezone
+	std::string time_str = Timezone::getFormattedTimeWithTimezone(tv.tv_sec);
 
 	uint16_t check_code = 0x0000;
 	int ret = 0;
@@ -736,9 +737,8 @@ std::string MgmtServClient::formatHeartbeatMessage()
 {
 	struct timeval tv;
 	gettimeofday(&tv, nullptr);
-	std::ostringstream time_stream;
-	time_stream << std::put_time(std::localtime(&tv.tv_sec), "%Y-%m-%dT%H:%M:%S.000+08:00");
-	std::string time_str = time_stream.str();
+	// Use the reusable function to format current time with dynamic timezone
+	std::string time_str = Timezone::getFormattedTimeWithTimezone(tv.tv_sec);
 	Logger::log(LogLevel::DEBUG, "time %s", time_str.c_str());
 
 	auto settings = Settings::getInstance();

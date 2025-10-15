@@ -36,6 +36,7 @@
 #include "AutoRelease.h"
 #include "RTC.h"
 #include "daemon_api.h"
+#include "Timezone.h"
 
 using namespace network;
 using namespace media;
@@ -58,14 +59,11 @@ static bool getFileCreationTime(const std::string& filename, std::string& time_s
     char tmp_buffer[64];
     struct stat attr;
     if (stat(filename.c_str(), &attr) == 0) {
-        std::tm* tm_info = std::localtime(&attr.st_ctime);
-        
-        if (!std::strftime(tmp_buffer, sizeof(tmp_buffer), "%Y-%m-%dT%H:%M:%S.000+08:00", tm_info)) {
+        time_str = Timezone::getFormattedTimeWithTimezone(attr.st_ctime);
+        if (time_str.empty()) {
             Logger::log(LogLevel::ERROR, "Failed to get file creation time");
             return false;
         }
-        time_str = tmp_buffer;
-    } else {
         char year[5] = {0}, mon[3] = {0}, day[3] = {0}, hour[3] = {0}, min[3] = {0}, sec[3] = {0};
         auto filename_no_path = filename.substr(filename.find_last_of('/') + 1);
         memset( year, 0, 5 );
@@ -80,9 +78,19 @@ static bool getFileCreationTime(const std::string& filename, std::string& time_s
         strncpy(min, filename_no_path.c_str() + 11, 2);
         memset( sec, 0, 3 );
         strncpy(sec, filename_no_path.c_str() + 13, 2);
-        snprintf(tmp_buffer, sizeof(tmp_buffer), "%s-%s-%sT%s:%s:%s.000+08:00", year, mon, day, hour, min, sec);
-
-        time_str = tmp_buffer;
+        
+        // Create a time_t object from parsed components
+        struct tm tm_info = {0};
+        tm_info.tm_year = atoi(year) - 1900;  // Years since 1900
+        tm_info.tm_mon = atoi(mon) - 1;       // Months (0-11)
+        tm_info.tm_mday = atoi(day);          // Day of month
+        tm_info.tm_hour = atoi(hour);         // Hour
+        tm_info.tm_min = atoi(min);           // Minute
+        tm_info.tm_sec = atoi(sec);           // Second
+        
+        // Convert to time_t and use the function with timezone
+        time_t parsed_time = mktime(&tm_info);
+        time_str = Timezone::getFormattedTimeWithTimezone(parsed_time);
     }
 
     return true;
@@ -94,10 +102,14 @@ static int generateDescInfo(std::vector<std::string>& files, std::string& desc_i
     char temp_buf[32] = {0};
     auto mcu = MCU::getInstance();
     struct timeval tv;
-	gettimeofday(&tv, nullptr);
-    std::ostringstream oss;
-	oss << std::put_time(localtime(&tv.tv_sec), "%Y-%m-%dT%H:%M:%S.000+08:00");
-	std::string current_time_str = oss.str();
+    gettimeofday(&tv, nullptr);
+    
+    // Use the reusable function to format current time with dynamic timezone
+    std::string current_time_str = Timezone::getFormattedTimeWithTimezone(tv.tv_sec);
+    if (current_time_str.empty()) {
+        Logger::log(LogLevel::ERROR, "Failed to get current time string");
+        return -1;
+    }
 
     Json::Value json_root;
     json_root["F_UploadedTag"] = 0;
@@ -547,6 +559,7 @@ std::thread signalHandlerThread;
 
 int main(int argc, char* argv[])
 {
+    std::string timezone;
     bool update_config_exists = false;
     bool is_rtc_work_well = true;
     enum workingMode working_mode = workingMode::WORKING_MODE_MAX;
@@ -710,6 +723,12 @@ int main(int argc, char* argv[])
             config->flush_control(false);
             goto main_exit;
         }
+    }
+    //timezone
+    timezone = config->get(INI_SECTION_NTP, INI_KEY_TIMEZONE, "");
+    if (!timezone.empty()) {
+        Logger::log(LogLevel::INFO, "Set timezone to %s", timezone.c_str());
+        Timezone::setTimezone(timezone);
     }
 
     //RTC

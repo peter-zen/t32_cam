@@ -16,6 +16,7 @@
 #include "Common.h"
 #include "Misc.h"
 #include "StorageServClient.h"
+#include "Timezone.h"
 
 using namespace network;
 
@@ -122,9 +123,8 @@ int StorageServClient::upload(const std::string &file_pathname)
 	struct timeval tv;
 	gettimeofday(&tv, nullptr);
 
-	std::ostringstream oss;
-	oss << std::put_time(localtime(&tv.tv_sec), "%Y-%m-%dT%H:%M:%S.000+08:00");
-	std::string time_str = oss.str();
+	// Use the reusable function to format current time with dynamic timezone
+	std::string time_str = Timezone::getFormattedTimeWithTimezone(tv.tv_sec);
 
 	uint16_t check_code = 0x0000;
 	int ret = 0;

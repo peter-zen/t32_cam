@@ -22,6 +22,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../mcu
     ${CMAKE_CURRENT_SOURCE_DIR}/../disk
     ${CMAKE_CURRENT_SOURCE_DIR}/../time
+    ${CMAKE_CURRENT_SOURCE_DIR}/../timezone
     ${CMAKE_CURRENT_SOURCE_DIR}/../power
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${THIRD_PARTY_PATH}/jsoncpp/include
@@ -29,7 +30,7 @@ include_directories(
 )
 
 # link libraries
-target_link_libraries(network PRIVATE common setting env disk mcu time power jsoncpp md5 pthread)
+target_link_libraries(network PRIVATE common setting env disk mcu time timezone power jsoncpp md5 pthread)
 
 # Set the output directory for the library
 set_target_properties(network PROPERTIES

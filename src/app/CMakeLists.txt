@@ -15,6 +15,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../mcu
         ${CMAKE_CURRENT_SOURCE_DIR}/../disk
         ${CMAKE_CURRENT_SOURCE_DIR}/../time
+        ${CMAKE_CURRENT_SOURCE_DIR}/../timezone
         ${CMAKE_CURRENT_SOURCE_DIR}/../power
         ${CMAKE_CURRENT_SOURCE_DIR}/../gpio
         ${CMAKE_CURRENT_SOURCE_DIR}/../workmode
@@ -87,6 +88,7 @@ target_link_libraries(htc_main_app
 
     #common libs
     daemon
+    timezone
     misc
     common
     setting
@@ -132,7 +134,8 @@ target_link_libraries(htc_media_app
     workmode
     logger
     time
-    
+    timezone
+
     #sdk libs
     system_call
     imp

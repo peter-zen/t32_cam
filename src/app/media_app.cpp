@@ -22,6 +22,8 @@
 #include "WorkMode.h"
 #include "AutoRelease.h"
 #include "RTC.h"
+#include "DeviceConfig.h"
+#include "Timezone.h"
 
 using namespace media;
 
@@ -189,6 +191,12 @@ int main(int argc, char* argv[])
     }
 
     if (EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME)) {
+        auto config = DeviceConfig::getInstance();
+        std::string timezone = config->get(INI_SECTION_NTP, INI_KEY_TIMEZONE, "");
+        if (!timezone.empty()) {
+            Logger::log(LogLevel::INFO, "Set timezone to %s", timezone.c_str());
+            Timezone::setTimezone(timezone);
+        }
         setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
         if (!setting_file_path.empty()) {
             load_success = Settings::getInstance()->loadFromJsonFile(setting_file_path);
