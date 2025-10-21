@@ -524,17 +524,14 @@ static void signalHandler(int signal)
         auto waitResult = resultCondition.wait_for(lock, std::chrono::seconds(2), []{ return resultReady; });
         
         if (!waitResult) {
-            // 超时处理
             Logger::log(LogLevel::WARNING, "Signal processing timed out after 2 seconds");
         } else {
-            // 处理结果
             if (signalResult.success) {
                 Logger::log(LogLevel::INFO, "Signal processing completed successfully");
             } else {
                 Logger::log(LogLevel::ERROR, "Signal processing completed with errors");
             }
             
-            // 重置结果标志
             resultReady = false;
         }
     }
@@ -542,11 +539,13 @@ static void signalHandler(int signal)
     if (signal == SIGTERM) {
         if (Power::getInstance()->isChangeModeRequested()) {
             Logger::log(LogLevel::INFO, "Waiting 2 seconds before reboot...");
+            DeviceConfig::getInstance()->flush();
             sleep(2);
             Misc::reboot();
             while(1);
         } else {
             Logger::log(LogLevel::INFO, "Waiting 2 seconds before power off...");
+            DeviceConfig::getInstance()->flush();
             sleep(2);
             Misc::poweroff();
             while(1);
@@ -710,7 +709,7 @@ int main(int argc, char* argv[])
         update_config_exists = update_config_file.is_open();
         if (update_config_exists) {
             Logger::log(LogLevel::INFO, "Update config file exists, preparing to update config");
-            update_config_file.close();  // Close file before moving
+            update_config_file.close();
         }
     }
     
@@ -1104,6 +1103,7 @@ main_exit:
         Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
     }
     auto_release.release();
+    config->flush();
     Misc::poweroff();
     while(1);
     return 0;
