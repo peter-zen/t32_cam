@@ -3,6 +3,7 @@
 #include "Logger.h"
 #include "RTC.h"
 #include "StringConvert.h"
+#include "Common.h"
 
 #define I2C_BUS_NAME "/dev/i2c-0"
 #define I2C_SLAVE_ADDRESS "0x50"
@@ -546,20 +547,20 @@ bool MCU::writeRemoteWakeup(int remote_wakeup)
 
 bool MCU::setDatetime(const struct tm &time)
 {
-	Logger::log(LogLevel::INFO, "%04d-%02d-%02d %02d:%02d:%02d", time.tm_year + 1900, time.tm_mon + 1, time.tm_mday,
+	Logger::log(LogLevel::INFO, "%04d-%02d-%02d %02d:%02d:%02d", time.tm_year + YEAR_OFFSET, time.tm_mon + MONTH_OFFSET, time.tm_mday,
 		    time.tm_hour, time.tm_min, time.tm_sec);
 
 	unsigned char buf[1];
 
-	buf[0] = (time.tm_year + 1900) / 100;
+	buf[0] = (time.tm_year + YEAR_OFFSET) / 100;
 	if (i2c->write(PARAM_YEAR_H, buf, 1) != 1)
 		return false;
 
-	buf[0] = (time.tm_year + 1900) % 100;
+	buf[0] = (time.tm_year + YEAR_OFFSET) % 100;
 	if (i2c->write(PARAM_YEAR, buf, 1) != 1)
 		return false;
 
-	buf[0] = time.tm_mon + 1; /* tm_mon范围是0-11，需要+1转换为1-12 */
+	buf[0] = time.tm_mon + MONTH_OFFSET;
 	if (i2c->write(PARAM_MONTH, buf, 1) != 1)
 		return false;
 
@@ -638,8 +639,8 @@ struct tm MCU::getDatetime()
 	if ((second >= 0 && second < 60) && (minute >= 0 && minute < 60) && (hour >= 0 && hour < 24) &&
 	    (day >= 1 && day <= 31) && (month >= 1 && month <= 12) && ((year % 100) >= 23) && ((year % 100) <= 99)) {
 		/* 转换为tm结构 */
-		time_info.tm_year = year - 1900; /* tm_year是从1900年开始的年数 */
-		time_info.tm_mon = month - 1; /* tm_mon范围是0-11 */
+		time_info.tm_year = year - YEAR_OFFSET;
+		time_info.tm_mon = month - MONTH_OFFSET;
 		time_info.tm_mday = day;
 		time_info.tm_hour = hour;
 		time_info.tm_min = minute;

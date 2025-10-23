@@ -715,8 +715,8 @@ void RemoteCtrlClient::handleSetDatetimeCommand(const Json::Value &root)
             // Set system time
             struct tm new_time;
             memset(&new_time, 0, sizeof(new_time));
-            new_time.tm_year = year - 1900; // 年份从1900开始
-            new_time.tm_mon = month - 1; // 月份从0开始，原代码有误，这里修正
+            new_time.tm_year = year - YEAR_OFFSET;
+            new_time.tm_mon = month - MONTH_OFFSET;
             new_time.tm_mday = day;
             new_time.tm_hour = hour;
             new_time.tm_min = min;

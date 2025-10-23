@@ -1,5 +1,6 @@
 
 #include <iostream>
+#include <sys/time.h>
 #include <chrono>
 #include <iomanip>
 #include <sstream>
@@ -31,7 +32,18 @@ static bool isRTCWorkWell()
 {
     #if RTC_EXIST
         struct tm nowtime;
-        return RTC::getInstance()->getTime(nowtime);
+        if (!RTC::getInstance()->getTime(nowtime)) {
+            return false;
+        }
+        // Convert tm to timeval and set system time
+        time_t time_in_sec = mktime(&nowtime);
+        if (time_in_sec != -1) {
+            struct timeval tv;
+            tv.tv_sec = time_in_sec;
+            tv.tv_usec = 0;
+            settimeofday(&tv, nullptr);
+        }
+        return true;
     #else
         return false;
     #endif

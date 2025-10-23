@@ -9,6 +9,7 @@
 #include <linux/rtc.h>
 #include <string.h>
 #include "Logger.h"
+#include "Common.h"
 
 std::shared_ptr<RTC> RTC::getInstance()
 {
@@ -53,9 +54,9 @@ bool RTC::setTime(const struct tm &time) {
         time.tm_hour < 0 || time.tm_hour > 23 ||
         time.tm_mday < 1 || time.tm_mday > 31 ||
         time.tm_mon < 0 || time.tm_mon > 11 ||
-        time.tm_year < 70) {  // Year must be at least 1970 (70 in tm_year format)
+        time.tm_year < YEAR_MIN-YEAR_OFFSET) {  // Year must be at least 2000 (100 in tm_year format)
         Logger::log(LogLevel::ERROR, "Invalid time parameters: %04d-%02d-%02d %02d:%02d:%02d",
-                   time.tm_year + 1900, time.tm_mon + 1, time.tm_mday,
+                   time.tm_year + YEAR_OFFSET, time.tm_mon + MONTH_OFFSET, time.tm_mday,
                    time.tm_hour, time.tm_min, time.tm_sec);
         return false;
     }
@@ -73,15 +74,15 @@ bool RTC::setTime(const struct tm &time) {
     rtc_tm.tm_min = time.tm_min;
     rtc_tm.tm_hour = time.tm_hour;
     rtc_tm.tm_mday = time.tm_mday;
-    rtc_tm.tm_mon = time.tm_mon;  // Note: Linux RTC expects 0-11 for month
-    rtc_tm.tm_year = time.tm_year - 1900;  // Years since 1900
+    rtc_tm.tm_mon = time.tm_mon;
+    rtc_tm.tm_year = time.tm_year;
     rtc_tm.tm_wday = time.tm_wday;
     rtc_tm.tm_yday = time.tm_yday;
     rtc_tm.tm_isdst = time.tm_isdst;
     
     // Log the time being set to RTC
     Logger::log(LogLevel::DEBUG, "Setting RTC time: %04d-%02d-%02d %02d:%02d:%02d",
-                rtc_tm.tm_year + 1900, rtc_tm.tm_mon + 1, rtc_tm.tm_mday,
+                rtc_tm.tm_year + YEAR_OFFSET, rtc_tm.tm_mon + MONTH_OFFSET, rtc_tm.tm_mday,
                 rtc_tm.tm_hour, rtc_tm.tm_min, rtc_tm.tm_sec);
     
     // Set RTC time using ioctl
@@ -89,7 +90,7 @@ bool RTC::setTime(const struct tm &time) {
         Logger::log(LogLevel::ERROR, "Failed to set RTC time: %s (errno=%d)", 
                     strerror(errno), errno);
         Logger::log(LogLevel::ERROR, "Time parameters causing error: %04d-%02d-%02d %02d:%02d:%02d",
-                    rtc_tm.tm_year + 1900, rtc_tm.tm_mon + 1, rtc_tm.tm_mday,
+                    rtc_tm.tm_year + YEAR_OFFSET, rtc_tm.tm_mon + MONTH_OFFSET, rtc_tm.tm_mday,
                     rtc_tm.tm_hour, rtc_tm.tm_min, rtc_tm.tm_sec);
         
         return false;
@@ -133,8 +134,8 @@ bool RTC::getTime(struct tm& time) {
     time.tm_min = rtc_tm.tm_min;
     time.tm_hour = rtc_tm.tm_hour;
     time.tm_mday = rtc_tm.tm_mday;
-    time.tm_mon = rtc_tm.tm_mon;  // Note: Both use 0-11 for month
-    time.tm_year = rtc_tm.tm_year + 1900;  // Convert to years since 1900
+    time.tm_mon = rtc_tm.tm_mon;
+    time.tm_year = rtc_tm.tm_year;
     time.tm_wday = rtc_tm.tm_wday;
     time.tm_yday = rtc_tm.tm_yday;
     time.tm_isdst = rtc_tm.tm_isdst;

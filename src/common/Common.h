@@ -182,6 +182,12 @@ static struct {
 //RGB LED pins
 #define RGB_LED_PIN   PB(11)
 
+
+//DATE TIME
+#define YEAR_MIN 2000
+#define YEAR_OFFSET 1900
+#define MONTH_OFFSET 1
+
 #ifdef __cplusplus
 }
 #endif

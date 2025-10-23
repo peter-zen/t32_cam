@@ -81,8 +81,8 @@ static bool getFileCreationTime(const std::string& filename, std::string& time_s
         
         // Create a time_t object from parsed components
         struct tm tm_info = {0};
-        tm_info.tm_year = atoi(year) - 1900;  // Years since 1900
-        tm_info.tm_mon = atoi(mon) - 1;       // Months (0-11)
+        tm_info.tm_year = atoi(year) - YEAR_OFFSET;  // Years since 1900
+        tm_info.tm_mon = atoi(mon) - MONTH_OFFSET;       // Months (0-11)
         tm_info.tm_mday = atoi(day);          // Day of month
         tm_info.tm_hour = atoi(hour);         // Hour
         tm_info.tm_min = atoi(min);           // Minute
@@ -737,7 +737,7 @@ int main(int argc, char* argv[])
             Logger::log(LogLevel::ERROR, "get RTC time error");
         } else {
             Logger::log(LogLevel::INFO, "RTC time: %d-%02d-%02d %02d:%02d:%02d",
-                   now.tm_year + 1900, now.tm_mon + 1, now.tm_mday,
+                   now.tm_year+YEAR_OFFSET, now.tm_mon+MONTH_OFFSET, now.tm_mday,
                    now.tm_hour, now.tm_min, now.tm_sec);
         }
     }
@@ -794,7 +794,7 @@ int main(int argc, char* argv[])
             goto main_exit;
         }
         
-        // Wait until system time is synchronized (year > 1970)
+        // Wait until system time is synchronized (year > YEAR_MIN(2000))
         const int MAX_WAIT_SECONDS = 30; // Maximum wait time 30 seconds
         const int CHECK_INTERVAL = 2;    // Check every 2 seconds
         int wait_time = 0;
@@ -803,16 +803,16 @@ int main(int argc, char* argv[])
             time_t now = time(nullptr);
             nowtime = localtime(&now);
             
-            // Check if year is greater than 1970
-            if (nowtime->tm_year + 1900 > 1970) {
+            // Check if year is greater than YEAR_MIN
+            if (nowtime->tm_year + YEAR_OFFSET > YEAR_MIN) {
                 Logger::log(LogLevel::INFO, "System time synchronized: %d-%02d-%02d %02d:%02d:%02d",
-                           nowtime->tm_year + 1900, nowtime->tm_mon + 1, nowtime->tm_mday,
+                           nowtime->tm_year + YEAR_OFFSET, nowtime->tm_mon + MONTH_OFFSET, nowtime->tm_mday,
                            nowtime->tm_hour, nowtime->tm_min, nowtime->tm_sec);
                 break;
             }
             
             Logger::log(LogLevel::INFO, "Waiting for system time synchronization, current year: %d, waited %d seconds", 
-                       nowtime->tm_year + 1900, wait_time);
+                       nowtime->tm_year + YEAR_OFFSET, wait_time);
             sleep(CHECK_INTERVAL);
             wait_time += CHECK_INTERVAL;
         }
