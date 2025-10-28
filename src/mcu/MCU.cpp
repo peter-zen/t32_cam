@@ -5,11 +5,10 @@
 #include "StringConvert.h"
 #include "Common.h"
 
-#define I2C_BUS_NAME "/dev/i2c-0"
-#define I2C_SLAVE_ADDRESS "0x50"
+#define I2C_SLAVE_NAME "/dev/hc32l13x"
 
 enum {
-	PARAM_STATUS = 1, /*工作状，参考STATUS_BIT_E*/
+	PARAM_STATUS=1, /*工作状，参考STATUS_BIT_E*/
 	PARAM_IR_VALUE_H, /*光敏值 高8bit*/
 	PARAM_IR_VALUE, /*光敏值 低8bit*/
 	PARAM_BATTERY, /*电池电量等级0-3，3最高，0 为电池电量低，1-3代表电池电量低中高3个等级**/
@@ -17,7 +16,7 @@ enum {
 	PARAM_BAT_L, /*电池电量电压值 低8bit*/
 	PARAM_TEMPER, /*热敏电阻值0-216，减40后转换为实际的华氏度值，摄氏度测量范围（-40C ~ 80C）**/
 	PARAM_BAT_TYPE, /*电池类型BATTERY_TYPE_E，根据电池电压来区分，上电时大于8.5V为干电池；0 18650理电池，1 1.5V干电池，暂不能匹配1.2V电池*/
-	PARAM_MCU_VERSION, /*DSP需转换成字符串上传给遥控器，例：100 转换为"100"*/
+	//PARAM_MCU_VERSION, /*DSP需转换成字符串上传给遥控器，例：100 转换为"100"*/
 
 	PARAM_NOT_UPLOAD_FILE_H = 10,
 	PARAM_TLS_STATUS = 11, /*相机状态，参考CAM_STL_STATUS_E*/
@@ -202,7 +201,7 @@ std::shared_ptr<MCU> MCU::getInstance()
 
 MCU::MCU()
 {
-	i2c = std::make_shared<I2C>(I2C_BUS_NAME, I2C_SLAVE_ADDRESS);
+	iic = std::make_shared<IIC>(I2C_SLAVE_NAME);
 }
 
 MCU::~MCU()
@@ -230,10 +229,10 @@ bool MCU::waitFor(int seconds)
 	unsigned char buf[2] = { 0 };
 	buf[0] = (seconds >> 8) & 0xFF;
 	buf[1] = seconds & 0xFF;
-	if (i2c->write(PARAM_UP_OUTTIME_H, &buf[0], 1) != 1) {
+	if (iic->write(PARAM_UP_OUTTIME_H, &buf[0], 1) != 1) {
 		return false;
 	}
-	if (i2c->write(PARAM_UP_OUTTIME, &buf[1], 1) != 1) {
+	if (iic->write(PARAM_UP_OUTTIME, &buf[1], 1) != 1) {
 		return false;
 	}
 	return true;
@@ -243,10 +242,10 @@ int MCU::readBatteryVoltage()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_BAT_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_BAT_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_BAT_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_BAT_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -258,10 +257,10 @@ int MCU::readExternalVoltage()
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 
-	if (i2c->read(PARAM_PWR_OUT_VOLTAGE_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_PWR_OUT_VOLTAGE_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_PWR_OUT_VOLTAGE_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_PWR_OUT_VOLTAGE_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -275,10 +274,10 @@ int MCU::readShutdownVoltage()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_SYS_END_VOLTAGE_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_SYS_END_VOLTAGE_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_SYS_END_VOLTAGE_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_SYS_END_VOLTAGE_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -289,10 +288,10 @@ int MCU::readLowPowerVoltage()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_SYS_LOW_VOLTAGE_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_SYS_LOW_VOLTAGE_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_SYS_LOW_VOLTAGE_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_SYS_LOW_VOLTAGE_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -303,7 +302,7 @@ int MCU::readBatteryLevel()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_BATTERY, buf, 1) != 1) {
+	if (iic->read(PARAM_BATTERY, buf, 1) != 1) {
 		return 0;
 	}
 	value = buf[0];
@@ -314,7 +313,7 @@ int MCU::readBatteryType()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_BAT_TYPE, buf, 1) != 1) {
+	if (iic->read(PARAM_BAT_TYPE, buf, 1) != 1) {
 		return 0;
 	}
 	value = buf[0];
@@ -325,7 +324,7 @@ int MCU::readTemperature()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_TEMPER, buf, 1) != 1) {
+	if (iic->read(PARAM_TEMPER, buf, 1) != 1) {
 		return 0;
 	}
 	value = buf[0];
@@ -337,7 +336,7 @@ int MCU::readTemperature()
 bool MCU::IsWifiStationReady()
 {
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_EAX_INFO_WIFI_STATUS, buf, 1) != 1) {
+	if (iic->read(PARAM_EAX_INFO_WIFI_STATUS, buf, 1) != 1) {
 		return false;
 	}
 	return buf[0] == 0;
@@ -361,7 +360,7 @@ std::string MCU::readGps()
     // read longitude data
     for (int i = 0; i < 11; i++) {
         unsigned char buf[1];
-        if (i2c->read(PARAM_EAX_GPS_INFO_LON + i, buf, 1) == 1) {
+        if (iic->read(PARAM_EAX_GPS_INFO_LON + i, buf, 1) == 1) {
             if (buf[0] != 0)
                 longitude.push_back(static_cast<char>(buf[0]));
         }
@@ -375,7 +374,7 @@ std::string MCU::readGps()
 
     // read longitude direction
     unsigned char dir_buf[1];
-    if (i2c->read(PARAM_EAX_GPS_INFO_U_LON, dir_buf, 1) == 1) {
+    if (iic->read(PARAM_EAX_GPS_INFO_U_LON, dir_buf, 1) == 1) {
         longitude_direction = static_cast<char>(dir_buf[0]);
     }
     if (!longitude_direction) {
@@ -386,7 +385,7 @@ std::string MCU::readGps()
     // read latitude data
     for (int i = 0; i < 10; i++) {
         unsigned char buf[1];
-        if (i2c->read(PARAM_EAX_GPS_INFO_LAT + i, buf, 1) == 1) {
+        if (iic->read(PARAM_EAX_GPS_INFO_LAT + i, buf, 1) == 1) {
             if (buf[0] != 0)
                 latitude.push_back(static_cast<char>(buf[0]));
         }
@@ -399,7 +398,7 @@ std::string MCU::readGps()
     }
 
     // read latitude direction
-    if (i2c->read(PARAM_EAX_GPS_INFO_U_LAT, dir_buf, 1) == 1) {
+    if (iic->read(PARAM_EAX_GPS_INFO_U_LAT, dir_buf, 1) == 1) {
         latitude_direction = static_cast<char>(dir_buf[0]);
     }
     if (!latitude_direction) {
@@ -410,7 +409,7 @@ std::string MCU::readGps()
     // read altitude data
     for (int i = 0; i < 10; i++) {
         unsigned char buf[1];
-        if (i2c->read(PARAM_EAX_GPS_INFO_ALTITUDE + i, buf, 1) == 1) {
+        if (iic->read(PARAM_EAX_GPS_INFO_ALTITUDE + i, buf, 1) == 1) {
             if (buf[0] != 0)
                 altitude.push_back(static_cast<char>(buf[0]));
         }
@@ -437,10 +436,10 @@ int MCU::readSignalCF()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_MODULAR_EARFEN_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_EARFEN_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_MODULAR_EARFEN_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_EARFEN_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -451,10 +450,10 @@ int MCU::readSignalRSSI()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_MODULAR_RSSI_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_RSSI_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_MODULAR_RSSI_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_RSSI_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -465,10 +464,10 @@ int MCU::readSignalRSRP()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_MODULAR_RSRP_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_RSRP_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_MODULAR_RSRP_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_RSRP_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -479,10 +478,10 @@ int MCU::readSignalRSRQ()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_MODULAR_RSRQ_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_RSRQ_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_MODULAR_RSRQ_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_RSRQ_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -493,7 +492,7 @@ int MCU::readSignalSNR()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_MODULAR_SNR, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_SNR, &buf[0], 1) != 1) {
 		return 0;
 	}
 	value = buf[0];
@@ -504,10 +503,10 @@ int MCU::readSignalTD()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_MODULAR_DISTANCE_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_DISTANCE_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_MODULAR_DISTANCE_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_DISTANCE_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -518,7 +517,7 @@ int MCU::readSignalTP()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_MODULAR_TX_POWER, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_MODULAR_TX_POWER, &buf[0], 1) != 1) {
 		return 0;
 	}
 	value = buf[0];
@@ -529,7 +528,7 @@ bool MCU::Is4gExist()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_4G_EXIST, buf, 1) != 1) {
+	if (iic->read(PARAM_4G_EXIST, buf, 1) != 1) {
 		return false;
 	}
 	value = buf[0];
@@ -539,7 +538,7 @@ bool MCU::Is4gExist()
 bool MCU::writeRemoteWakeup(int remote_wakeup)
 {
 	unsigned char buf[1] = { static_cast<unsigned char>(remote_wakeup) };
-	if (i2c->write(PARAM_REMOTE_WAKE_EN, buf, 1) != 1) {
+	if (iic->write(PARAM_REMOTE_WAKE_EN, buf, 1) != 1) {
 		return false;
 	}
 	return true;
@@ -553,35 +552,35 @@ bool MCU::setDatetime(const struct tm &time)
 	unsigned char buf[1];
 
 	buf[0] = (time.tm_year + YEAR_OFFSET) / 100;
-	if (i2c->write(PARAM_YEAR_H, buf, 1) != 1)
+	if (iic->write(PARAM_YEAR_H, buf, 1) != 1)
 		return false;
 
 	buf[0] = (time.tm_year + YEAR_OFFSET) % 100;
-	if (i2c->write(PARAM_YEAR, buf, 1) != 1)
+	if (iic->write(PARAM_YEAR, buf, 1) != 1)
 		return false;
 
 	buf[0] = time.tm_mon + MONTH_OFFSET;
-	if (i2c->write(PARAM_MONTH, buf, 1) != 1)
+	if (iic->write(PARAM_MONTH, buf, 1) != 1)
 		return false;
 
 	buf[0] = time.tm_mday;
-	if (i2c->write(PARAM_DAY, buf, 1) != 1)
+	if (iic->write(PARAM_DAY, buf, 1) != 1)
 		return false;
 
 	buf[0] = time.tm_wday;
-	if (i2c->write(PARAM_WEEK, buf, 1) != 1)
+	if (iic->write(PARAM_WEEK, buf, 1) != 1)
 		return false;
 
 	buf[0] = time.tm_hour;
-	if (i2c->write(PARAM_HOUR, buf, 1) != 1)
+	if (iic->write(PARAM_HOUR, buf, 1) != 1)
 		return false;
 
 	buf[0] = time.tm_min;
-	if (i2c->write(PARAM_MINUTE, buf, 1) != 1)
+	if (iic->write(PARAM_MINUTE, buf, 1) != 1)
 		return false;
 
 	buf[0] = time.tm_sec;
-	if (i2c->write(PARAM_SECOND, buf, 1) != 1)
+	if (iic->write(PARAM_SECOND, buf, 1) != 1)
 		return false;
 
 	return true;
@@ -593,42 +592,42 @@ struct tm MCU::getDatetime()
 	unsigned char buf[1] = { 0 };
 
 	// 读取年份高位和低位
-	if (i2c->read(PARAM_YEAR_H, buf, 1) != 1) {
+	if (iic->read(PARAM_YEAR_H, buf, 1) != 1) {
 		return time_info;
 	}
 	int year_h = buf[0];
 
-	if (i2c->read(PARAM_YEAR, buf, 1) != 1) {
+	if (iic->read(PARAM_YEAR, buf, 1) != 1) {
 		return time_info;
 	}
 	int year = year_h * 100 + buf[0];
 
 	// 读取月份
-	if (i2c->read(PARAM_MONTH, buf, 1) != 1) {
+	if (iic->read(PARAM_MONTH, buf, 1) != 1) {
 		return time_info;
 	}
 	int month = buf[0];
 
 	// 读取日期
-	if (i2c->read(PARAM_DAY, buf, 1) != 1) {
+	if (iic->read(PARAM_DAY, buf, 1) != 1) {
 		return time_info;
 	}
 	int day = buf[0];
 
 	// 读取小时
-	if (i2c->read(PARAM_HOUR, buf, 1) != 1) {
+	if (iic->read(PARAM_HOUR, buf, 1) != 1) {
 		return time_info;
 	}
 	int hour = buf[0];
 
 	// 读取分钟
-	if (i2c->read(PARAM_MINUTE, buf, 1) != 1) {
+	if (iic->read(PARAM_MINUTE, buf, 1) != 1) {
 		return time_info;
 	}
 	int minute = buf[0];
 
 	// 读取秒钟
-	if (i2c->read(PARAM_SECOND, buf, 1) != 1) {
+	if (iic->read(PARAM_SECOND, buf, 1) != 1) {
 		return time_info;
 	}
 	int second = buf[0];
@@ -654,7 +653,7 @@ bool MCU::useGpsTime()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_SYNC_GPS_TIME, buf, 1) != 1) {
+	if (iic->read(PARAM_SYNC_GPS_TIME, buf, 1) != 1) {
 		return false;
 	}
 	value = buf[0];
@@ -665,11 +664,11 @@ int MCU::readCds()
 {
 	int cds = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_IR_VALUE_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_IR_VALUE_H, &buf[0], 1) != 1) {
 		return 0;
 	}
 
-	if (i2c->read(PARAM_IR_VALUE, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_IR_VALUE, &buf[1], 1) != 1) {
 		return 0;
 	}
 
@@ -677,22 +676,24 @@ int MCU::readCds()
 	return cds;
 }
 
-std::string MCU::readVersion()
-{
-	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_MCU_VERSION, buf, 1) != 1) {
-		return "";
-	}
-	return to_string_custom(buf[0]);
-}
-
 bool MCU::IsRemoteWakeup()
 {
 	unsigned char buf = 0;
-	if (i2c->read(PARAM_STATUS, &buf, 1) != 1) {
+	if (iic->read(PARAM_STATUS, &buf, 1) != 1) {
 		return false;
 	}
 	return (buf & 0x10) ? true : false;
+}
+
+int MCU::readWorkingMode()
+{
+	int value = 0;
+	unsigned char buf[1] = { 0 };
+	if (iic->read(PARAM_WORK_MODE, &buf[0], 1) != 1) {
+		return 0;
+	}
+	value = buf[0];
+	return value;
 }
 
 int MCU::readRMID()
@@ -703,7 +704,7 @@ int MCU::readRMID()
 
 	for (idx = 0; idx < 4; idx++) {
 		unsigned char buf[1] = { 0 };
-		if (i2c->read(PARAM_RM_ID + idx, &buf[0], 1) != 1) {
+		if (iic->read(PARAM_RM_ID + idx, &buf[0], 1) != 1) {
 			return 0;
 		}
 		pID[idx]= buf[0];
@@ -716,7 +717,7 @@ int MCU::readRMType()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_RM_TYPE, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_RM_TYPE, &buf[0], 1) != 1) {
 		return 0;
 	}
 	value = buf[0];
@@ -727,10 +728,10 @@ int MCU::readRMValue()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_RM_NOISE_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_RM_NOISE_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_RM_NOISE_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_RM_NOISE_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -740,22 +741,72 @@ int MCU::readRMValue()
 int MCU::readRMBatteryValue()
 {
 	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_RM_BAT_V, &buf[0], 1) != 1) {
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY1);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY1);
+	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
 		return 0;
 	}
-	value = buf[0];
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	
+	return value;
+}
+
+int MCU::readRMBattery1Value()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY1);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY1);
+	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	
+	return value;
+}
+
+int MCU::readRMBattery2Value()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY2);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY2);
+	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	
 	return value;
 }
 
 int MCU::readRMSunPowerValue()
 {
 	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_RM_SUN_V, &buf[0], 1) != 1) {
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_SPOWER);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_SPOWER);
+	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
 		return 0;
 	}
-	value = buf[0];
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	
 	return value;
 }
 
@@ -763,10 +814,10 @@ int MCU::readRMCount()
 {
 	int value = 0;
 	unsigned char buf[2] = { 0 };
-	if (i2c->read(PARAM_RM_COUNT_H, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_RM_COUNT_H, &buf[0], 1) != 1) {
 		return 0;
 	}
-	if (i2c->read(PARAM_RM_COUNT_L, &buf[1], 1) != 1) {
+	if (iic->read(PARAM_RM_COUNT_L, &buf[1], 1) != 1) {
 		return 0;
 	}
 	value = (buf[0] << 8) | buf[1];
@@ -776,7 +827,7 @@ int MCU::readEventType()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_EVENT_TYPE, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_EVENT_TYPE, &buf[0], 1) != 1) {
 		return 0;
 	}
 	value = buf[0];
@@ -791,7 +842,7 @@ int MCU::readEventID()
 
 	for (idx = 0; idx < 4; idx++) {
 		unsigned char buf[1] = { 0 };
-		if (i2c->read(PARAM_EVENT_ID + idx, &buf[0], 1) != 1) {
+		if (iic->read(PARAM_EVENT_ID + idx, &buf[0], 1) != 1) {
 			return 0;
 		}
 		pID[idx]= buf[0];
@@ -804,10 +855,109 @@ int MCU::readEventNum()
 {
 	int value = 0;
 	unsigned char buf[1] = { 0 };
-	if (i2c->read(PARAM_EVENT_NUM, &buf[0], 1) != 1) {
+	if (iic->read(PARAM_EVENT_NUM, &buf[0], 1) != 1) {
 		return 0;
 	}
 	value = buf[0];
 	return value;
 }
 
+std::string MCU::readVersion()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_VERSION);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_VERSION);
+	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+		
+	return to_string_custom(value);
+}
+
+std::string MCU::readPID()
+{
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PID);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PID);
+	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
+		return 0;
+	}
+
+	return std::string((char*)buf, nbytes);
+}
+
+std::string MCU::readUPID()
+{
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UPID);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UPID);
+	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
+		return 0;
+	}
+		
+	return std::string((char*)buf, nbytes);
+}
+
+std::string MCU::readUPWD()
+{
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UPWD);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UPWD);
+	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
+		return 0;
+	}
+		
+	return std::string((char*)buf, nbytes);
+}
+
+bool MCU::writePID(const std::string &pid)
+{
+	if (pid.empty()) {
+		return false;
+	}
+
+	unsigned char *buf = (unsigned char *)pid.c_str();
+	int nbytes = pid.length();
+
+	if (iic->write(PARAM_MCU_PID, buf, nbytes) != nbytes) {
+	    return false;
+	}
+
+	return true;
+}
+bool MCU::writeUPID(const std::string &upid)
+{
+	if (upid.empty()) {
+		return false;
+	}
+	
+	unsigned char *buf = (unsigned char *)upid.c_str();
+	int nbytes = upid.length();
+
+	if (iic->write(PARAM_MCU_UPID, buf, nbytes) != nbytes) {
+	    return false;
+	}
+
+	return true;
+}
+bool MCU::writeUPWD(const std::string &password)
+{
+	if (password.empty()) {
+		return false;
+	}
+	
+	unsigned char *buf = (unsigned char *)password.c_str();
+	int nbytes = password.length();
+
+	if (iic->write(PARAM_MCU_UPWD, buf, nbytes) != nbytes) {
+	    return false;
+	}
+
+	return true;
+}

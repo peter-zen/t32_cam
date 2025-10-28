@@ -1,12 +1,14 @@
 #include "WorkMode.h"
 #include "Logger.h"
 #include "GPIO.h"
+#include "MCU.h"
 
 enum workingMode WorkMode::working_mode = WORKING_MODE_SNAP_ONLY;
 bool WorkMode::already_get_mode = false;
+
+#if !MCU_EXIST
 int WorkMode::mode_pin_0 = PC(9);
 int WorkMode::mode_pin_1 = PC(8);
-
 void WorkMode::setWorkingModePins(int pin0, int pin1)
 {
     mode_pin_0 = pin0;
@@ -60,42 +62,32 @@ enum workingMode WorkMode::getWorkingMode()
 
     return working_mode;
 }
-
-bool WorkMode::setWorkingMode(enum workingMode mode)
+#else
+enum workingMode WorkMode::getWorkingMode()
 {
-    auto gpio_mode_pin_0 = GPIO(mode_pin_0);
-    auto gpio_mode_pin_1 = GPIO(mode_pin_1);
+    if (!already_get_mode) {
+        int mode = MCU::getInstance()->readWorkingMode();
 
-    if (!gpio_mode_pin_0.exportGPIO() || !gpio_mode_pin_1.exportGPIO()) {
-        Logger::log(LogLevel::ERROR, "export gpio(%d, %d) failed", mode_pin_0, mode_pin_1);
-        return false;
-    }
-
-    if (!gpio_mode_pin_0.setDirection(GPIO_DIRECTION::OUTPUT) || !gpio_mode_pin_1.setDirection(GPIO_DIRECTION::OUTPUT)) {
-        Logger::log(LogLevel::ERROR, "set gpio(%d, %d) direction output failed", mode_pin_0, mode_pin_1);
-        return false;
-    }
-    
-    switch (working_mode) {
-        case workingMode::WORKING_MODE_SNAP_ONLY:
-            gpio_mode_pin_0.setValue(GPIO_VALUE::LOW);
-            gpio_mode_pin_1.setValue(GPIO_VALUE::LOW);
+        switch (mode) {
+        case 0:
+            working_mode = workingMode::WORKING_MODE_SNAP_ONLY;
             break;
-        case workingMode::WORKING_MODE_UPLOAD_ONLY:
-            gpio_mode_pin_0.setValue(GPIO_VALUE::HIGH);
-            gpio_mode_pin_1.setValue(GPIO_VALUE::LOW);
+        case 1:
+            working_mode = workingMode::WORKING_MODE_SNAP_UPLOAD;
             break;
-        case workingMode::WORKING_MODE_TEST_ONLY:
-            gpio_mode_pin_0.setValue(GPIO_VALUE::HIGH);
-            gpio_mode_pin_1.setValue(GPIO_VALUE::HIGH);
+        case 2:
+            working_mode = workingMode::WORKING_MODE_UPLOAD_ONLY;
             break;
-        case workingMode::WORKING_MODE_SNAP_UPLOAD:
-            gpio_mode_pin_0.setValue(GPIO_VALUE::LOW);
-            gpio_mode_pin_1.setValue(GPIO_VALUE::HIGH);
+        case 3:
+            working_mode = workingMode::WORKING_MODE_TEST_ONLY;
             break;
         default:
-            return false;
+            working_mode = workingMode::WORKING_MODE_MAX;
+            break;
+        }
+        already_get_mode = true;
     }
 
-    return true;
+    return working_mode;
 }
+#endif

@@ -14,15 +14,18 @@ enum workingMode {
 class WorkMode
 {
 public:
+    #if !MCU_EXIST
     static void setWorkingModePins(int pin0, int pin1);
+    #endif
     static enum workingMode getWorkingMode();
-    static bool setWorkingMode(enum workingMode mode);
+
 private:
         static enum workingMode working_mode;
         static bool already_get_mode;
+        #if !MCU_EXIST
         static int mode_pin_0;
         static int mode_pin_1;
-        static int rgb_led_pin;
+        #endif
 };
 
 #endif // WORK_MODE_H
