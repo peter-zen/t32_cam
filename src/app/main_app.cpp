@@ -230,6 +230,12 @@ static int generateDescInfo(std::vector<std::string>& files, std::string& desc_i
         auto rm_bat_v = mcu->readRMBatteryValue();
         snprintf(temp_buf, sizeof(temp_buf), "%d.%d", rm_bat_v / 10, abs( rm_bat_v % 10 ));
         data_obj["D_SensorBattery"] = temp_buf;
+        auto rm_bat1_v = mcu->readRMBattery1Value();
+        snprintf(temp_buf, sizeof(temp_buf), "%d.%d", rm_bat1_v / 10, abs( rm_bat1_v % 10 ));
+        data_obj["D_SensorBattery1"] = temp_buf;
+        auto rm_bat2_v = mcu->readRMBattery2Value();
+        snprintf(temp_buf, sizeof(temp_buf), "%d.%d", rm_bat2_v / 10, abs( rm_bat2_v % 10 ));
+        data_obj["D_SensorBattery2"] = temp_buf;
         data_obj["D_SensorGP"] = "";
         data_obj["D_SensorCount"] = mcu->readRMCount();
         auto rm_sp_v = mcu->readRMSunPowerValue();

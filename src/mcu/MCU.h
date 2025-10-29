@@ -2,11 +2,13 @@
 #define MCU_H
 #include <string>
 #include <memory>
-#include "I2C.h"
+#include "IIC.h"
+#include "MCUParams.h"
 
 class MCU {
-    public:
+public:
 	static std::shared_ptr<MCU> getInstance();
+	int readWorkingMode();
 	std::string readFirmwareVersion();
 	bool powerEnoughForFirmwareUpdate();
 	bool waitFor(int seconds);
@@ -38,26 +40,37 @@ class MCU {
 	int readRMType();
 	int readRMValue();
 	int readRMBatteryValue();
+	int readRMBattery1Value();
+	int readRMBattery2Value();
 	int readRMSunPowerValue();
 	int readRMCount();
 	int readEventType();
 	int readEventID();
 	int readEventNum();
 
+	//新实现
 	std::string readVersion();
+	std::string readPID();
+	std::string readUPID();
+	std::string readUPWD();
+	bool writePID(const std::string &pid);
+	bool writeUPID(const std::string &upid);
+	bool writeUPWD(const std::string &password);
+
+	
 	~MCU();
 	
-    private:
+private:
 	MCU();
 	
 	MCU(const MCU &) = delete;
 	MCU &operator=(const MCU &) = delete;
 
-    private:
+private:
 	std::string firmware_version;
 	std::string product_name;
 	bool power_enough;
-	std::shared_ptr<I2C> i2c;
+	std::shared_ptr<IIC> iic;
 };
 
 #endif

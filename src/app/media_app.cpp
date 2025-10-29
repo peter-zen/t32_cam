@@ -227,7 +227,9 @@ int main(int argc, char* argv[])
     rtc_work_well = isRTCWorkWell();
 
     //get working mode
+    #if !MCU_EXIST
     WorkMode::setWorkingModePins(WORKING_MODE_CHECK_PIN_0, WORKING_MODE_CHECK_PIN_1);
+    #endif
     working_mode = WorkMode::getWorkingMode();
 
     if (working_mode == workingMode::WORKING_MODE_SNAP_ONLY || working_mode == workingMode::WORKING_MODE_SNAP_UPLOAD) {

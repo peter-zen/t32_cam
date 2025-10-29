@@ -9,12 +9,13 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../common
         ${CMAKE_CURRENT_SOURCE_DIR}/../logger
         ${CMAKE_CURRENT_SOURCE_DIR}/../gpio
+        ${CMAKE_CURRENT_SOURCE_DIR}/../mcu
 )
 
 # Create library
 add_library(workmode SHARED ${SOURCE_FILES})
 
-target_link_libraries(workmode PUBLIC gpio logger)
+target_link_libraries(workmode PUBLIC mcu gpio logger)
 
 # Set the output directory for the library
 set_target_properties(workmode PROPERTIES
