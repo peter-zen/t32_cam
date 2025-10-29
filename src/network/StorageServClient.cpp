@@ -95,7 +95,7 @@ void StorageServClient::uploadFile(const std::string &filename)
 void StorageServClient::handleUploadCommand(const Json::Value &cmd)
 {
 	int status_id = cmd.get("Status_ID", 0).asInt();
-	Logger::log(LogLevel::DEBUG, "Status_ID: %d", status_id);
+	Logger::log(LogLevel::INFO, "Status_ID: %d", status_id);
 
 	//notify upload result
 	{
@@ -210,7 +210,7 @@ int StorageServClient::upload(const std::string &file_pathname)
 		upload_success = false;
 		upload_cv.wait_for(
 			lock
-			, std::chrono::seconds(10)
+			, std::chrono::seconds(5)
 			, [this] { return upload_result_received;}
 		);
 	}

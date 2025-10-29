@@ -19,7 +19,7 @@ set(SOURCES "${PROJECT_ROOT}/src" CACHE STRING "Source files for the project")
 set(THIRD_PARTY_PATH "${PROJECT_ROOT}/third_party" CACHE STRING "Third party libraries")
 
 #Set options
-add_definitions(-DRTC_EXIST=0)
+add_definitions(-DRTC_EXIST=1)
 add_definitions(-DDAEMON_ENABLE=0)
 add_definitions(-DUVC_ENABLE=0)
 # set sensor type

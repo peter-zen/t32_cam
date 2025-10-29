@@ -970,12 +970,12 @@ int main(int argc, char* argv[])
     }
     
     if (command & CMD_UPLOAD) {
-        bool descfile_uploaded = false;
         //assume we have a storage server same as mgmt server
         storageServClient = mgmtServClient->newStorageServClient();
         if (gpio_rgb_led) {
             gpio_rgb_led->setConstant(GPIO_VALUE::HIGH);
         }
+        bool descfile_uploaded = false;
         auto desc_filenames = Misc::listFilenames(MEDIA_UPLOAD_PATH);
         for (auto &desc_filename : desc_filenames) {
             Logger::log(LogLevel::INFO, "desc_filename %s", desc_filename.c_str());
@@ -992,55 +992,61 @@ int main(int argc, char* argv[])
             Json::Reader reader;
             if (!reader.parse(ifs, root)) {
                 Logger::log(LogLevel::ERROR, "Failed to parse JSON file: %s", desc_filename.c_str());
-            } else {
-                std::string pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
-                if (!root.isMember("F_UploadedTag") ||!root.isMember("device") || !root["device"].isMember("PID") || (root["device"]["PID"].asString() != pid)) {
-                    Logger::log(LogLevel::ERROR, "PID not match");
-                    Misc::deleteFile(desc_filename);
-                    continue;
-                }
-                
-                if (!root.isMember("file_inf")) {
-                    Logger::log(LogLevel::ERROR, "file_inf not exist");
-                    Misc::deleteFile(desc_filename);
-                    continue;
-                }
-                
-                if (root["F_UploadedTag"].asInt() == 0) {
-                    //upload file description json file
-                    storageServClient->bindUploadCallback([&descfile_uploaded, desc_filename](const std::string &filename, int error_code) {
-                        Logger::log(LogLevel::INFO, "upload %s, error code: %d", filename.c_str(), error_code);
-                        if (filename == desc_filename) {
-                            descfile_uploaded = true;
-                        }
-                    });
-                    storageServClient->uploadFile(desc_filename);
-                    auto start_time = std::chrono::steady_clock::now();
-                    auto now = std::chrono::steady_clock::now();
-                    while (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() < 3) {
-                        if (descfile_uploaded) {
-                            Logger::log(LogLevel::INFO, "descfile %s uploaded", desc_filename.c_str());
-                            root["F_UploadedTag"] = 1;
-                            std::ofstream ofs(desc_filename);
-                            ofs << root.toStyledString();
-                            ofs.close();
-                            break;
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                        now = std::chrono::steady_clock::now();
+                Misc::deleteFile(desc_filename);
+                continue;
+            }
+
+            std::string pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
+            if (!root.isMember("F_UploadedTag") ||!root.isMember("device") || !root["device"].isMember("PID") || (root["device"]["PID"].asString() != pid)) {
+                Logger::log(LogLevel::ERROR, "PID not match");
+                Misc::deleteFile(desc_filename);
+                continue;
+            }
+            
+            if (!root.isMember("file_inf")) {
+                Logger::log(LogLevel::ERROR, "file_inf not exist");
+                Misc::deleteFile(desc_filename);
+                continue;
+            }
+            
+            descfile_uploaded = false;
+            if (root["F_UploadedTag"].asInt() == 0) {
+                //upload file description json file
+                storageServClient->bindUploadCallback([&descfile_uploaded, desc_filename](const std::string &filename, int error_code) {
+                    Logger::log(LogLevel::INFO, "upload %s, error code: %d", filename.c_str(), error_code);
+                    if (filename == desc_filename) {
+                        descfile_uploaded = (error_code==EC_SUCCESS)?true:false;
                     }
-                } else {
-                    descfile_uploaded = true;
+                });
+                storageServClient->uploadFile(desc_filename);
+                auto start_time = std::chrono::steady_clock::now();
+                auto now = std::chrono::steady_clock::now();
+                while (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() < 8) {//must greater than 5s
+                    if (descfile_uploaded) {
+                        Logger::log(LogLevel::INFO, "descfile %s uploaded", desc_filename.c_str());
+                        root["F_UploadedTag"] = 1;
+                        std::ofstream ofs(desc_filename);
+                        ofs << root.toStyledString();
+                        ofs.close();
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    now = std::chrono::steady_clock::now();
                 }
+            } else {
+                descfile_uploaded = true;
             }
 
             if (descfile_uploaded) {
+                bool allFileUploaded = true;
                 const Json::Value file_inf_array = root["file_inf"];
                 std::vector<std::string> uploaded_file_list;
-                storageServClient->bindUploadCallback([&uploaded_file_list](const std::string &filename, int error_code) {
+                storageServClient->bindUploadCallback([&uploaded_file_list, &allFileUploaded](const std::string &filename, int error_code) {
                     Logger::log(LogLevel::INFO, "upload %s, error code: %d", filename.c_str(), error_code);
                     if (error_code == EC_SUCCESS) {
                         uploaded_file_list.push_back(filename);
+                    } else {
+                        allFileUploaded = false;
                     }
                 });
                 for (Json::ArrayIndex i = 0; i < file_inf_array.size(); ++i) {
@@ -1062,21 +1068,23 @@ int main(int argc, char* argv[])
 
                 for (auto& filename : uploaded_file_list) {
                     for (Json::ArrayIndex i = 0; i < file_inf_array.size(); ++i) {
-                            auto pathname = file_inf_array[i]["F_FilePath"].asString() + "/" + file_inf_array[i]["F_FileName"].asString();
-                            if (pathname == filename) {
-                                root["file_inf"][i]["F_UploadedTag"] = 1;
-                            }
+                        auto pathname = file_inf_array[i]["F_FilePath"].asString() + "/" + file_inf_array[i]["F_FileName"].asString();
+                        if (pathname == filename) {
+                            root["file_inf"][i]["F_UploadedTag"] = 1;
                         }
                     }
                 }
-                
+
                 std::ofstream ofs(desc_filename);
                 ofs << root.toStyledString();
                 ofs.close();
-                Logger::log(LogLevel::INFO, "upload all files finished");
-                Misc::deleteFile(desc_filename);
-            } 
+                if (allFileUploaded) {
+                    Logger::log(LogLevel::INFO, "upload all files finished");
+                    Misc::deleteFile(desc_filename);
+                }
+            }    
         }
+    }
 
 main_exit:
     // 停止信号处理工作线程
