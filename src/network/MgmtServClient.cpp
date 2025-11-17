@@ -757,25 +757,20 @@ std::string MgmtServClient::formatHeartbeatMessage()
 
 	device_info["GPS"] = mcu->readGps();
 
-	auto battery_volte = mcu->readBatteryVoltage();
-	std::ostringstream battery_stream;
-	battery_stream << (battery_volte / 1000) << "." << ((battery_volte % 1000) / 100);
-	device_info["Battery1"] = battery_stream.str();
-	device_info["Battery2"] = "0";
+	auto battery1_volte = mcu->readBattery1Voltage();
+	auto battery2_volte = mcu->readBattery2Voltage();
+	device_info["Battery1"] = mcu->convertVoltage(battery1_volte);
+	device_info["Battery2"] = mcu->convertVoltage(battery2_volte);
 
 	auto external_volte = mcu->readExternalVoltage();
 	auto shutdown_volte = mcu->readShutdownVoltage();
 	auto lowpower_volte = mcu->readLowPowerVoltage();
-	if (external_volte <= 14000 || battery_volte <= shutdown_volte) {
+	if (external_volte <= 14 || battery1_volte <= shutdown_volte) {
 		device_info["SPower"] = "0";
-		battery_stream.str("");
-		battery_stream << (external_volte / 1000) << "." << ((external_volte % 1000) / 100);
-		device_info["EPower"] = battery_stream.str();
+		device_info["EPower"] = mcu->convertVoltage(external_volte);
 	} else {
 		device_info["EPower"] = "0";
-		battery_stream.str("");
-		battery_stream << (external_volte / 1000) << "." << ((external_volte % 1000) / 100);
-		device_info["SPower"] = battery_stream.str();
+		device_info["SPower"] = mcu->convertVoltage(external_volte);
 	}
 
 	auto disk_info = Disk::getInfo(DISK_PATHNAME);
@@ -790,9 +785,9 @@ std::string MgmtServClient::formatHeartbeatMessage()
 
 	if (1) {//TODO read from mcu
 		device_info["AStatus"] = 22;
-	} else if (battery_volte <= shutdown_volte && external_volte <= shutdown_volte) {
+	} else if (battery1_volte <= shutdown_volte && external_volte <= shutdown_volte) {
 		device_info["AStatus"] = 23; // power off
-	} else if (battery_volte <= lowpower_volte && external_volte <= lowpower_volte) {
+	} else if (battery1_volte <= lowpower_volte && external_volte <= lowpower_volte) {
 		device_info["AStatus"] = 21; // low
 	} else {
 		device_info["AStatus"] = 10;
@@ -800,25 +795,16 @@ std::string MgmtServClient::formatHeartbeatMessage()
 
 	auto battery_level = mcu->readBatteryLevel();
 	device_info["BAT1_Level"] = battery_level;
-
-	battery_stream.str("");
-	battery_stream << (lowpower_volte / 1000) << "." << ((lowpower_volte % 1000) / 100);
-	device_info["Low_PWR_Val"] = battery_stream.str();
-
-	battery_stream.str("");
-	battery_stream << (shutdown_volte / 1000) << "." << ((shutdown_volte % 1000) / 100);
-	device_info["Loff_PWR_Val"] = battery_stream.str();
-
+	device_info["Low_PWR_Val"] = mcu->convertVoltage(lowpower_volte);
+	device_info["Loff_PWR_Val"] = mcu->convertVoltage(shutdown_volte);
 	device_info["UTime"] = time_str;
-
 	json_root["device"] = device_info;
 
 	// Data
-	auto temperature = mcu->readTemperature();
 	Json::Value data_info;
-	data_info["D_Temperature"] = to_string_custom(temperature / 10) + "." + to_string_custom(abs(temperature % 10));
-	data_info["D_Humidity"] = "0";
-	data_info["D_Atmos"] = "0";
+	data_info["D_Temperature"] =  to_string_custom(mcu->readTemperature());
+	data_info["D_Humidity"] = to_string_custom(mcu->readHumidity());
+	data_info["D_Atmos"] = to_string_custom(mcu->readAtmosPressure());
 
 	json_root["data"] = data_info;
 

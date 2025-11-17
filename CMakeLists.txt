@@ -18,6 +18,15 @@ set(SDK_INC_PATH "${SDK_PATH}/include" CACHE PATH "Relative include path")
 set(SOURCES "${PROJECT_ROOT}/src" CACHE STRING "Source files for the project")
 set(THIRD_PARTY_PATH "${PROJECT_ROOT}/third_party" CACHE STRING "Third party libraries")
 
+#Revision info
+# Only set default values if the macros are not already defined externally
+if(NOT DEFINED CAMERA_VERSION)
+    add_definitions(-DCAMERA_VERSION="V0.0.1")
+endif()
+if(NOT DEFINED CAMERA_BUILD_TIME)
+    add_definitions(-DCAMERA_BUILD_TIME="20251117")
+endif()
+
 #Set options
 add_definitions(-DRTC_EXIST=1)
 add_definitions(-DMCU_EXIST=1)

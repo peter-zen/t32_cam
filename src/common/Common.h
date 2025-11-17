@@ -38,7 +38,7 @@ extern "C" {
 
 #define INI_SECTION_SYS "SYSTEM"
 #define INI_KEY_UPID "UPID"
-#define INI_KEY_PWD "PWD"
+#define INI_KEY_UPWD "PWD"
 
 #define INI_KEY_LOW_VOL "LowVoltage"
 #define INI_KEY_END_VOL "EndVoltage"

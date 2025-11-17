@@ -387,7 +387,7 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 	auto upid = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_UPID, "CKVISON");
 	json_item["SYS_UPID"] = upid;
 
-	auto pwd = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_PWD, "");
+	auto pwd = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_UPWD, "");
 	json_item["SYS_Pwd"] = pwd;
 
 	auto low_voltage = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_LOW_VOL, "4.2");
@@ -602,7 +602,7 @@ void RemoteCtrlClient::handleSetParamCommand(const Json::Value &root)
 		} else if (key == "SYS_Pwd") {
 			std::string pwd = value.asString();
 			Logger::log(LogLevel::INFO, "SYS_Pwd -> %s", pwd.c_str());
-			device_config->set(INI_SECTION_SYS, INI_KEY_PWD, pwd);
+			device_config->set(INI_SECTION_SYS, INI_KEY_UPWD, pwd);
 		} else if (key == "Dev_NameEn") {
 			int show_dev_name_en = value.asInt();
 			Logger::log(LogLevel::INFO, "Dev_NameEn -> %d", show_dev_name_en);
@@ -745,7 +745,7 @@ void RemoteCtrlClient::handleSetDatetimeCommand(const Json::Value &root)
                             Logger::log(LogLevel::INFO, "Use GPS time");
                         } else {
                             Logger::log(LogLevel::INFO, "Use RTC time");
-                            if (!MCU::getInstance()->setDatetime(new_time)) {
+                            if (!MCU::getInstance()->setDatetime(&new_time)) {
                                 Logger::log(LogLevel::ERROR, "Failed to set MCU time");
                                 status = -1;
                             }
@@ -828,7 +828,7 @@ void RemoteCtrlClient::handleGetSensorInfoCommand(const Json::Value &root)
 	auto battery_type = mcu->readBatteryType();
 	resp_root["battery"] = battery_voltage;
 	resp_root["battery_type"] = battery_type;
-	resp_root["battery_level"] = (battery_voltage >= 6000 && battery_voltage < 14000) ? 0 : battery_level;
+	resp_root["battery_level"] = (battery_voltage >= 6 && battery_voltage < 14) ? 0 : battery_level;
 	resp_root["ext_power"] = external_voltage;
 
 	//get sdcard info
@@ -838,18 +838,16 @@ void RemoteCtrlClient::handleGetSensorInfoCommand(const Json::Value &root)
 
 	//get other sensor info
 	resp_root["cds"] = mcu->readCds();
-	auto temp = mcu->readTemperature();
-	snprintf(tmp_buffer, sizeof(tmp_buffer), "%d.%d", temp / 10, abs(temp % 10));
-	resp_root["temp"] = tmp_buffer;
-	resp_root["press"] = "-.-";
-	resp_root["rh"] = "-.-%";
+	resp_root["temp"] = to_string_custom(mcu->readTemperature());
+	resp_root["press"] = to_string_custom(mcu->readAtmosPressure());
+	resp_root["rh"] = to_string_custom(mcu->readHumidity());
 
 	//get device info
 	auto pid = device_config->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
 	resp_root["pid"] = pid;
-	resp_root["camera_ver"] = "V2.2.7";//TODO:Read real version
+	resp_root["camera_ver"] = CAMERA_VERSION;
 	resp_root["camera_model"] = device_config->get(INI_SECTION_BOOT, INI_KEY_PMODEL, "");
-	resp_root["camera_build"] = "20250621";//TODO:Read real build time
+	resp_root["camera_build"] = CAMERA_BUILD_TIME;
 	resp_root["mcu_ver"] = mcu->readVersion();
 /*
 //TODO:

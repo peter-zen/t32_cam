@@ -56,7 +56,6 @@ static std::string getCurrentTimeFormatted()
 
 static bool getFileCreationTime(const std::string& filename, std::string& time_str)
 {
-    char tmp_buffer[64];
     struct stat attr;
     if (stat(filename.c_str(), &attr) == 0) {
         time_str = Timezone::getFormattedTimeWithTimezone(attr.st_ctime);
@@ -150,23 +149,19 @@ static int generateDescInfo(std::vector<std::string>& files, std::string& desc_i
         device_obj["GP"] = mcu->readGps();
 
         auto lowpower_volte = mcu->readLowPowerVoltage();
-        auto battery_volte = mcu->readBatteryVoltage();
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%0d", battery_volte / 1000, (battery_volte % 1000) / 100);
-        device_obj["Battery1"] = temp_buf;
-        device_obj["Battery2"] = "0";
+        auto battery1_volte = mcu->readBattery1Voltage();
+        auto battery2_volte = mcu->readBattery2Voltage();
+        device_obj["Battery1"] = mcu->convertVoltage(battery1_volte);
+        device_obj["Battery2"] = mcu->convertVoltage(battery2_volte);
 
         auto ext_volte = mcu->readExternalVoltage();
         auto shutdown_volte = mcu->readShutdownVoltage();
-        if ( ext_volte <= 14000 || battery_volte <= shutdown_volte ) {
+        if ( ext_volte <= 14 || battery1_volte <= shutdown_volte ) {
             device_obj["SPower"] = "0";
-            snprintf(temp_buf, sizeof(temp_buf), "%d.%0d", ext_volte / 1000, (ext_volte % 1000) / 100);
-            device_obj["EPower"] = temp_buf;
-        }
-        else
-        {
+            device_obj["EPower"] = mcu->convertVoltage(ext_volte);
+        } else {
             device_obj["EPower"] = "0";
-            snprintf(temp_buf, sizeof(temp_buf), "%d.%0d", ext_volte / 1000, (ext_volte % 1000) / 100 );
-            device_obj["SPower"] = temp_buf;
+            device_obj["SPower"] = mcu->convertVoltage(ext_volte);
         }
 
         auto disk_info = Disk::getInfo(DISK_PATHNAME);
@@ -183,26 +178,21 @@ static int generateDescInfo(std::vector<std::string>& files, std::string& desc_i
         if ( 1 ) {
             device_obj["AStatus"] = 22;
         }
-        else if ( battery_volte <= shutdown_volte && ext_volte <= shutdown_volte ) {
+        else if ( battery1_volte <= shutdown_volte && ext_volte <= shutdown_volte ) {
             device_obj["AStatus"] = 23;  /*powroff*/
         }
-        else if ( battery_volte <= lowpower_volte && ext_volte <= lowpower_volte  ) {
+        else if ( battery1_volte <= lowpower_volte && ext_volte <= lowpower_volte  ) {
             device_obj["AStatus"] = 21;  /*low*/
         }
         else {
             device_obj["AStatus"] = 11;
         }
 
-        auto battery_level = mcu->readBatteryLevel();
-        device_obj["BAT1_Level"] = battery_level;
+        auto battery1_level = mcu->readBatteryLevel();
+        device_obj["BAT1_Level"] = battery1_level;
 
-        
-        device_obj["Low_PWR_Val"] = lowpower_volte;;
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%0d", lowpower_volte / 1000, (lowpower_volte % 1000) / 100 );
-        device_obj["Low_PWR_Val"] = temp_buf;
-
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%0d", shutdown_volte / 1000, (shutdown_volte % 1000) / 100 );
-        device_obj["Loff_PWR_Val"] = temp_buf;
+        device_obj["Low_PWR_Val"] = mcu->convertVoltage(lowpower_volte);
+        device_obj["Loff_PWR_Val"] = mcu->convertVoltage(shutdown_volte);
 
         device_obj["UTime"] = current_time_str;
 
@@ -217,30 +207,24 @@ static int generateDescInfo(std::vector<std::string>& files, std::string& desc_i
         data_obj["D_Id"] = mcu->readEventID();
         data_obj["D_Num"] = mcu->readEventNum();
         #else
-        auto temperature = mcu->readTemperature();
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%0d", temperature / 10, abs( temperature % 10 ) );
-        data_obj["D_Temperature"] = temp_buf;
-        data_obj["D_Humidity"] = "0";
-        data_obj["D_Atmos"] = "0";
+        data_obj["D_Temperature"] = to_string_custom(mcu->readTemperature());
+        data_obj["D_Humidity"] = to_string_custom(mcu->readHumidity());
+        data_obj["D_Atmos"] = to_string_custom(mcu->readAtmosPressure());
 
         snprintf(temp_buf, sizeof(temp_buf), "%08X", mcu->readRMID());
         data_obj["D_SensorPID"] = temp_buf;
         data_obj["D_SensorType"] = mcu->readRMType();
         data_obj["D_SensorValue"] = mcu->readRMValue();
-        auto rm_bat_v = mcu->readRMBatteryValue();
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%d", rm_bat_v / 10, abs( rm_bat_v % 10 ));
-        data_obj["D_SensorBattery"] = temp_buf;
-        auto rm_bat1_v = mcu->readRMBattery1Value();
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%d", rm_bat1_v / 10, abs( rm_bat1_v % 10 ));
-        data_obj["D_SensorBattery1"] = temp_buf;
-        auto rm_bat2_v = mcu->readRMBattery2Value();
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%d", rm_bat2_v / 10, abs( rm_bat2_v % 10 ));
-        data_obj["D_SensorBattery2"] = temp_buf;
+        auto rm_bat_v = mcu->readBatteryVoltage();
+        auto rm_bat1_v = mcu->readBattery1Voltage();
+        auto rm_bat2_v = mcu->readBattery2Voltage();
+        data_obj["D_SensorBattery"] = mcu->convertVoltage(rm_bat_v);
+        data_obj["D_SensorBattery1"] = mcu->convertVoltage(rm_bat1_v);
+        data_obj["D_SensorBattery2"] = mcu->convertVoltage(rm_bat2_v);
         data_obj["D_SensorGP"] = "";
         data_obj["D_SensorCount"] = mcu->readRMCount();
         auto rm_sp_v = mcu->readRMSunPowerValue();
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%d", rm_sp_v / 10, abs( rm_sp_v % 10 ));
-        data_obj["D_SensorSP"] = temp_buf;
+        data_obj["D_SensorSP"] = mcu->convertVoltage(rm_sp_v);
         #endif
     }
     json_root["data"] = data_obj;
@@ -314,6 +298,40 @@ static int createDescInfoFile(std::vector<std::string>& media_files, const std::
     fclose(fp);
 
     return EC_SUCCESS;
+}
+
+static bool syncWithMCU()
+{
+    auto devconf = DeviceConfig::getInstance();
+    auto mcu = MCU::getInstance();
+    //PID
+    {
+        auto pid = mcu->readPID();
+        if (!pid.empty()) {
+            devconf->set(INI_SECTION_DEVICE, INI_KEY_PID, pid);
+        }
+    }
+
+    //UPID & UPWD
+    {
+        auto upid = mcu->readUPID();
+        auto upwd = mcu->readUPWD();
+        if (!upid.empty() && !upwd.empty()) {
+            devconf->set(INI_SECTION_SYS, INI_KEY_UPID, upid);
+            devconf->set(INI_SECTION_SYS, INI_KEY_UPWD, upwd);
+        }
+    }
+    devconf->flush();
+
+    //RTC
+    {
+        time_t now = time(nullptr);
+        struct tm* datetime = localtime(&now);
+        if (datetime != nullptr) {
+            mcu->setDatetime(datetime);
+        }
+    }
+    return true;
 }
 
 static void printUsage(char *argv[])
@@ -767,7 +785,7 @@ int main(int argc, char* argv[])
     //connect wifi
     if (command & CMD_CONNECT_WIFI) {
         auto wifi_ssid = config->get(INI_SECTION_SYS, INI_KEY_UPID, "");
-        auto wifi_pwd = config->get(INI_SECTION_SYS, INI_KEY_PWD, "");
+        auto wifi_pwd = config->get(INI_SECTION_SYS, INI_KEY_UPWD, "");
         if (wifi_ssid.empty() || wifi_pwd.empty()) {
             Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");
             goto main_exit;
@@ -1117,6 +1135,7 @@ main_exit:
         Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
     }
     auto_release.release();
+    syncWithMCU();
     config->flush();
     Misc::poweroff();
     while(1);

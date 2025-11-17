@@ -69,6 +69,9 @@ enum workingMode WorkMode::getWorkingMode()
         int mode = MCU::getInstance()->readWorkingMode();
 
         switch (mode) {
+        case -1:
+            working_mode = workingMode::WORKING_MODE_SNAP_UPLOAD;
+            break;
         case 0:
             working_mode = workingMode::WORKING_MODE_SNAP_ONLY;
             break;

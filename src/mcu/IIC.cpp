@@ -5,12 +5,19 @@
 #include <linux/i2c-dev.h>
 #include <iostream>
 #include <vector>
+#include <mutex>
 #include "Logger.h"
 #include "StringConvert.h"
 
 #if !MCU_EXIST
 #define I2C_BYPASS 1
 #endif
+
+struct iic_buf {
+	int reg;
+	void *data;
+	size_t count;
+};
 
 IIC::IIC(const std::string &devname)
 	: device_name(devname)
@@ -29,6 +36,7 @@ bool IIC::open()
 	return true;
 	#endif
 
+	std::lock_guard<std::mutex> lock(iic_mutex); // 添加锁保护
 	iic_fd = ::open(device_name.c_str(), O_RDWR);
 	if (iic_fd < 0) {
 		Logger::log(LogLevel::ERROR, "Failed to open the iic bus");
@@ -44,6 +52,7 @@ bool IIC::close()
 	return true;
 	#endif
 
+	std::lock_guard<std::mutex> lock(iic_mutex); // 添加锁保护
 	if (iic_fd >= 0) {
 		::close(iic_fd);
 		iic_fd = -1;
@@ -51,41 +60,34 @@ bool IIC::close()
 	return true;
 }
 
-int IIC::read(int reg, unsigned char *buf, int len)
+int IIC::read(int reg, void *buf, size_t count)
 {
 	#ifdef I2C_BYPASS
 	*buf = 0x00;
-	return len;
+	return count;
 	#endif
 
+	std::lock_guard<std::mutex> lock(iic_mutex); // 添加锁保护
 	if (iic_fd < 0) {
 		Logger::log(LogLevel::ERROR, "IIC bus is not open");
 		return -1;
 	}
-
-	unsigned char reg_buf[1] = { static_cast<unsigned char>(reg) };
-	if (write(iic_fd, reg_buf, 1) != 1) {
-		Logger::log(LogLevel::ERROR, "Failed to write register address");
-		return -1;
-	}
-
-	return ::read(iic_fd, buf, len);
+	struct iic_buf iic_buff = { reg, buf, count };
+	return ::read(iic_fd, &iic_buff, sizeof(iic_buff));
 }
 
-int IIC::write(int reg, unsigned char *buf, int len)
+int IIC::write(int reg, void *buf, size_t count)
 {
 	#ifdef I2C_BYPASS
-	return len;
+	return count;
 	#endif
 
+	std::lock_guard<std::mutex> lock(iic_mutex); // 添加锁保护
 	if (iic_fd < 0) {
 		Logger::log(LogLevel::ERROR, "IIC bus is not open");
 		return -1;
 	}
 
-	std::vector<unsigned char> data(len + 1);
-	data[0] = static_cast<unsigned char>(reg);
-	std::copy(buf, buf + len, data.begin() + 1);
-
-	return ::write(iic_fd, data.data(), len + 1) == (len + 1) ? len : -1;
+	struct iic_buf iic_buff = { reg, buf, count };
+	return ::write(iic_fd, &iic_buff, sizeof(iic_buff));
 }

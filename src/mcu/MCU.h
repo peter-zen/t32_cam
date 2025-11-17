@@ -8,20 +8,14 @@
 class MCU {
 public:
 	static std::shared_ptr<MCU> getInstance();
-	int readWorkingMode();
 	std::string readFirmwareVersion();
 	bool powerEnoughForFirmwareUpdate();
 	bool waitFor(int seconds);
 	bool IsWifiStationReady();
-	std::string readGps();
-	bool writeGps(const std::string &gps);
-	int readBatteryVoltage();
-	int readExternalVoltage();
 	int readShutdownVoltage();
 	int readLowPowerVoltage();
 	int readBatteryLevel();
 	int readBatteryType();
-	int readTemperature();
 	int readSignalCF();
 	int readSignalRSSI();
 	int readSignalRSRP();
@@ -31,33 +25,43 @@ public:
 	int readSignalTP();
 	bool Is4gExist();
 	bool writeRemoteWakeup(int remote_wakeup);
-	bool setDatetime(const struct tm &time);
+	
 	bool IsRemoteWakeup();
-	struct tm getDatetime();
 	bool useGpsTime();
 	int readCds();
 	int readRMID();
 	int readRMType();
 	int readRMValue();
-	int readRMBatteryValue();
-	int readRMBattery1Value();
-	int readRMBattery2Value();
-	int readRMSunPowerValue();
+	
 	int readRMCount();
 	int readEventType();
 	int readEventID();
 	int readEventNum();
 
 	//新实现
-	std::string readVersion();
+	int readWorkingMode();
+	std::string convertVersion(int ver);
+	int readVersion();
 	std::string readPID();
 	std::string readUPID();
 	std::string readUPWD();
 	bool writePID(const std::string &pid);
 	bool writeUPID(const std::string &upid);
 	bool writeUPWD(const std::string &password);
-
-	
+	bool setDatetime(const struct tm *time);
+	struct tm getDatetime();
+	int readTemperature();
+	int readHumidity();
+	int readAtmosPressure();//Atmopheric Pressure
+	int readRMSunPowerValue();
+	int readExternalVoltage();
+	int readBatteryVoltage();
+	int readBattery1Voltage();
+	int readBattery2Voltage();
+	std::string convertVoltage(int value);
+	std::string readGps();
+	bool writeGps(const std::string &gps);
+public:
 	~MCU();
 	
 private:
@@ -69,8 +73,10 @@ private:
 private:
 	std::string firmware_version;
 	std::string product_name;
+	int mcu_version;
 	bool power_enough;
 	std::shared_ptr<IIC> iic;
+	std::string gps_cached_data;
 };
 
 #endif

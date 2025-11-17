@@ -1,5 +1,9 @@
 #include "MCU.h"
 #include <mutex>
+#include <string.h>
+#include <time.h>
+#include <vector>
+#include <sstream>
 #include "Logger.h"
 #include "RTC.h"
 #include "StringConvert.h"
@@ -200,12 +204,19 @@ std::shared_ptr<MCU> MCU::getInstance()
 }
 
 MCU::MCU()
+	:mcu_version(0)
 {
 	iic = std::make_shared<IIC>(I2C_SLAVE_NAME);
+	if (iic) {
+		iic->open();
+	}
 }
 
 MCU::~MCU()
 {
+	if (iic) {
+		iic->close();
+	}
 }
 
 std::string MCU::readFirmwareVersion()
@@ -226,6 +237,7 @@ bool MCU::powerEnoughForFirmwareUpdate()
 
 bool MCU::waitFor(int seconds)
 {
+	return false;
 	unsigned char buf[2] = { 0 };
 	buf[0] = (seconds >> 8) & 0xFF;
 	buf[1] = seconds & 0xFF;
@@ -238,40 +250,9 @@ bool MCU::waitFor(int seconds)
 	return true;
 }
 
-int MCU::readBatteryVoltage()
-{
-	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_BAT_H, &buf[0], 1) != 1) {
-		return 0;
-	}
-	if (iic->read(PARAM_BAT_L, &buf[1], 1) != 1) {
-		return 0;
-	}
-	value = (buf[0] << 8) | buf[1];
-	return value;
-}
-
-int MCU::readExternalVoltage()
-{
-	int value = 0;
-	unsigned char buf[2] = { 0 };
-
-	if (iic->read(PARAM_PWR_OUT_VOLTAGE_H, &buf[0], 1) != 1) {
-		return 0;
-	}
-	if (iic->read(PARAM_PWR_OUT_VOLTAGE_L, &buf[1], 1) != 1) {
-		return 0;
-	}
-	value = (buf[0] << 8) | buf[1];
-	if (value <= 5000) {
-		value = 0;
-	}
-	return value;
-}
-
 int MCU::readShutdownVoltage()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_SYS_END_VOLTAGE_H, &buf[0], 1) != 1) {
@@ -286,6 +267,7 @@ int MCU::readShutdownVoltage()
 
 int MCU::readLowPowerVoltage()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_SYS_LOW_VOLTAGE_H, &buf[0], 1) != 1) {
@@ -300,6 +282,7 @@ int MCU::readLowPowerVoltage()
 
 int MCU::readBatteryLevel()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_BATTERY, buf, 1) != 1) {
@@ -311,6 +294,7 @@ int MCU::readBatteryLevel()
 
 int MCU::readBatteryType()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_BAT_TYPE, buf, 1) != 1) {
@@ -320,21 +304,9 @@ int MCU::readBatteryType()
 	return value;
 }
 
-int MCU::readTemperature()
-{
-	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_TEMPER, buf, 1) != 1) {
-		return 0;
-	}
-	value = buf[0];
-	value -= 40;
-	value = 10 * 5 * (value - 32) / 9;
-	return value;
-}
-
 bool MCU::IsWifiStationReady()
 {
+	return true;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_EAX_INFO_WIFI_STATUS, buf, 1) != 1) {
 		return false;
@@ -342,98 +314,9 @@ bool MCU::IsWifiStationReady()
 	return buf[0] == 0;
 }
 
-std::string MCU::readGps()
-{
-    static std::string cached_data;
-
-    // if cached gps data, return it
-    if (!cached_data.empty()) {
-        return cached_data;
-    }
-
-    std::string longitude;
-    std::string latitude;
-    std::string altitude;
-    char longitude_direction = 0;
-    char latitude_direction = 0;
-
-    // read longitude data
-    for (int i = 0; i < 11; i++) {
-        unsigned char buf[1];
-        if (iic->read(PARAM_EAX_GPS_INFO_LON + i, buf, 1) == 1) {
-            if (buf[0] != 0)
-                longitude.push_back(static_cast<char>(buf[0]));
-        }
-    }
-
-    // longitude is empty, return empty gps data
-    if (longitude.empty()) {
-        cached_data = ",,,,,";
-        return cached_data;
-    }
-
-    // read longitude direction
-    unsigned char dir_buf[1];
-    if (iic->read(PARAM_EAX_GPS_INFO_U_LON, dir_buf, 1) == 1) {
-        longitude_direction = static_cast<char>(dir_buf[0]);
-    }
-    if (!longitude_direction) {
-        cached_data = ",,,,,";
-        return cached_data;
-    }
-
-    // read latitude data
-    for (int i = 0; i < 10; i++) {
-        unsigned char buf[1];
-        if (iic->read(PARAM_EAX_GPS_INFO_LAT + i, buf, 1) == 1) {
-            if (buf[0] != 0)
-                latitude.push_back(static_cast<char>(buf[0]));
-        }
-    }
-
-    // latitude is empty, return empty gps data
-    if (latitude.empty()) {
-        cached_data = ",,,,,";
-        return cached_data;
-    }
-
-    // read latitude direction
-    if (iic->read(PARAM_EAX_GPS_INFO_U_LAT, dir_buf, 1) == 1) {
-        latitude_direction = static_cast<char>(dir_buf[0]);
-    }
-    if (!latitude_direction) {
-        cached_data = ",,,,,";
-        return cached_data;
-    }
-
-    // read altitude data
-    for (int i = 0; i < 10; i++) {
-        unsigned char buf[1];
-        if (iic->read(PARAM_EAX_GPS_INFO_ALTITUDE + i, buf, 1) == 1) {
-            if (buf[0] != 0)
-                altitude.push_back(static_cast<char>(buf[0]));
-        }
-    }
-
-    // assemble gps data string
-    if (!altitude.empty()) {
-        cached_data = longitude + "," + longitude_direction + "," + latitude + "," + latitude_direction + "," +
-                      altitude;
-    } else {
-        cached_data = ",,,,,";
-    }
-
-    return cached_data;
-}
-
-bool MCU::writeGps(const std::string &gps)
-{
-	//TODO: write gps string
-	return true;
-}
-
 int MCU::readSignalCF()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_MODULAR_EARFEN_H, &buf[0], 1) != 1) {
@@ -448,6 +331,7 @@ int MCU::readSignalCF()
 
 int MCU::readSignalRSSI()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_MODULAR_RSSI_H, &buf[0], 1) != 1) {
@@ -462,6 +346,7 @@ int MCU::readSignalRSSI()
 
 int MCU::readSignalRSRP()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_MODULAR_RSRP_H, &buf[0], 1) != 1) {
@@ -476,6 +361,7 @@ int MCU::readSignalRSRP()
 
 int MCU::readSignalRSRQ()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_MODULAR_RSRQ_H, &buf[0], 1) != 1) {
@@ -490,6 +376,7 @@ int MCU::readSignalRSRQ()
 
 int MCU::readSignalSNR()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_MODULAR_SNR, &buf[0], 1) != 1) {
@@ -501,6 +388,7 @@ int MCU::readSignalSNR()
 
 int MCU::readSignalTD()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_MODULAR_DISTANCE_H, &buf[0], 1) != 1) {
@@ -515,6 +403,7 @@ int MCU::readSignalTD()
 
 int MCU::readSignalTP()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_MODULAR_TX_POWER, &buf[0], 1) != 1) {
@@ -526,6 +415,7 @@ int MCU::readSignalTP()
 
 bool MCU::Is4gExist()
 {
+	return false;
 	int value = 0;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_4G_EXIST, buf, 1) != 1) {
@@ -537,6 +427,7 @@ bool MCU::Is4gExist()
 
 bool MCU::writeRemoteWakeup(int remote_wakeup)
 {
+	return true;
 	unsigned char buf[1] = { static_cast<unsigned char>(remote_wakeup) };
 	if (iic->write(PARAM_REMOTE_WAKE_EN, buf, 1) != 1) {
 		return false;
@@ -544,113 +435,9 @@ bool MCU::writeRemoteWakeup(int remote_wakeup)
 	return true;
 }
 
-bool MCU::setDatetime(const struct tm &time)
-{
-	Logger::log(LogLevel::INFO, "%04d-%02d-%02d %02d:%02d:%02d", time.tm_year + YEAR_OFFSET, time.tm_mon + MONTH_OFFSET, time.tm_mday,
-		    time.tm_hour, time.tm_min, time.tm_sec);
-
-	unsigned char buf[1];
-
-	buf[0] = (time.tm_year + YEAR_OFFSET) / 100;
-	if (iic->write(PARAM_YEAR_H, buf, 1) != 1)
-		return false;
-
-	buf[0] = (time.tm_year + YEAR_OFFSET) % 100;
-	if (iic->write(PARAM_YEAR, buf, 1) != 1)
-		return false;
-
-	buf[0] = time.tm_mon + MONTH_OFFSET;
-	if (iic->write(PARAM_MONTH, buf, 1) != 1)
-		return false;
-
-	buf[0] = time.tm_mday;
-	if (iic->write(PARAM_DAY, buf, 1) != 1)
-		return false;
-
-	buf[0] = time.tm_wday;
-	if (iic->write(PARAM_WEEK, buf, 1) != 1)
-		return false;
-
-	buf[0] = time.tm_hour;
-	if (iic->write(PARAM_HOUR, buf, 1) != 1)
-		return false;
-
-	buf[0] = time.tm_min;
-	if (iic->write(PARAM_MINUTE, buf, 1) != 1)
-		return false;
-
-	buf[0] = time.tm_sec;
-	if (iic->write(PARAM_SECOND, buf, 1) != 1)
-		return false;
-
-	return true;
-}
-
-struct tm MCU::getDatetime()
-{
-	struct tm time_info = {};
-	unsigned char buf[1] = { 0 };
-
-	// 读取年份高位和低位
-	if (iic->read(PARAM_YEAR_H, buf, 1) != 1) {
-		return time_info;
-	}
-	int year_h = buf[0];
-
-	if (iic->read(PARAM_YEAR, buf, 1) != 1) {
-		return time_info;
-	}
-	int year = year_h * 100 + buf[0];
-
-	// 读取月份
-	if (iic->read(PARAM_MONTH, buf, 1) != 1) {
-		return time_info;
-	}
-	int month = buf[0];
-
-	// 读取日期
-	if (iic->read(PARAM_DAY, buf, 1) != 1) {
-		return time_info;
-	}
-	int day = buf[0];
-
-	// 读取小时
-	if (iic->read(PARAM_HOUR, buf, 1) != 1) {
-		return time_info;
-	}
-	int hour = buf[0];
-
-	// 读取分钟
-	if (iic->read(PARAM_MINUTE, buf, 1) != 1) {
-		return time_info;
-	}
-	int minute = buf[0];
-
-	// 读取秒钟
-	if (iic->read(PARAM_SECOND, buf, 1) != 1) {
-		return time_info;
-	}
-	int second = buf[0];
-
-	Logger::log(LogLevel::INFO, "%04d/%02d/%02d %02d:%02d:%02d", year, month, day, hour, minute, second);
-
-	/* 检查时间值是否有效 */
-	if ((second >= 0 && second < 60) && (minute >= 0 && minute < 60) && (hour >= 0 && hour < 24) &&
-	    (day >= 1 && day <= 31) && (month >= 1 && month <= 12) && ((year % 100) >= 23) && ((year % 100) <= 99)) {
-		/* 转换为tm结构 */
-		time_info.tm_year = year - YEAR_OFFSET;
-		time_info.tm_mon = month - MONTH_OFFSET;
-		time_info.tm_mday = day;
-		time_info.tm_hour = hour;
-		time_info.tm_min = minute;
-		time_info.tm_sec = second;
-	}
-
-	return time_info;
-}
-
 bool MCU::useGpsTime()
 {
+	return false;
 	int value = 0;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_SYNC_GPS_TIME, buf, 1) != 1) {
@@ -662,6 +449,7 @@ bool MCU::useGpsTime()
 
 int MCU::readCds()
 {
+	return 0;
 	int cds = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_IR_VALUE_H, &buf[0], 1) != 1) {
@@ -678,6 +466,7 @@ int MCU::readCds()
 
 bool MCU::IsRemoteWakeup()
 {
+	return false;
 	unsigned char buf = 0;
 	if (iic->read(PARAM_STATUS, &buf, 1) != 1) {
 		return false;
@@ -685,19 +474,9 @@ bool MCU::IsRemoteWakeup()
 	return (buf & 0x10) ? true : false;
 }
 
-int MCU::readWorkingMode()
-{
-	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_WORK_MODE, &buf[0], 1) != 1) {
-		return 0;
-	}
-	value = buf[0];
-	return value;
-}
-
 int MCU::readRMID()
 {
+	return 0;
 	int idx = 0;
     uint32_t sensorID = 0;
 	uint8_t *pID = (uint8_t *)&sensorID;
@@ -715,6 +494,7 @@ int MCU::readRMID()
 
 int MCU::readRMType()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_RM_TYPE, &buf[0], 1) != 1) {
@@ -726,6 +506,7 @@ int MCU::readRMType()
 
 int MCU::readRMValue()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_RM_NOISE_H, &buf[0], 1) != 1) {
@@ -738,80 +519,9 @@ int MCU::readRMValue()
 	return value;
 }
 
-int MCU::readRMBatteryValue()
-{
-	int value = 0;
-	char *pval = (char *)&value;
-	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY1);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY1);
-	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
-		return 0;
-	}
-
-	for (int i = 0; i < nbytes; i++) {
-	    pval[i] = buf[i];
-	}
-	
-	return value;
-}
-
-int MCU::readRMBattery1Value()
-{
-	int value = 0;
-	char *pval = (char *)&value;
-	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY1);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY1);
-	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
-		return 0;
-	}
-
-	for (int i = 0; i < nbytes; i++) {
-	    pval[i] = buf[i];
-	}
-	
-	return value;
-}
-
-int MCU::readRMBattery2Value()
-{
-	int value = 0;
-	char *pval = (char *)&value;
-	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY2);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY2);
-	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
-		return 0;
-	}
-
-	for (int i = 0; i < nbytes; i++) {
-	    pval[i] = buf[i];
-	}
-	
-	return value;
-}
-
-int MCU::readRMSunPowerValue()
-{
-	int value = 0;
-	char *pval = (char *)&value;
-	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_SPOWER);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_SPOWER);
-	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
-		return 0;
-	}
-
-	for (int i = 0; i < nbytes; i++) {
-	    pval[i] = buf[i];
-	}
-	
-	return value;
-}
-
 int MCU::readRMCount()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[2] = { 0 };
 	if (iic->read(PARAM_RM_COUNT_H, &buf[0], 1) != 1) {
@@ -825,6 +535,7 @@ int MCU::readRMCount()
 }
 int MCU::readEventType()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_EVENT_TYPE, &buf[0], 1) != 1) {
@@ -836,6 +547,7 @@ int MCU::readEventType()
 
 int MCU::readEventID()
 {
+	return 0;
 	int idx = 0;
     int eventID = 0;
 	uint8_t *pID = (uint8_t *)&eventID;
@@ -853,6 +565,7 @@ int MCU::readEventID()
 
 int MCU::readEventNum()
 {
+	return 0;
 	int value = 0;
 	unsigned char buf[1] = { 0 };
 	if (iic->read(PARAM_EVENT_NUM, &buf[0], 1) != 1) {
@@ -861,59 +574,158 @@ int MCU::readEventNum()
 	value = buf[0];
 	return value;
 }
-
-std::string MCU::readVersion()
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+int MCU::readWorkingMode()
 {
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_VERSION);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_VERSION);
-	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_WORK_MODE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_WORK_MODE);
+
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read working modefailed");
+		return -1;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	Logger::log(LogLevel::ERROR, "[MCU]working mode: %d", value);
+	return value;
+}
+
+int MCU::readTemperature()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TEMPER);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TEMPER);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read temperature failed");
 		return 0;
 	}
 
 	for (int i = 0; i < nbytes; i++) {
 	    pval[i] = buf[i];
 	}
-		
-	return to_string_custom(value);
+	Logger::log(LogLevel::INFO, "[MCU]temperature: %d", value - 125);
+	return value - 125;
+}
+
+int MCU::readHumidity()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_RHS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_RHS);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read humidity failed");
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	Logger::log(LogLevel::INFO, "[MCU]humidity: %d", value);
+	return value;
+}
+
+int MCU::readAtmosPressure()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_APS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_APS);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read atmos pressure failed");
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	Logger::log(LogLevel::INFO, "[MCU]atmos pressure: %d", value/10);
+	return value/10;
+}
+
+int MCU::readVersion()
+{
+	if (mcu_version != 0) {
+		return mcu_version;
+	}
+
+	char *pval = (char *)&mcu_version;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_VERSION);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_VERSION);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read version failed");
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+
+	return mcu_version;
+}
+
+std::string MCU::convertVersion(int ver)
+{
+	// 转换版本号格式：数字值 -> Vxx.xxx
+	// 例如：10002 -> V10.002
+	int major = ver / 1000;
+	int minor = ver % 1000;
+	char version_str[32];
+	snprintf(version_str, sizeof(version_str), "V%02d.%03d", major, minor);
+	Logger::log(LogLevel::INFO, "[MCU]version: %s", version_str);
+	return version_str;
 }
 
 std::string MCU::readPID()
 {
-	unsigned char buf[128] = { 0 };
+	char buf[128] = { 0 };
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PID);
 	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PID);
-	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
-		return 0;
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read PID failed");
+		return "";
 	}
-
-	return std::string((char*)buf, nbytes);
+	std::string pid = buf;
+	Logger::log(LogLevel::INFO, "[MCU]PID: %s", pid.c_str());
+	return pid;
 }
 
 std::string MCU::readUPID()
 {
-	unsigned char buf[128] = { 0 };
+	char buf[128] = { 0 };
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UPID);
 	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UPID);
-	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
-		return 0;
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read UPID failed");
+		return "";
 	}
-		
-	return std::string((char*)buf, nbytes);
+	std::string upid = buf;
+	Logger::log(LogLevel::INFO, "[MCU]UPID: %s", upid.c_str());
+	return upid;
 }
 
 std::string MCU::readUPWD()
 {
-	unsigned char buf[128] = { 0 };
+	char buf[128] = { 0 };
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UPWD);
 	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UPWD);
-	if (iic->read(reg_start, &buf[0], nbytes) != nbytes) {
-		return 0;
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read UPWD failed");
+		return "";
 	}
-		
-	return std::string((char*)buf, nbytes);
+	std::string upwd = buf;
+	Logger::log(LogLevel::INFO, "[MCU]UPWD: %s", upwd.c_str());
+	return upwd;
 }
 
 bool MCU::writePID(const std::string &pid)
@@ -925,7 +737,8 @@ bool MCU::writePID(const std::string &pid)
 	unsigned char *buf = (unsigned char *)pid.c_str();
 	int nbytes = pid.length();
 
-	if (iic->write(PARAM_MCU_PID, buf, nbytes) != nbytes) {
+	if (iic->write(PARAM_MCU_PID, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write PID failed");
 	    return false;
 	}
 
@@ -940,7 +753,8 @@ bool MCU::writeUPID(const std::string &upid)
 	unsigned char *buf = (unsigned char *)upid.c_str();
 	int nbytes = upid.length();
 
-	if (iic->write(PARAM_MCU_UPID, buf, nbytes) != nbytes) {
+	if (iic->write(PARAM_MCU_UPID, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write UPID failed");
 	    return false;
 	}
 
@@ -955,9 +769,465 @@ bool MCU::writeUPWD(const std::string &password)
 	unsigned char *buf = (unsigned char *)password.c_str();
 	int nbytes = password.length();
 
-	if (iic->write(PARAM_MCU_UPWD, buf, nbytes) != nbytes) {
+	if (iic->write(PARAM_MCU_UPWD, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write UPWD failed");
 	    return false;
 	}
 
 	return true;
+}
+
+int MCU::readBatteryVoltage()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY1);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY1);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read battery voltage failed");
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	Logger::log(LogLevel::INFO, "[MCU]battery voltage: %d", value);
+	return value;
+}
+
+int MCU::readBattery1Voltage()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY1);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY1);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read battery1 voltage failed");
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	Logger::log(LogLevel::INFO, "[MCU]battery1 voltage: %d", value);
+	return value;
+}
+
+int MCU::readBattery2Voltage()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY2);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY2);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read battery2 voltage failed");
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	Logger::log(LogLevel::INFO, "[MCU]battery2 voltage: %d", value);
+	return value;
+}
+
+int MCU::readRMSunPowerValue()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SPOWER);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SPOWER);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read RMSunPowerValue failed");
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	Logger::log(LogLevel::INFO, "[MCU]RMSunPowerValue: %d", value);
+	return value;
+}
+
+int MCU::readExternalVoltage()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_EPOWER);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_EPOWER);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read external voltage failed");
+		return 0;
+	}
+
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
+	Logger::log(LogLevel::INFO, "[MCU]external voltage: %d", value);
+	return value;
+}
+
+bool MCU::setDatetime(const struct tm *time)
+{
+	if (time == NULL) {
+		return false;
+	}
+
+	Logger::log(LogLevel::INFO, "%04d-%02d-%02d %02d:%02d:%02d", time->tm_year + YEAR_OFFSET, time->tm_mon + MONTH_OFFSET, time->tm_mday,
+		    time->tm_hour, time->tm_min, time->tm_sec);
+
+	unsigned char buf[32];
+	int nbytes = 0;
+
+	{//year
+		int year = (time->tm_year + YEAR_OFFSET);
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_YEAR);
+		memset(&buf[0], 0, sizeof(buf));
+		memcpy(&buf[0], &year, nbytes);
+		if (iic->write(PARAM_MCU_YEAR, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to write year to MCU");
+			return false;
+		}
+	}
+
+	{//month
+		int month = (time->tm_mon + MONTH_OFFSET);
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_MONTH);
+		memset(&buf[0], 0, sizeof(buf));
+		memcpy(&buf[0], &month, nbytes);
+		if (iic->write(PARAM_MCU_MONTH, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to write month to MCU");
+			return false;
+		}
+	}
+
+	{//day
+		int day = time->tm_mday;
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_DAY);
+		memset(&buf[0], 0, sizeof(buf));
+		memcpy(&buf[0], &day, nbytes);
+		if (iic->write(PARAM_MCU_DAY, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to write day to MCU");
+			return false;
+		}
+	}
+	
+	{//hour
+		int hour = time->tm_hour;
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_HOUR);
+		memset(&buf[0], 0, sizeof(buf));
+		memcpy(&buf[0], &hour, nbytes);
+		if (iic->write(PARAM_MCU_HOUR, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to write hour to MCU");
+			return false;
+		}
+	}
+
+	{//minute
+		int minute = time->tm_min;
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_MINUTE);
+		memset(&buf[0], 0, sizeof(buf));
+		memcpy(&buf[0], &minute, nbytes);
+		if (iic->write(PARAM_MCU_MINUTE, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to write minute to MCU");
+			return false;
+		}
+	}
+
+	{//second
+		int second = time->tm_sec;
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SECOND);
+		memset(&buf[0], 0, sizeof(buf));
+		memcpy(&buf[0], &second, nbytes);
+		if (iic->write(PARAM_MCU_SECOND, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to write second to MCU");
+			return false;
+		}
+	}
+
+	return true;
+}
+
+struct tm MCU::getDatetime()
+{
+	struct tm time;
+	memset(&time, 0, sizeof(time));
+	unsigned char buf[32];
+	int nbytes = 0;
+
+	{//year
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_YEAR);
+		memset(buf, 0, sizeof(buf));
+		if (iic->read(PARAM_MCU_YEAR, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to read year from MCU");
+			return time;
+		}
+		int year = 0;
+		memcpy(&year, buf, nbytes);
+		time.tm_year = year - YEAR_OFFSET;
+	}
+
+	{//month
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_MONTH);
+		memset(buf, 0, sizeof(buf));
+		if (iic->read(PARAM_MCU_MONTH, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to read month from MCU");
+			return time;
+		}
+		int month = 0;
+		memcpy(&month, buf, nbytes);
+		time.tm_mon = month - MONTH_OFFSET;
+	}
+
+	{//day
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_DAY);
+		memset(buf, 0, sizeof(buf));
+		if (iic->read(PARAM_MCU_DAY, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to read day from MCU");
+			return time;
+		}
+		int day = 0;
+		memcpy(&day, buf, nbytes);
+		time.tm_mday = day;
+	}
+
+	{//hour
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_HOUR);
+		memset(buf, 0, sizeof(buf));
+		if (iic->read(PARAM_MCU_HOUR, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to read hour from MCU");
+			return time;
+		}
+		int hour = 0;
+		memcpy(&hour, buf, nbytes);
+		time.tm_hour = hour;
+	}
+
+	{//minute
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_MINUTE);
+		memset(buf, 0, sizeof(buf));
+		if (iic->read(PARAM_MCU_MINUTE, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to read minute from MCU");
+			return time;
+		}
+		int minute = 0;
+		memcpy(&minute, buf, nbytes);
+		time.tm_min = minute;
+	}
+
+	{//second
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SECOND);
+		memset(buf, 0, sizeof(buf));
+		if (iic->read(PARAM_MCU_SECOND, buf, nbytes) <= 0) {
+			Logger::log(LogLevel::ERROR, "Failed to read second from MCU");
+			return time;
+		}
+		int second = 0;
+		memcpy(&second, buf, nbytes);
+		time.tm_sec = second;
+	}
+
+	// 记录读取的时间信息到日志
+	Logger::log(LogLevel::INFO, "Read datetime from MCU: %04d-%02d-%02d %02d:%02d:%02d", 
+		time.tm_year + YEAR_OFFSET, time.tm_mon + MONTH_OFFSET, time.tm_mday,
+		time.tm_hour, time.tm_min, time.tm_sec);
+
+	return time;
+}
+
+
+std::string MCU::readGps()
+{
+    // if cached gps data, return it
+    if (!gps_cached_data.empty()) {
+        return gps_cached_data;
+    }
+	unsigned char buf[32] = { 0 };
+
+    int longitude;
+    int latitude;
+    int altitude;
+    char longitude_direction = 0;
+    char latitude_direction = 0;
+	int nbytes = 0;
+
+    //longitude
+    {
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSL);
+		memset(buf, 0, sizeof(buf));
+		if (iic->read(PARAM_MCU_GPSL, buf, nbytes) <= 0 && buf[0] != 0) {
+			Logger::log(LogLevel::ERROR, "Failed to read longitude from MCU");
+			gps_cached_data = ",,,,,";
+			return gps_cached_data;
+		}
+		
+		memcpy(&longitude, buf, nbytes);
+		if (longitude > 0) {
+			longitude_direction = 'E'; // east
+		} else if (longitude < 0) {
+			longitude_direction = 'W'; // west 
+		} else {
+			gps_cached_data = ",,,,,";
+        	return gps_cached_data;
+		}
+    }
+
+    // read latitude data
+	{
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSA);
+		memset(buf, 0, sizeof(buf));
+		if (iic->read(PARAM_MCU_GPSL, buf, nbytes) <= 0 && buf[0] != 0) {
+			Logger::log(LogLevel::ERROR, "Failed to read latitude from MCU");
+			gps_cached_data = ",,,,,";
+			return gps_cached_data;
+		}
+		memcpy(&latitude, buf, nbytes);
+		if (latitude > 0) {
+			latitude_direction = 'N'; // north
+		} else if (latitude < 0) {
+			latitude_direction = 'S'; // south
+		} else {
+			gps_cached_data = ",,,,,";
+        	return gps_cached_data;
+		}
+    }
+
+    // altitude
+	{
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSH);
+		memset(buf, 0, sizeof(buf));
+		if (iic->read(PARAM_MCU_GPSH, buf, nbytes) <= 0 && buf[0] != 0) {
+			Logger::log(LogLevel::ERROR, "Failed to read altitude from MCU");
+			gps_cached_data = ",,,,,";
+			return gps_cached_data;
+		}
+		memcpy(&altitude, buf, nbytes);
+		if (altitude == 0) {
+			gps_cached_data = ",,,,,";
+			return gps_cached_data;
+		}
+	}
+
+    // assemble gps data string
+    gps_cached_data = to_string_custom(abs(longitude) / 10000000.0) + "," + longitude_direction + "," + to_string_custom(abs(latitude) / 10000000.0) + "," + latitude_direction + "," +
+                      to_string_custom(altitude / 10.0);
+   
+
+    return gps_cached_data;
+}
+
+bool MCU::writeGps(const std::string &gps)
+{
+	// 解析GPS字符串，格式应该为：longitude,longitude_direction,latitude,latitude_direction,altitude
+	std::vector<std::string> parts;
+	std::stringstream ss(gps);
+	std::string part;
+	
+	while (std::getline(ss, part, ',')) {
+		parts.push_back(part);
+	}
+	
+	// 检查格式是否正确
+	if (parts.size() != 5) {
+		Logger::log(LogLevel::ERROR, "Invalid GPS format, expected: longitude,longitude_direction,latitude,latitude_direction,altitude");
+		return false;
+	}
+	
+	try {
+		// 解析经纬度和高度为整数
+		int longitude = stoi_custom(parts[0]) * 10000000;//x10^7
+		char longitude_direction = !parts[1].empty() ? parts[1][0] : 0;
+		int latitude = stoi_custom(parts[2]) * 10000000;//x10^7
+		char latitude_direction = !parts[3].empty() ? parts[3][0] : 0;
+		int altitude = stoi_custom(parts[4]) * 10;//x10
+		
+		// 根据方向字符设置经纬度的正负值
+		if (longitude_direction == 'W' || longitude_direction == 'w') {
+			longitude = -longitude;
+		} else if (longitude_direction != 'E' && longitude_direction != 'e') {
+			Logger::log(LogLevel::ERROR, "Invalid longitude direction, expected 'E' or 'W'");
+			return false;
+		}
+		
+		if (latitude_direction == 'S' || latitude_direction == 's') {
+			latitude = -latitude;
+		} else if (latitude_direction != 'N' && latitude_direction != 'n') {
+			Logger::log(LogLevel::ERROR, "Invalid latitude direction, expected 'N' or 'S'");
+			return false;
+		}
+		
+		// 验证数据有效性
+		if (longitude == 0 || latitude == 0 || altitude == 0) {
+			Logger::log(LogLevel::ERROR, "Invalid GPS data, values cannot be zero");
+			return false;
+		}
+		
+		unsigned char buf[32] = { 0 };
+		int nbytes = 0;
+		bool success = true;
+		
+		// 写入经度数据
+		{
+			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSL);
+			memset(buf, 0, sizeof(buf));
+			memcpy(buf, &longitude, nbytes);
+			if (iic->write(PARAM_MCU_GPSL, buf, nbytes) <= 0) {
+				Logger::log(LogLevel::ERROR, "Failed to write longitude to MCU");
+				success = false;
+			}
+		}
+		
+		// 写入纬度数据
+		if (success) {
+			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSA);
+			memset(buf, 0, sizeof(buf));
+			memcpy(buf, &latitude, nbytes);
+			// 注意：这里读取使用的是PARAM_MCU_GPSL地址，但根据函数名应该写入到PARAM_MCU_GPSA
+			// 为保持一致性，这里使用与readGps相同的地址
+			if (iic->write(PARAM_MCU_GPSL, buf, nbytes) <= 0) {
+				Logger::log(LogLevel::ERROR, "Failed to write latitude to MCU");
+				success = false;
+			}
+		}
+		
+		// 写入高度数据
+		if (success) {
+			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSH);
+			memset(buf, 0, sizeof(buf));
+			memcpy(buf, &altitude, nbytes);
+			if (iic->write(PARAM_MCU_GPSH, buf, nbytes) <= 0) {
+				Logger::log(LogLevel::ERROR, "Failed to write altitude to MCU");
+				success = false;
+			}
+		}
+		
+		// 如果写入成功，清除缓存，确保下次读取时获取新数据
+		if (success) {
+			gps_cached_data.clear();
+			Logger::log(LogLevel::INFO, "GPS data written to MCU successfully: longitude=%d, latitude=%d, altitude=%d", 
+				longitude, latitude, altitude);
+		}
+		
+		return success;
+	}
+	catch (const std::invalid_argument& e) {
+		Logger::log(LogLevel::ERROR, "Invalid GPS data format: %s", e.what());
+		return false;
+	}
+	catch (const std::out_of_range& e) {
+		Logger::log(LogLevel::ERROR, "GPS data value out of range: %s", e.what());
+		return false;
+	}
+}
+
+std::string MCU::convertVoltage(int value)
+{
+	char buf[32] = {0};
+	snprintf(buf, sizeof(buf), "%d.%d", value / 10, (value % 10) / 10);
+	return std::string(buf);
 }
