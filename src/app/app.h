@@ -11,6 +11,9 @@ extern "C" {
 #define SD_CARD_PATH   "/mnt/sdcard/"
 #define MEDIA_TARGET_PATH   SD_CARD_PATH"media/"
 #define MEDIA_UPLOAD_PATH   SD_CARD_PATH"media/upload/"
+#if ALL_MEDIA_FILE_IN_ONE_FOLDER
+#define MEDIA_STORE_FOLDER_PATH   MEDIA_TARGET_PATH"file/"
+#endif
 #define NETIF_NAME "wlan0"
 #define ENV_FILE_PATHNAME "/config/htc/env.ini"
 //#define ENV_FILE_PATHNAME "/mnt/sdcard/res/env.ini"

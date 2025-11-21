@@ -32,6 +32,7 @@ add_definitions(-DRTC_EXIST=1)
 add_definitions(-DMCU_EXIST=1)
 add_definitions(-DDAEMON_ENABLE=0)
 add_definitions(-DUVC_ENABLE=0)
+add_definitions(-DALL_MEDIA_FILE_IN_ONE_FOLDER=1)
 # set sensor type
 #add_definitions(-DSENSOR_TYPE_SC4366P)
 add_definitions(-DSENSOR_TYPE_GC4653)

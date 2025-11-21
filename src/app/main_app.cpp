@@ -869,11 +869,19 @@ int main(int argc, char* argv[])
             std::string oldpath = QUICK_SNAP_DIR + dir + "/*";
             std::string newpath, upload_path, timeStr;
             if (is_rtc_work_well) {
+                #if ALL_MEDIA_FILE_IN_ONE_FOLDER
+                newpath =  MEDIA_STORE_FOLDER_PATH;
+                #else
                 newpath =  MEDIA_TARGET_PATH + dir;
+                #endif
                 upload_path = MEDIA_UPLOAD_PATH + dir;
             } else {
                 timeStr = getCurrentTimeFormatted();
+                #if ALL_MEDIA_FILE_IN_ONE_FOLDER
+                newpath =  MEDIA_STORE_FOLDER_PATH;
+                #else
                 newpath =  MEDIA_TARGET_PATH + timeStr;
+                #endif
                 upload_path = MEDIA_UPLOAD_PATH + timeStr;
             }
 
