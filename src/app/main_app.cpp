@@ -1103,6 +1103,11 @@ int main(int argc, char* argv[])
                         auto pathname = file_inf_array[i]["F_FilePath"].asString() + "/" + file_inf_array[i]["F_FileName"].asString();
                         if (pathname == filename) {
                             root["file_inf"][i]["F_UploadedTag"] = 1;
+                            
+                            auto file_manage_type = config->get(INI_SECTION_POLICY, INI_KEY_FILE_MANAGE, 0);
+                            if (file_manage_type == FILE_MANAGE_DELETE) {
+                                Misc::deleteFile(pathname);
+                            }
                         }
                     }
                 }

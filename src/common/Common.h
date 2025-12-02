@@ -69,6 +69,11 @@ extern "C" {
 //disk
 #define DISK_PATHNAME "/mnt/sdcard/"
 
+enum file_manage_type {
+	FILE_MANAGE_KEEP = 0,//keep jpeg and video files on SD card after uploading to server
+	FILE_MANAGE_DELETE = 1,//delete jpeg and video files on SD card after uploading to server
+};
+
 //error code
 enum error_code {
 	EC_SUCCESS = 0,
@@ -163,24 +168,26 @@ static struct {
 #define PC(x)  (2 * 32 + (x))  // Port C
 
 //working mode check pins
+#if !MCU_EXIST
 #define WORKING_MODE_CHECK_PIN_0  PC(9)
 #define WORKING_MODE_CHECK_PIN_1  PC(8)
+#endif
 
 //power hold pin
-#define POWER_HOLD_PIN  PB(15)
+#define POWER_HOLD_PIN  PC(8)
 
 //CDS sensor pin
 #define CDS_SENSOR_PIN  PA(10)
 
 //IR-CUT pins
-#define IR_CUT_ENABLE_PIN    PB(13)
-#define IR_CUT_CTRL_PIN    PB(14)
+#define IR_CUT_ENABLE_PIN    PB(29)
+#define IR_CUT_CTRL_PIN    PB(30)
 
 //IR LED pin
-#define IR_LED_PIN      PB(10)
+#define IR_LED_PIN      PB(28)
 
 //RGB LED pins
-#define RGB_LED_PIN   PB(11)
+#define RGB_LED_PIN   PB(31)
 
 
 //DATE TIME

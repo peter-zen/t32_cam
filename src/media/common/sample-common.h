@@ -93,7 +93,7 @@ extern "C"
 #define FIRST_SENSOR_WIDTH                  2560                        //sensor width
 #define FIRST_SENSOR_HEIGHT                 1440                        //sensor height
 #define FIRST_RST_GPIO                      GPIO_PA(20)                 //sensor reset gpio
-#define FIRST_PWDN_GPIO                     GPIO_PB(6)                          //sensor pwdn gpio
+#define FIRST_PWDN_GPIO                     GPIO_PA(22)                  //sensor pwdn gpio
 #define FIRST_POWER_GPIO                    -1                          //sensor power gpio
 #define FIRST_SWITCH_GPIO                   -1                 //sensor switch gpio
 #define FIRST_SENSOR_ID                     0                           //sensor index
