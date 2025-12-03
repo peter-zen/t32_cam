@@ -695,6 +695,15 @@ std::string MCU::readPID()
 		Logger::log(LogLevel::ERROR, "[MCU]read PID failed");
 		return "";
 	}
+	
+	// 检查ASCII码值范围 (32~127)
+	for (int i = 0; i < nbytes && buf[i] != '\0'; i++) {
+		if (buf[i] < 32 || buf[i] > 127) {
+			Logger::log(LogLevel::ERROR, "[MCU]PID contains invalid ASCII character at position %d: 0x%02X", i, (unsigned char)buf[i]);
+			return "";
+		}
+	}
+	
 	std::string pid = buf;
 	Logger::log(LogLevel::INFO, "[MCU]PID: %s", pid.c_str());
 	return pid;
@@ -709,6 +718,15 @@ std::string MCU::readUPID()
 		Logger::log(LogLevel::ERROR, "[MCU]read UPID failed");
 		return "";
 	}
+	
+	// 检查ASCII码值范围 (32~127)
+	for (int i = 0; i < nbytes && buf[i] != '\0'; i++) {
+		if (buf[i] < 32 || buf[i] > 127) {
+			Logger::log(LogLevel::ERROR, "[MCU]UPID contains invalid ASCII character at position %d: 0x%02X", i, (unsigned char)buf[i]);
+			return "";
+		}
+	}
+	
 	std::string upid = buf;
 	Logger::log(LogLevel::INFO, "[MCU]UPID: %s", upid.c_str());
 	return upid;
@@ -723,6 +741,15 @@ std::string MCU::readUPWD()
 		Logger::log(LogLevel::ERROR, "[MCU]read UPWD failed");
 		return "";
 	}
+	
+	// 检查ASCII码值范围 (32~127)
+	for (int i = 0; i < nbytes && buf[i] != '\0'; i++) {
+		if (buf[i] < 32 || buf[i] > 127) {
+			Logger::log(LogLevel::ERROR, "[MCU]UPWD contains invalid ASCII character at position %d: 0x%02X", i, (unsigned char)buf[i]);
+			return "";
+		}
+	}
+	
 	std::string upwd = buf;
 	Logger::log(LogLevel::INFO, "[MCU]UPWD: %s", upwd.c_str());
 	return upwd;
