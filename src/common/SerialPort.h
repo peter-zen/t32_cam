@@ -9,8 +9,7 @@ class SerialPort {
 	bool open(const std::string &device_name, int baud_rate);
 	bool close();
 	bool write(const std::string &data);
-	bool read(std::string &data);
-	bool read(std::string &data, int timeout);
+	bool read(std::string &data, int timeout=0xFFFFFFFF);// timeout in milliseconds
 
     public:
 	SerialPort();

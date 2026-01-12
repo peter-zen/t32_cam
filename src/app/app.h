@@ -14,7 +14,9 @@ extern "C" {
 #if ALL_MEDIA_FILE_IN_ONE_FOLDER
 #define MEDIA_STORE_FOLDER_PATH   MEDIA_TARGET_PATH"file/"
 #endif
-#define NETIF_NAME "wlan0"
+#define WIFI_IFNAME "wlan0"
+#define ETH_IFNAME "eth0"
+#define USB_DONGLE_IFNAME "usb0"
 #define ENV_FILE_PATHNAME "/config/htc/env.ini"
 //#define ENV_FILE_PATHNAME "/mnt/sdcard/res/env.ini"
 #define CONFIG_FILE_PATHNAME "/config/htc/config.ini"

@@ -24,7 +24,7 @@
 #include "DeviceConfig.h"
 #include "EnvManager.h"
 #include "Logger.h"
-#include "Usb4gDongle.h"
+#include "UsbDongle.h"
 #include "Disk.h"
 #include "StringConvert.h"
 #include "Misc.h"

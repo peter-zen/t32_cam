@@ -60,20 +60,9 @@ size_t Misc::getFileSize(const std::string &file_pathname)
 bool Misc::copyFile(const std::string &src_pathname, const std::string &dst_pathname)
 {
 	int ret;
-	{
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return false;
-			}
-			syscall_inited = true;
-		}
-	}
 	
 	std::string command = "cp -rf " + src_pathname + " " + dst_pathname;
-	system_call((char*)command.c_str(), 10000);
+	ret = syscall((char*)command.c_str(), 10000);
 	if(ret < 0) {
 		return false;
 	}
@@ -84,20 +73,9 @@ bool Misc::copyFile(const std::string &src_pathname, const std::string &dst_path
 bool Misc::moveFile(const std::string &src_pathname, const std::string &dst_pathname)
 {
 	int ret;
-	{
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return false;
-			}
-			syscall_inited = true;
-		}
-	}
 	
 	std::string command = "mv -f " + src_pathname + " " + dst_pathname;
-	system_call((char*)command.c_str(), 10000);
+	ret = syscall((char*)command.c_str(), 10000);
 	if(ret < 0) {
 		return false;
 	}
@@ -243,17 +221,6 @@ void Misc::setNetworkInterfaceName(std::string name)
 bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 {
 	int ret;
-	{
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return false;
-			}
-			syscall_inited = true;
-		}
-	}
 
 	if (!already_inited_wifi) {
 #if defined(WIFI_TYPE_CYW43012)
@@ -263,7 +230,7 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 #else
 		#error "Unknown WiFi type"
 #endif
-		ret = system_call((char*)command.c_str(), 10000);
+		ret = syscall((char*)command.c_str(), 10000);
 		if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "%s error", command.c_str());
 			return false;
@@ -279,7 +246,7 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 	#else
 		#error "Unknown WiFi type"
 	#endif
-    ret = system_call((char*)command.c_str(), timeout*1000 + 5000);
+    ret = syscall((char*)command.c_str(), timeout*1000 + 5000);
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "Connect to WiFi: %s error", ssid.c_str());
 			return false;
@@ -288,25 +255,16 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
     return true;
 }
 
-bool Misc::startDHCP()
+bool Misc::startDHCP(const std::string &ifname)
 {
+	std::string netif = ifname.empty() ? netifname : ifname;
+
 	int ret;
-	{
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return false;
-			}
-			syscall_inited = true;
-		}
-	}
 	
-	std::string command = "udhcpc -i " + netifname + " -t " + to_string_custom(10);
-	ret = system_call((char*)command.c_str(), 20000);
+	std::string command = "udhcpc -i " + netif + " -t " + to_string_custom(10);
+	ret = syscall((char*)command.c_str(), 20000);
 	if(ret < 0) {
-			Logger::log(LogLevel::ERROR, "dhcp on %s error", netifname.c_str());
+			Logger::log(LogLevel::ERROR, "dhcp on %s error", netif.c_str());
 			return false;
 	}
 	
@@ -316,20 +274,9 @@ bool Misc::startDHCP()
 bool Misc::ntpSync(const std::string& ntp_server)
 {
 	int ret;
-	{
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return false;
-			}
-			syscall_inited = true;
-		}
-	}
-	
+
 	std::string command = "busybox ntpd -p " + ntp_server;
-	ret = system_call((char*)command.c_str(), 10000);
+	ret = syscall((char*)command.c_str(), 10000);
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "ntp sync error");
 			return false;
@@ -341,20 +288,9 @@ bool Misc::ntpSync(const std::string& ntp_server)
 bool Misc::getDateTime()
 {
 	int ret;
-	{
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return false;
-			}
-			syscall_inited = true;
-		}
-	}
 	
 	std::string command = "date";
-	ret = system_call((char*)command.c_str(), 10000);
+	ret = syscall((char*)command.c_str(), 10000);
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "date error");
 			return false;
@@ -366,20 +302,9 @@ bool Misc::getDateTime()
 bool Misc::setDateTime(const std::string &date)
 {
 	int ret;
-	{
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return false;
-			}
-			syscall_inited = true;
-		}
-	}
 	
 	std::string command = "date -s " + date;
-	ret = system_call((char*)command.c_str(), 10000);
+	ret = syscall((char*)command.c_str(), 10000);
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "set date error");
 			return false;
@@ -395,21 +320,9 @@ bool Misc::mountSDCard(const std::string& target_path)
 	if (!createDirectory(target_path)) {
 		return false;
 	}
-	{
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return false;
-			}
-			syscall_inited = true;
-		}
-	}
-	
 
 	std::string command = "mount /dev/mmcblk0p1 " + target_path;
-	ret = system_call((char*)command.c_str(), 5000);
+	ret = syscall((char*)command.c_str(), 5000);
 	if(ret < 0) {
 			Logger::log(LogLevel::ERROR, "mount sdcard to %s error", target_path.c_str());
 			return false;
@@ -420,38 +333,57 @@ bool Misc::mountSDCard(const std::string& target_path)
 
 void Misc::poweroff()
 {
-	int ret;
-	{
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return;
-			}
-			syscall_inited = true;
-		}
-	}
-	
 	std::string command = "poweroff";
-	system_call((char*)command.c_str(), 10000);
+	syscall((char*)command.c_str(), 10000);
 }
 
 void Misc::reboot()
 {
-	int ret;
-    {
-		std::unique_lock<std::mutex> lock(syscall_mutex);
-		if (!syscall_inited) {
-			ret = system_call_init();
-			if(ret < 0) {
-				Logger::log(LogLevel::ERROR, "system_call_init failed");
-				return;
-			}
-			syscall_inited = true;
-		}
-	}
-	
 	std::string command = "reboot";
-	system_call((char*)command.c_str(), 10000);
+	syscall((char*)command.c_str(), 10000);
+}
+
+// Execute command with syscall
+int Misc::syscall(const char *command, int timeout_ms) 
+{
+    int ret = 0;
+    {
+        std::unique_lock<std::mutex> lock(syscall_mutex);
+        if (!syscall_inited) {
+            ret = system_call_init();
+            if(ret < 0) {
+                return ret;
+            }
+            syscall_inited = true;
+        }
+    }
+    
+    ret = system_call((char*)command, timeout_ms);
+    if(ret < 0) {
+        return ret;
+    }
+    
+    return ret;
+}
+
+int Misc::popencall(char *cmd, char *out, int max_size, int timeout_ms)
+{
+    int ret = 0;
+    {
+        std::unique_lock<std::mutex> lock(syscall_mutex);
+        if (!syscall_inited) {
+            ret = system_call_init();
+            if(ret < 0) {
+                return ret;
+            }
+            syscall_inited = true;
+        }
+    }
+    
+    ret = popen_call(cmd, out, max_size, timeout_ms);
+    if(ret < 0) {
+        return ret;
+    }
+    
+    return ret;
 }

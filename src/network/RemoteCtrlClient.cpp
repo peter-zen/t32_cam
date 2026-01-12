@@ -6,7 +6,7 @@
 #include "Common.h"
 #include "Logger.h"
 #include "MCU.h"
-#include "Usb4gDongle.h"
+#include "UsbDongle.h"
 #include "Settings.h"
 #include "DeviceConfig.h"
 #include "RTC.h"
@@ -446,7 +446,7 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 	// 4G SIM number (phone number)
 	if (program_type == PTYPE_USB_DONGLE) {
 		std::string sim_num;
-		Usb4gDongle::getInstance()->getSimNumber(sim_num);
+		UsbDongle::getInstance()->getSimNumber(sim_num);
 		if (!sim_num.empty()) {
 			json_item["Sim_Number"] = sim_num;
 		}

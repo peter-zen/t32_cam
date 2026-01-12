@@ -6,7 +6,7 @@
 #include <vector>
 
 class Misc {
-    public:
+public:
     //file
     static std::string getFilepath(const std::string &pathname);
     static std::string getFilename(const std::string &file_pathname);
@@ -25,7 +25,7 @@ class Misc {
     static std::string getNetworkInterfaceName();
 	static void setNetworkInterfaceName(std::string name);
     static bool connectWifi(const std::string &ssid, const std::string &password);
-    static bool startDHCP();
+    static bool startDHCP(const std::string &ifname="");
     static bool ntpSync(const std::string& ntp_server);
 
     //misc
@@ -35,7 +35,9 @@ class Misc {
     static bool mountSDCard(const std::string& target_path);
     static void poweroff();
     static void reboot();
-    private:
+    static int syscall(const char *command, int timeout_ms=1000);
+    static int popencall(char *cmd, char *out, int max_size, int timeout_ms=1000);
+private:
     static std::string netifname;
     static bool syscall_inited;
     static std::mutex syscall_mutex;

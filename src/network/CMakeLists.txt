@@ -6,7 +6,7 @@ add_library(network SHARED
     MgmtServClient.cpp
     RemoteCtrlClient.cpp
     StorageServClient.cpp
-    Usb4gDongle.cpp
+    UsbDongle.cpp
     Rtmp.cpp
 )
 
@@ -25,6 +25,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../timezone
     ${CMAKE_CURRENT_SOURCE_DIR}/../power
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${SDK_INC_PATH}/systemcall
     ${THIRD_PARTY_PATH}/jsoncpp/include
     ${THIRD_PARTY_PATH}/md5/include
 )
