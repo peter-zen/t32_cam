@@ -23,6 +23,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../daemon
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/snap
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/video
+        ${CMAKE_CURRENT_SOURCE_DIR}/../media/audio
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/rtsp
         ${THIRD_PARTY_PATH}/jsoncpp/include
         ${SDK_INC_PATH}/systemcall
@@ -81,6 +82,7 @@ target_link_libraries(htc_main_app
     #media libs
     media_snap
     media_recorder
+    audio_recorder
     media_rtsp
 
     #net libs

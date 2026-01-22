@@ -8,11 +8,13 @@
 #include <sys/stat.h>
 #include <iomanip>
 #include <sys/time.h>
+#include <signal.h>
 #include <json/json.h>
 #include <csignal>
 #include <queue>
 #include <thread>
 #include <mutex>
+
 
 #include "MgmtServClient.h"
 #include "RemoteCtrlClient.h"
@@ -28,6 +30,8 @@
 #include "Settings.h"
 #include "MCU.h"
 #include "Disk.h"
+#include "AudioRecorderFactory.h"
+#include "AudioParams.h"
 #include "StringConvert.h"
 #include "WorkMode.h"
 #include "app.h"
@@ -37,6 +41,7 @@
 #include "RTC.h"
 #include "daemon_api.h"
 #include "Timezone.h"
+#include "UsbDongle.h"
 
 using namespace network;
 using namespace media;
@@ -346,7 +351,8 @@ static void printUsage(char *argv[])
     std::cout << "  -hb, --heartbeat\tSend a heartbeat message to the management server" << std::endl;
     std::cout << "  -s, --snap\t\tSnap an image" << std::endl;
     std::cout << "  -u, --upload\t\tUpload a file to the storage server" << std::endl;
-    std::cout << "  -r, --record\t\tRecord a video" << std::endl;
+    std::cout << "  -ar, --audio-record\tRecord audio" << std::endl;
+    std::cout << "  -vr, --video-record\tRecord video" << std::endl;
     std::cout << "  -m, --mobile\t\tConnect to the mobile network" << std::endl;
     std::cout << "  -rs, --rtsp-server\tStart the RTSP server" << std::endl;
     std::cout << "  -grtc, --get-rtc\tGet RTC time" << std::endl;
@@ -355,18 +361,19 @@ static void printUsage(char *argv[])
 }
 
 #define CMD_HELP 0
-#define CMD_CONNECT_WIFI (1 << 0)
+#define CMD_CONN_NET (1 << 0)
 #define CMD_DHCP (1 << 1)
 #define CMD_SNAP (1 << 2)
-#define CMD_RECORD (1 << 3)
-#define CMD_AUTH (1 << 4)
-#define CMD_HEARTBEAT (1 << 5)
-#define CMD_UPLOAD (1 << 6)
-#define CMD_MOBILE (1 << 7)
-#define CMD_RTSP_SERVER (1 << 8)
-#define CMD_NTP (1 << 9)
-#define CMD_GET_RTC (1 << 10)
-#define CMD_SET_RTC (1 << 11)
+#define CMD_AUDIO_RECORD (1 << 3)
+#define CMD_VIDEO_RECORD (1 << 4)
+#define CMD_AUTH (1 << 5)
+#define CMD_HEARTBEAT (1 << 6)
+#define CMD_UPLOAD (1 << 7)
+#define CMD_MOBILE (1 << 8)
+#define CMD_RTSP_SERVER (1 << 9)
+#define CMD_NTP (1 << 10)
+#define CMD_GET_RTC (1 << 11)
+#define CMD_SET_RTC (1 << 12)
 
 static bool already_in_exit_flow = false;
 static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
@@ -628,25 +635,27 @@ int main(int argc, char* argv[])
 
     if (argc != 5) {
         if (std::string(argv[1]) == "-w" || std::string(argv[1]) == "--wifi") {
-            command = CMD_CONNECT_WIFI;
+            command = CMD_CONN_NET;
         } else if (std::string(argv[1]) == "-d" || std::string(argv[1]) == "--dhcp") { 
             command = CMD_DHCP;
         } else if (std::string(argv[1]) == "-s" || std::string(argv[1]) == "--snap") {
             command = CMD_SNAP;
         } else if (std::string(argv[1]) == "-qs" || std::string(argv[1]) == "--quick-snap") {
-            command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_SNAP | CMD_UPLOAD;
-        } else if (std::string(argv[1]) == "-r" || std::string(argv[1]) == "--record") {
-            command = CMD_RECORD;
+            command = CMD_CONN_NET | CMD_DHCP | CMD_NTP | CMD_SNAP | CMD_UPLOAD;
+        } else if (std::string(argv[1]) == "-ar" || std::string(argv[1]) == "--audio-record") {
+            command = CMD_AUDIO_RECORD;
+        } else if (std::string(argv[1]) == "-vr" || std::string(argv[1]) == "--video-record") {
+            command = CMD_VIDEO_RECORD;
         } else if (std::string(argv[1]) == "-a" || std::string(argv[1]) == "--auth") { 
             command = CMD_AUTH;
         } else if (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--heartbeat") {
             command = CMD_HEARTBEAT;
         } else if (std::string(argv[1]) == "-u" || std::string(argv[1]) == "--upload") {
-            command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
+            command = CMD_CONN_NET | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
         } else if (std::string(argv[1]) == "-m" || std::string(argv[1]) == "--mobile") {
             command = CMD_MOBILE;
         } else if (std::string(argv[1]) == "-n" || std::string(argv[1]) == "--ntp") {
-            command = CMD_CONNECT_WIFI | CMD_NTP;
+            command = CMD_CONN_NET | CMD_NTP;
         } else if (std::string(argv[1]) == "-rs" || std::string(argv[1]) == "--rtsp-server") {
             command = CMD_RTSP_SERVER;
         } else if (std::string(argv[1]) == "-grtc" || std::string(argv[1]) == "--get-rtc") {
@@ -667,7 +676,7 @@ int main(int argc, char* argv[])
                     command = CMD_SNAP;
                     break;
                 case WORKING_MODE_UPLOAD_ONLY:
-                    command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
+                    command = CMD_CONN_NET | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
                     if (gpio_rgb_led) {
                         gpio_rgb_led->asyncBlink(60);
                     }
@@ -684,10 +693,10 @@ int main(int argc, char* argv[])
                     }
                     break;
                 case WORKING_MODE_SNAP_UPLOAD:
-                    command = CMD_SNAP | CMD_CONNECT_WIFI | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
+                    command = CMD_SNAP | CMD_CONN_NET | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
                     break;
                 case WORKING_MODE_UVC:
-                    command = CMD_CONNECT_WIFI | CMD_DHCP | CMD_RTSP_SERVER;
+                    command = CMD_CONN_NET | CMD_DHCP | CMD_RTSP_SERVER;
                     break;
                 default:
                     Logger::log(LogLevel::ERROR, "%s Invalid working mode %d, power off", __func__, working_mode);
@@ -713,19 +722,31 @@ int main(int argc, char* argv[])
         Logger::log(LogLevel::WARNING, "Failed to register to daemon server");
     }
     #endif
-
-    Misc::setNetworkInterfaceName(NETIF_NAME);
+    
     std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
     if (!setting_file_path.empty()) {
         Settings::getInstance()->loadFromJsonFile(setting_file_path);
     }
     auto config = DeviceConfig::getInstance();
+    auto program_type = config->get(INI_SECTION_BOOT, INI_KEY_PTYPE, PTYPE_NO_NET);
+    Logger::log(LogLevel::INFO, "program type %d", program_type);
     //mount sdcard
     if (!Misc::mountSDCard(SD_CARD_PATH)) {
         Logger::log(LogLevel::ERROR, "mount sdcard error");
         goto main_exit;
     }
-    
+
+    if (program_type == PTYPE_WIFI || command == CMD_MOBILE) {
+        Misc::setNetworkInterfaceName(WIFI_IFNAME);
+    } else if (program_type == PTYPE_ETHERNET) {
+        Misc::setNetworkInterfaceName(ETH_IFNAME);
+    } else if (program_type == PTYPE_USB_DONGLE) {
+        Misc::setNetworkInterfaceName(USB_DONGLE_IFNAME);
+    } else {
+        Logger::log(LogLevel::ERROR, "program type %d not support", program_type);
+        goto main_exit;
+    }
+
     //update config
     // First, check if update config file exists by opening it
     {   // Use a scope to ensure file is closed before moving
@@ -783,15 +804,36 @@ int main(int argc, char* argv[])
     }
 
     //connect wifi
-    if (command & CMD_CONNECT_WIFI) {
-        auto wifi_ssid = config->get(INI_SECTION_SYS, INI_KEY_UPID, "");
-        auto wifi_pwd = config->get(INI_SECTION_SYS, INI_KEY_UPWD, "");
-        if (wifi_ssid.empty() || wifi_pwd.empty()) {
-            Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");
-            goto main_exit;
-        }
-        if (!Misc::connectWifi(wifi_ssid, wifi_pwd)) {
-            Logger::log(LogLevel::ERROR, "connect wifi error");
+    if (command & CMD_CONN_NET) {
+        if (program_type == PTYPE_WIFI) {
+            auto wifi_ssid = config->get(INI_SECTION_SYS, INI_KEY_UPID, "");
+            auto wifi_pwd = config->get(INI_SECTION_SYS, INI_KEY_UPWD, "");
+            if (wifi_ssid.empty() || wifi_pwd.empty()) {
+                Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");
+                goto main_exit;
+            }
+            if (!Misc::connectWifi(wifi_ssid, wifi_pwd)) {
+                Logger::log(LogLevel::ERROR, "connect wifi error");
+                goto main_exit;
+            }
+        } else if (program_type == PTYPE_USB_DONGLE) {
+            auto usb_dongle = UsbDongle::getInstance();
+            if (!usb_dongle->loadDriver()) {
+                Logger::log(LogLevel::ERROR, "load usb dongle driver error");
+                goto main_exit;
+            }
+
+            if (!usb_dongle->open()) {
+                Logger::log(LogLevel::ERROR, "open usb dongle error");
+                goto main_exit;
+            }
+
+            if (!usb_dongle->preconfig()) {
+                Logger::log(LogLevel::ERROR, "usb dongle preconfig error");
+                goto main_exit;
+            }
+        } else {
+            Logger::log(LogLevel::ERROR, "program type %d not support", program_type);
             goto main_exit;
         }
     }
@@ -920,11 +962,56 @@ int main(int argc, char* argv[])
             createDescInfoFile(file_names, "./res/20250620_101358.json");
         }
     }
+    if (command & CMD_AUDIO_RECORD) {
+        Logger::log(LogLevel::INFO, "[Main] CMD_AUDIO_RECORD enter");
+        
+        AudioParams audioParam;
+        audioParam.setDeviceType(AudioDeviceType::AUDIO_IN);
+        audioParam.setDeviceId(1);  
+        audioParam.setChannelId(0);
+        audioParam.setVolume(80);    
+        audioParam.setGain(28);      
+        audioParam.setCodecFormat(AudioCodecFormat::AAC);
+        audioParam.setSampleRate(AudioSampleRate::SR_16000);
+        audioParam.setChannelCount(1);   
+        auto audioIn = media::AudioRecorderFactory::createRecorder(audioParam);
+        audioIn->setRecordFilePath("./res/audioin_record.aac");
+        Logger::log(LogLevel::INFO, "[Main] audioIn start...");
+        if (audioIn->start()) {
+            sleep(20);
+            Logger::log(LogLevel::INFO, "[Main] audioIn stop...");
+            audioIn->stop();
+            Logger::log(LogLevel::INFO, "[Main] audioIn stop done");
+        } else {
+            Logger::log(LogLevel::ERROR, "audioIn start failed");
+        }
+        Logger::log(LogLevel::INFO, "[Main] destroyRecorder(audioIn)...");
+        media::AudioRecorderFactory::destroyRecorder(audioIn);
+        Logger::log(LogLevel::INFO, "[Main] destroyRecorder(audioIn) done");
+        Logger::log(LogLevel::INFO, "[Main] CMD_AUDIO_RECORD leave");
+    }
 
-    if (command & CMD_RECORD) {
-        auto record_param = VideoRecorderParams();
-        auto recorder = std::make_shared<VideoRecorder>(record_param);
-        recorder->record("./res/20250728_191158.mp4", 10);
+    if (command & CMD_VIDEO_RECORD) {
+        auto videoParam = std::make_shared<VideoParams>();
+        videoParam->setResolution(1920, 1080);
+        videoParam->setFrameRate(30);
+        videoParam->setBitrate(4000000);
+
+        // 配置音频参数
+        auto audioParam = std::make_shared<AudioParams>();
+        audioParam->setDeviceType(AudioDeviceType::AUDIO_IN);
+        audioParam->setDeviceId(1);  
+        audioParam->setChannelId(0);
+        audioParam->setVolume(80);    
+        audioParam->setGain(28);      
+        audioParam->setCodecFormat(AudioCodecFormat::AAC);
+        audioParam->setSampleRate(AudioSampleRate::SR_16000);
+        audioParam->setChannelCount(1);   
+    
+        auto recorder = std::make_shared<VideoRecorder>(videoParam, audioParam);
+        std::string record_path = "./res/" + getCurrentTimeFormatted() + ".mp4";;//MEDIA_STORE_FOLDER_PATH + getCurrentTimeFormatted() + ".mp4";
+        Logger::log(LogLevel::INFO, "record to %s", record_path.c_str());
+        recorder->record(record_path, 10);
     }
 
     if (command & CMD_MOBILE) {

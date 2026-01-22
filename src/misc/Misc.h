@@ -4,6 +4,8 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 class Misc {
 public:
