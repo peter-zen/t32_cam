@@ -2,8 +2,12 @@
 #define AUDIO_RECORDER_H
 
 #include "AudioParams.h"
+#include "IAudio.h"
 #include <string>
 #include <cstdint>
+#include <memory>
+#include <thread>
+#include <stdio.h>
 
 namespace media {
 
@@ -39,6 +43,35 @@ public:
      * @return 当前音频时间戳
      */
     virtual uint64_t getCurrentTimestamp() const = 0;
+};
+
+class AudioRecorder : public IAudioRecorder {
+public:
+    AudioRecorder();
+    ~AudioRecorder() override;
+    bool start() override;
+    bool stop() override;
+    bool isRecording() const override;
+    bool recordFor(int durationMs) override;
+    void setAudioParams(const AudioParams& params) override;
+    void setRecordFilePath(const std::string& filePath) override;
+    void setAudioDataCallback(AudioDataCallback callback, void* userData) override;
+    uint64_t getCurrentTimestamp() const override;
+private:
+    void recordThreadFunc();
+    bool loadDriver(AudioDeviceType type);
+    bool isRecording_;
+    AudioParams audioParams;
+    std::string recordFilePath;
+    FILE* recordFile;
+    std::shared_ptr<std::thread> recordThread;
+    std::shared_ptr<std::thread> timerThread;
+    bool threadRunning;
+    AudioDataCallback audioDataCallback;
+    void* audioDataCallbackUserData;
+    uint64_t currentTimestamp;
+    std::shared_ptr<hal::IAudio> audio_;
+    std::shared_ptr<hal::IAudioStream> stream_;
 };
 }
 #endif // AUDIO_RECORDER_H

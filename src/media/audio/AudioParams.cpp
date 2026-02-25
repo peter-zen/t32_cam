@@ -12,7 +12,7 @@ AudioParams::AudioParams()
     , gain(12)
     , deviceId(0)
     , channelId(0)
-    , numPerFrame(640)
+    , numPerFrame(320)
     , frameNum(10)
     , channelCount(1)
     , aecDmicId(0)
@@ -34,16 +34,16 @@ void AudioParams::setSampleRate(AudioSampleRate rate) {
     this->sampleRate = rate;
     switch (rate) {
         case AudioSampleRate::SR_8000:
-            this->numPerFrame = 320;
+            this->numPerFrame = 160;
             break;
         case AudioSampleRate::SR_16000:
-            this->numPerFrame = 640;
+            this->numPerFrame = 320;
             break;
         case AudioSampleRate::SR_48000:
-            this->numPerFrame = 1920;
+            this->numPerFrame = 960;
             break;
         default:
-            this->numPerFrame = 640;
+            this->numPerFrame = 320;
             break;
     }
 }

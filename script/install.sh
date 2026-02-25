@@ -1,4 +1,4 @@
-#! /usr/env bash
+#!/usr/bin/env bash
 
 sudo cp -rf ~/t32/t32/build/bin/  ~/huntcam/
 sudo cp -rf ~/t32/t32/build/lib/  ~/huntcam/
@@ -19,27 +19,30 @@ sudo cp -rf ~/t32/t32/res/setting.json  ~/t32/bsp/board/Ingenic-SDK-T32/resource
 #lib
 ##/usr/lib/htc
 sudo rm -rf ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/*
-sudo cp -rf ~/t32/t32/build/lib/libmedia_common.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libmedia_snap.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libcommon_utils_jpeg.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libcommon_utils_serial.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libjsoncpp.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/liblogger.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libsetting.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libenv.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
-sudo cp -rf ~/t32/t32/build/lib/libworkmode.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libapp_workmode.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libgpio.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libdaynight.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
-sudo cp -rf ~/t32/t32/build/lib/libtime.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
-sudo cp -rf ~/t32/t32/build/lib/libtimezone.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libcommon_time_rtc.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libcommon_time_timezone.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libdevconf.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libmcu.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libhal_gpio.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libhal_video.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/lib/htc/
 
 ##/system/lib/htc
 sudo rm -rf ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/*
-sudo cp -rf ~/t32/t32/build/lib/libcommon.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libdaemon.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
-sudo cp -rf ~/t32/t32/build/lib/libmisc.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
-sudo cp -rf ~/t32/t32/build/lib/libbase64.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libcommon_misc.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libcommon_utils_base64.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libcrc16.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libcommon_utils_crc.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libdisk.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libmd5.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libmedia_recorder.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
@@ -54,3 +57,4 @@ sudo cp -rf ~/t32/t32/build/lib/libevent-*  ~/t32/bsp/board/Ingenic-SDK-T32/reso
 sudo cp -rf ~/t32/t32/build/lib/libsmolrtsp.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libsmolrtsp-libevent.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
 sudo cp -rf ~/t32/t32/build/lib/libfaac.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/
+sudo cp -rf ~/t32/t32/build/lib/libhal_audio.so  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/system/lib/htc/

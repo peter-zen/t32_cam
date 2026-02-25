@@ -16,15 +16,16 @@
 #include "EnvManager.h"
 #include "Settings.h"
 #include "Logger.h"
-#include "StringConvert.h"
+#include "utils/string/StringConvert.h"
 #include "system_call.h"
+#include "DeviceConfig.h"
 #include "app.h"
 #include "Common.h"
-#include "WorkMode.h"
-#include "AutoRelease.h"
-#include "RTC.h"
-#include "DeviceConfig.h"
-#include "Timezone.h"
+#include "workmode/WorkMode.h"
+#include "utils/AutoRelease.h"
+#include "time/rtc/RTC.h"
+#include "../service/daemon/DeamonClient.h"
+#include "time/timezone/Timezone.h"
 
 using namespace media;
 

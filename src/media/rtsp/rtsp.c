@@ -12,22 +12,11 @@
 #include "rtsp.h"
 
 #include <smolrtsp.h>
-
 #include <smolrtsp-libevent.h>
+#include <elog.h>
 
-#include <assert.h>
-#include <errno.h>
-#include <inttypes.h>
-#include <time.h>
-#include <signal.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/time.h>  // For gettimeofday
-#include <pthread.h>
+// RTSP logging tag for EasyLogger
+#define RTSP_LOG_TAG "RTSP"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -38,17 +27,22 @@
 #include <event2/listener.h>
 #include <event2/util.h>
 
-// G.711 A-Law, 8k sample rate, mono channel.
-#include "audio.g711a.h"
+#include <inttypes.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <time.h>
+#include <sys/time.h>
 
-// H.264 video with AUDs, 25 FPS.
-#include "video.h264.h"
+// Audio payload types
+#define AUDIO_PCMU_PAYLOAD_TYPE  0   // G.711 u-law
+#define AUDIO_PCMA_PAYLOAD_TYPE  8   // G.711 A-law
+#define AUDIO_L16_PAYLOAD_TYPE   96  // Dynamic PT for L16 (will use 97 to avoid conflict with video)
 
 static bool base64_encode(char *input_data, uint32_t input_data_len, char *output_data, uint32_t *output_data_len);
 static bool base64_decode(char *input_data, uint32_t input_data_len, char *output_data, uint32_t *output_data_len);
 #define SERVER_PORT SMOLRTSP_DEFAULT_PORT
-#define AUDIO_PCMU_PAYLOAD_TYPE  0
-#define VIDEO_PAYLOAD_TYPE 96 // dynamic PT
+#define VIDEO_PAYLOAD_TYPE 96 // dynamic PT for video
+#define AUDIO_DYN_PAYLOAD_TYPE 97 // dynamic PT for L16 audio
 #define MAX_STREAMS 2
 
 typedef struct {
@@ -100,15 +94,24 @@ static int setup_udp(
 typedef struct {
     SmolRTSP_RtpTransport *transport;
     size_t i;
+    int samples_per_packet;
+    int audio_codec;
+    int channels;
+    int sample_rate;
     struct event *ev;
     struct bufferevent *bev;
     int *streams_playing;
-    int sample_rate;
-    int samples_per_packet;
+    func_t pull_frame;
+    func_t release_frame;
+    uint8_t *current_data;
+    size_t current_size;
+    uint64_t base_timestamp_us;
+    uint32_t base_rtp_timestamp;
+    bool first_frame;
 } AudioCtx;
-
 static SmolRTSP_Droppable play_audio(
-    int sample_rate, int samples_per_packet,
+    int sample_rate, int samples_per_packet, int audio_codec, int channels,
+    func_t pull_frame, func_t release_frame,
     struct event_base *base, struct bufferevent *bev, SmolRTSP_RtpTransport *t,
     struct event **ev, int *streams_playing);
 static void send_audio_packet_cb(evutil_socket_t fd, short events, void *arg);
@@ -130,6 +133,12 @@ typedef struct {
     bool sps_pps_bypass;
     bool has_extension;
     struct RTPExtenHeader extension;
+    uint64_t base_capture_us;
+    uint32_t base_rtp_ts;
+    bool first_frame;
+    uint8_t *current_frame_data;
+    size_t current_frame_size;
+    uint64_t last_capture_us;
 } VideoCtx;
 
 static SmolRTSP_Droppable play_video(
@@ -183,13 +192,13 @@ static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
         puts("Connection closed.");
         // Access server if needed
         if (server && server->funcs[FUNC_ID_ON_SESSION_CLOSED]) {
-            server->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL);
+            server->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL, NULL);
         }
     } else if (events & BEV_EVENT_ERROR) {
         perror("Got an error on the connection");
         // Access server if needed
         if (server && server->funcs[FUNC_ID_ON_SESSION_CLOSED]) {
-            server->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL);
+            server->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL, NULL);
         }
     }
 
@@ -258,19 +267,39 @@ Client_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         (SMOLRTSP_SDP_TIME, "0 0"));
 
     if (rtsp_param.audio_enable) {
-        SMOLRTSP_SDP_DESCRIBE(
-            ret, sdp,
-            (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", AUDIO_PCMU_PAYLOAD_TYPE),
-            (SMOLRTSP_SDP_ATTR, "control:audio"));
+        int audio_pt;
+        if (rtsp_param.audio_codec == AUDIO_CODEC_PCMU) {
+            audio_pt = AUDIO_PCMU_PAYLOAD_TYPE;
+            SMOLRTSP_SDP_DESCRIBE(
+                ret, sdp,
+                (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", audio_pt),
+                (SMOLRTSP_SDP_ATTR, "rtpmap:%d PCMU/%d", audio_pt, rtsp_param.audio_sample_rate),
+                (SMOLRTSP_SDP_ATTR, "control:audio"));
+        } else if (rtsp_param.audio_codec == AUDIO_CODEC_PCMA) {
+            audio_pt = AUDIO_PCMA_PAYLOAD_TYPE;
+            SMOLRTSP_SDP_DESCRIBE(
+                ret, sdp,
+                (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", audio_pt),
+                (SMOLRTSP_SDP_ATTR, "rtpmap:%d PCMA/%d", audio_pt, rtsp_param.audio_sample_rate),
+                (SMOLRTSP_SDP_ATTR, "control:audio"));
+        } else {
+            // L16 (Linear PCM 16-bit)
+            audio_pt = AUDIO_DYN_PAYLOAD_TYPE;
+            SMOLRTSP_SDP_DESCRIBE(
+                ret, sdp,
+                (SMOLRTSP_SDP_MEDIA, "audio 0 RTP/AVP %d", audio_pt),
+                (SMOLRTSP_SDP_ATTR, "rtpmap:%d L16/%d/%d", audio_pt, rtsp_param.audio_sample_rate, rtsp_param.audio_channels),
+                (SMOLRTSP_SDP_ATTR, "control:audio"));
+        }
     }
 
     if (rtsp_param.video_enable) {
         if (rtsp_param.video_codec == CODEC_H264) {
             if (rtsp_param.video_sps_len && rtsp_param.video_pps_len) {
                 char base64_video_sps[100];
-                size_t base64_video_sps_len;
+                uint32_t base64_video_sps_len;
                 char base64_video_pps[100];
-                size_t base64_video_pps_len;
+                uint32_t base64_video_pps_len;
 
                 base64_encode((char *)rtsp_param.video_sps, rtsp_param.video_sps_len, (char *)base64_video_sps, &base64_video_sps_len);
                 base64_encode((char *)rtsp_param.video_pps, rtsp_param.video_pps_len, (char *)base64_video_pps, &base64_video_pps_len);
@@ -350,8 +379,16 @@ Client_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     }
 
     if (rtsp_param.audio_stream_id == stream_id) {
+        int audio_pt;
+        if (rtsp_param.audio_codec == AUDIO_CODEC_PCMU) {
+            audio_pt = AUDIO_PCMU_PAYLOAD_TYPE;
+        } else if (rtsp_param.audio_codec == AUDIO_CODEC_PCMA) {
+            audio_pt = AUDIO_PCMA_PAYLOAD_TYPE;
+        } else {
+            audio_pt = AUDIO_DYN_PAYLOAD_TYPE;
+        }
         stream->transport = SmolRTSP_RtpTransport_new(
-            transport, AUDIO_PCMU_PAYLOAD_TYPE, rtsp_param.audio_sample_rate);
+            transport, audio_pt, rtsp_param.audio_sample_rate);
     } else {
         stream->transport = SmolRTSP_RtpTransport_new(
             transport, VIDEO_PAYLOAD_TYPE, rtsp_param.video_sample_rate);
@@ -377,12 +414,19 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     }
     struct rtsp_server_param rtsp_param = self->peer->param;
 
+    if (self->peer && self->peer->funcs[FUNC_ID_ON_SESSION_PLAY]) {
+        self->peer->funcs[FUNC_ID_ON_SESSION_PLAY](NULL, NULL, NULL);
+    }
+
     bool played = false;
     for (size_t i = 0; i < MAX_STREAMS; i++) {
         if (self->streams[i].session_id == session_id) {
             if (rtsp_param.audio_stream_id == i) {
                 self->streams[i].ctx = play_audio(
                     rtsp_param.audio_sample_rate, rtsp_param.audio_samples_per_packet,
+                    rtsp_param.audio_codec, rtsp_param.audio_channels,
+                    self->peer->funcs[FUNC_ID_PULL_AUDIO_FRAME],
+                    self->peer->funcs[FUNC_ID_RELEASE_AUDIO_FRAME],
                     self->base, self->bev, self->streams[i].transport,
                     &self->streams[i].ev, &self->streams_playing);
             } else {
@@ -438,6 +482,10 @@ Client_teardown(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         smolrtsp_respond(
             ctx, SMOLRTSP_STATUS_SESSION_NOT_FOUND, "Invalid Session ID");
         return;
+    }
+
+    if (self->peer && self->peer->funcs[FUNC_ID_ON_SESSION_CLOSED]) {
+        self->peer->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL, NULL);
     }
 
     smolrtsp_respond_ok(ctx);
@@ -526,7 +574,7 @@ static int setup_tcp(
     SmolRTSP_TransportConfig config) {
     ifLet(config.interleaved, SmolRTSP_ChannelPair_Some, interleaved) {
         *t = smolrtsp_transport_tcp(
-            SmolRTSP_Context_get_writer(ctx), interleaved->rtp_channel, 0);
+            SmolRTSP_Context_get_writer(ctx), interleaved->rtp_channel, 512 * 1024);
 
         smolrtsp_header(
             ctx, SMOLRTSP_HEADER_TRANSPORT,
@@ -577,7 +625,8 @@ static void AudioCtx_drop(VSelf) {
 impl(SmolRTSP_Droppable, AudioCtx);
 
 static SmolRTSP_Droppable play_audio(
-    int sample_rate, int samples_per_packet,
+    int sample_rate, int samples_per_packet, int audio_codec, int channels,
+    func_t pull_frame, func_t release_frame,
     struct event_base *base, struct bufferevent *bev, SmolRTSP_RtpTransport *t,
     struct event **ev, int *streams_playing) {
     AudioCtx *ctx = malloc(sizeof *ctx);
@@ -590,6 +639,15 @@ static SmolRTSP_Droppable play_audio(
         .bev = bev,
         .sample_rate = sample_rate,
         .samples_per_packet = samples_per_packet,
+        .audio_codec = audio_codec,
+        .channels = channels,
+        .pull_frame = pull_frame,
+        .release_frame = release_frame,
+        .current_data = NULL,
+        .current_size = 0,
+        .base_timestamp_us = 0,
+    .base_rtp_timestamp = 0,
+    .first_frame = true,
     };
 
     ctx->ev = event_new(
@@ -599,7 +657,7 @@ static SmolRTSP_Droppable play_audio(
     event_add(
         ctx->ev, &(const struct timeval){
                      .tv_sec = 0,
-                     .tv_usec = (1e6 / (sample_rate / samples_per_packet)),
+                     .tv_usec = (int)(1000000.0 / (ctx->sample_rate / (double)ctx->samples_per_packet)),
                  });
     *ev = ctx->ev;
     (*streams_playing)++;
@@ -612,36 +670,144 @@ static void send_audio_packet_cb(evutil_socket_t fd, short events, void *arg) {
     (void)events;
 
     AudioCtx *ctx = arg;
+    static int audio_send_count = 0;
+    static int audio_pull_fail_count = 0;
+    static struct timeval last_stat_time = {0, 0};
     
-    if (ctx->i * ctx->samples_per_packet >= ___media_audio_g711a_len) {
-        event_del(ctx->ev);
-        (*ctx->streams_playing)--;
-        if (0 == *ctx->streams_playing) {
-            bufferevent_trigger_event(ctx->bev, BEV_EVENT_EOF, 0);
+    // Flow Control: Check if transport buffer is full
+    if (SmolRTSP_RtpTransport_is_full(ctx->transport)) {
+        static int audio_full_log = 0;
+        audio_full_log++;
+        if (audio_full_log % 50 == 1) { // Log occasionally
+            printf("[RTSP-AUDIO] Network buffer full, skipping packet.\n");
         }
+        // Wait for next slot
+        struct timeval tv = {.tv_sec = 0, .tv_usec = (1e6 / (ctx->sample_rate / ctx->samples_per_packet))};
+        event_add(ctx->ev, &tv);
         return;
     }
 
-    const SmolRTSP_RtpTimestamp ts =
-        SmolRTSP_RtpTimestamp_Raw(ctx->i * ctx->samples_per_packet);
-    const bool marker = false;
-    const size_t samples_count =
-        ___media_audio_g711a_len <
-                ctx->i * ctx->samples_per_packet + ctx->samples_per_packet
-            ? ___media_audio_g711a_len % ctx->samples_per_packet
-            : ctx->samples_per_packet;
-    const U8Slice99 header = U8Slice99_empty(),
-                    payload = U8Slice99_new(
-                        ___media_audio_g711a +
-                            ctx->i * ctx->samples_per_packet,
-                        samples_count);
+    // 使用外部音频源
+        if (ctx->pull_frame && ctx->release_frame) {
+        uint8_t *audio_data = NULL;
+        size_t audio_size = 0;
+        uint64_t timestamp = 0;
+        
+        int pull_result = ctx->pull_frame((void **)&audio_data, &audio_size, &timestamp);
+        if (pull_result != 0) {
+            audio_pull_fail_count++;
 
-    if (SmolRTSP_RtpTransport_send_packet(
-            ctx->transport, ts, marker, header, payload) == -1) {
-        perror("Failed to send RTP/PCMU");
+            ctx->current_data = NULL;
+            ctx->current_size = 0;
+            
+            // 区分不同的错误类型
+            if (pull_result == -1) {
+                // 文件需要循环重试，使用更短的间隔
+                struct timeval tv = {.tv_sec = 0, .tv_usec = 1000}; // 1ms retry
+                event_add(ctx->ev, &tv);
+                return;
+            } else if (pull_result == -2) {
+                // 音频真正结束，停止音频流
+                if (audio_pull_fail_count % 100 == 1) {
+                    printf("[RTSP-AUDIO] Audio stream ended (%d consecutive failures)\n", audio_pull_fail_count);
+                }
+                // 不立即停止，给一些时间看是否会恢复
+                struct timeval tv = {.tv_sec = 0, .tv_usec = 10000}; // 10ms
+                event_add(ctx->ev, &tv);
+                return;
+            } else {
+                // 其他错误
+                struct timeval tv = {.tv_sec = 0, .tv_usec = 5000}; // 5ms retry
+                event_add(ctx->ev, &tv);
+                return;
+            }
+        }
+        
+        if (audio_pull_fail_count > 0) {
+            printf("[RTSP-AUDIO] Recovered after %d pull failures\n", audio_pull_fail_count);
+            audio_pull_fail_count = 0;
+        }
+
+        ctx->current_data = audio_data;
+        ctx->current_size = audio_size;
+
+        if (audio_size == 0) {
+            // 音频结束
+            if (ctx->current_data) {
+                ctx->release_frame((void **)&ctx->current_data, &ctx->current_size, NULL);
+            }
+            event_del(ctx->ev);
+            (*ctx->streams_playing)--;
+            if (0 == *ctx->streams_playing) {
+                bufferevent_trigger_event(ctx->bev, BEV_EVENT_EOF, 0);
+            }
+            return;
+        }
+        
+        // RTP 时间戳
+        uint32_t rtp_timestamp;
+        if (ctx->pull_frame && ctx->release_frame) {
+            rtp_timestamp = (uint32_t)(timestamp * ctx->sample_rate / 1000);
+        } else {
+            rtp_timestamp = ctx->i * ctx->samples_per_packet;
+        }
+
+        const SmolRTSP_RtpTimestamp ts = SmolRTSP_RtpTimestamp_Raw(rtp_timestamp);
+        const bool marker = (ctx->i == 0); // 第一个包设置 marker
+        
+        // 对于 L16 格式，需要转换为网络字节序（大端）
+        // 注意：需要复制数据，不能修改原始缓冲区
+        static uint8_t audio_send_buffer[4096];
+        uint8_t *send_data = audio_data;
+        
+        if (ctx->audio_codec == AUDIO_CODEC_L16) {
+            if (audio_size <= sizeof(audio_send_buffer)) {
+                memcpy(audio_send_buffer, audio_data, audio_size);
+                int16_t *samples = (int16_t *)audio_send_buffer;
+                size_t num_samples = audio_size / 2;
+                for (size_t j = 0; j < num_samples; j++) {
+                    samples[j] = htons(samples[j]);
+                }
+                send_data = audio_send_buffer;
+            }
+        }
+        
+        const U8Slice99 header = U8Slice99_empty(),
+                        payload = U8Slice99_new(send_data, audio_size);
+
+        if (SmolRTSP_RtpTransport_send_packet(
+                ctx->transport, ts, marker, header, payload) == -1) {
+            perror("Failed to send RTP audio");
+        }
+        
+        ctx->release_frame((void **)&audio_data, &audio_size, NULL);
+        ctx->i++;
+        audio_send_count++;
+        
+        // 每秒输出一次统计
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        if (last_stat_time.tv_sec == 0) {
+            last_stat_time = now;
+        }
+        long elapsed_ms = (now.tv_sec - last_stat_time.tv_sec) * 1000 + 
+                          (now.tv_usec - last_stat_time.tv_usec) / 1000;
+        if (elapsed_ms >= 1000) {
+            int expected_pps = ctx->sample_rate / ctx->samples_per_packet;
+            printf("[RTSP-AUDIO] sent=%d, ts=%u, expected_pps=%d\n", 
+                   audio_send_count, (unsigned)(ctx->i * ctx->samples_per_packet), expected_pps);
+            last_stat_time = now;
+        }
+        
+        // Pace next send according to expected packets per second
+        int pps = ctx->sample_rate / ctx->samples_per_packet;
+        if (pps <= 0) pps = 25;
+        struct timeval tv = {.tv_sec = 0, .tv_usec = (int)(1000000.0 / pps)};
+        event_add(ctx->ev, &tv);
+        return;
     }
-
-    ctx->i++;
+    
+ 
 }
 
 static void VideoCtx_drop(VSelf) {
@@ -661,32 +827,7 @@ static SmolRTSP_Droppable play_video(
     
     VideoCtx *ctx = malloc(sizeof *ctx);
     assert(ctx);
-    if (!pull_frame && !release_frame) {
-        U8Slice99 video = Slice99_typed_from_array(___media_video_h264);
-        SmolRTSP_NalStartCodeTester start_code_tester;
-        
-        if ((start_code_tester = smolrtsp_determine_start_code(video)) == NULL) {
-            printf("%s:Invalid video file.\n", __func__);
-            abort();
-        }
-        *ctx = (VideoCtx){
-            .transport = SmolRTSP_NalTransport_new(t),
-            .start_code_tester = start_code_tester,
-            .timestamp = 0,
-            .video = video,
-            .codec = codec,
-            .nalu_start = NULL,
-            .ev = NULL,
-            .bev = bev,
-            .streams_playing = streams_playing,
-            .fps = fps,
-            .sample_rate = sample_rate,
-            .pull_frame = pull_frame,
-            .release_frame = release_frame,
-            .sps_pps_bypass = sps_pps_bypass,
-            .has_extension = false,
-        };
-    } else {
+    {
         *ctx = (VideoCtx){
             .transport = SmolRTSP_NalTransport_new(t),
             .timestamp = 0,
@@ -712,7 +853,7 @@ static SmolRTSP_Droppable play_video(
     event_add(
         ctx->ev, &(const struct timeval){
                      .tv_sec = 0,
-                     .tv_usec = /*1e6 / fps*/10,
+                     .tv_usec = 1000000 / fps,  // 根据 FPS 计算帧间隔
                  });
     *ev = ctx->ev;
     (*streams_playing)++;
@@ -724,31 +865,99 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
     (void)fd;
     (void)events;
 
-    // Start timing
-    struct timespec start_time, end_time;
-    clock_gettime(CLOCK_MONOTONIC, &start_time);
-
     VideoCtx *ctx = arg;
     static int frame_count = 0;
-    if (ctx->pull_frame && ctx->release_frame) {
+    static int pull_fail_count = 0;
+    static struct timeval last_stat_time = {0, 0};
+
+    // Flow Control: Check if transport buffer is full (Backpressure)
+    if (SmolRTSP_NalTransport_is_full(ctx->transport)) {
+        static int full_log_counter = 0;
+        full_log_counter++;
+        if (full_log_counter % 25 == 1) { // Log once per second (approx)
+            printf("[RTSP-VIDEO] Network buffer full (backpressure active), skipping frame pull.\n");
+        }
+        // Reschedule immediately to check again soon, but don't pull data
+        // Or better: stick to FPS schedule to allow buffer to drain?
+        // Let's stick to FPS schedule (40ms) to give TCP time to drain.
+        struct timeval tv = {.tv_sec = 0, .tv_usec = 1000000 / ctx->fps};
+        event_add(ctx->ev, &tv);
+        return;
+    }
+    
+    // 只有当当前帧处理完毕（ctx->video 为空）时才获取新帧
+    if (ctx->pull_frame && ctx->release_frame && U8Slice99_is_empty(ctx->video)) {
         uint8_t *video_data;
         size_t video_size;
+        uint64_t timestamp = 0;
 
-        int pull_result = ctx->pull_frame((void **)&video_data, &video_size);
+        int pull_result = ctx->pull_frame((void **)&video_data, &video_size, &timestamp);
+
+        if (frame_count % 30 == 0) {  // 每30帧打印一次
+            printf("[RTSP-VIDEO] Pull result: %d, capture_ts=%llu\n", pull_result, (unsigned long long)timestamp);
+        }
         if (pull_result) {
-            struct timeval tv = {.tv_sec = 0, .tv_usec = /*1e6 / ctx->fps*/10};
-            event_add(ctx->ev, &tv);
-            return;
+            pull_fail_count++;
+            
+            // 区分不同的错误类型
+            if (pull_result == -1) {
+                // 文件循环重试，使用较短间隔
+                struct timeval tv = {.tv_sec = 0, .tv_usec = 5000}; // 5ms retry for file loop
+                event_add(ctx->ev, &tv);
+                return;
+            } else if (pull_result == -2) {
+                // 视频真正结束
+                if (pull_fail_count % 100 == 1) {
+                    printf("[RTSP-VIDEO] Video stream ended (%d consecutive failures)\n", pull_fail_count);
+                }
+                // 给一些时间看是否会恢复
+                struct timeval tv = {.tv_sec = 0, .tv_usec = 100000}; // 100ms
+                event_add(ctx->ev, &tv);
+                return;
+            } else {
+                // 其他错误，使用正常帧间隔
+                if (pull_fail_count % 100 == 1) {
+                    printf("[RTSP-VIDEO] pull_frame failed, count=%d\n", pull_fail_count);
+                }
+                struct timeval tv = {.tv_sec = 0, .tv_usec = 1000000 / ctx->fps};
+                event_add(ctx->ev, &tv);
+                return;
+            }
         }
         
+        if (pull_fail_count > 0) {
+            printf("[RTSP-VIDEO] Recovered after %d pull failures\n", pull_fail_count);
+            pull_fail_count = 0;
+        }
+        
+        frame_count++;
+
+        ctx->current_frame_data = video_data;
+        ctx->current_frame_size = video_size;
+
         U8Slice99 video = U8Slice99_new(video_data, video_size);
 
         SmolRTSP_NalStartCodeTester start_code_tester;
         if ((start_code_tester = smolrtsp_determine_start_code(video)) == NULL) {
             printf("%s:Invalid video file.\n", __func__);
-            struct timeval tv = {.tv_sec = 0, .tv_usec = /*1e6 / ctx->fps*/10};
+            ctx->release_frame((void **)&ctx->current_frame_data, &ctx->current_frame_size, NULL);
+            struct timeval tv = {.tv_sec = 0, .tv_usec = 1000000 / ctx->fps};
             event_add(ctx->ev, &tv);
             return;
+        }
+
+        // RTP 时间戳直接使用生产者的timestamp（已单调递增，符合AV Sync设计）
+        ctx->timestamp = (uint32_t)(timestamp * 90000 / 1000000);
+
+        if (ctx->first_frame) {
+            ctx->base_capture_us = timestamp;
+            ctx->base_rtp_ts = ctx->timestamp;
+            ctx->first_frame = false;
+            printf("[RTSP-VIDEO] First frame: capture_ts=%llu us, rtp_ts=%u\n",
+                   (unsigned long long)timestamp, ctx->timestamp);
+        } else {
+            // 也可以使用差值计算（可选）
+            // ctx->timestamp = ctx->base_rtp_ts + (uint32_t)((timestamp - ctx->base_capture_us) * 90000 / 1000000);
         }
 
         ctx->video = video;
@@ -757,16 +966,31 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
         ctx->has_extension = false;
         ctx->extension.frameIndex++;
         ctx->extension.frameSize = video_size;
-
-        //printf("Frame[%d], size: %d\n", ctx->extension.frameIndex, ctx->extension.frameSize);
+        
+        // 每秒输出一次统计
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        if (last_stat_time.tv_sec == 0) {
+            last_stat_time = now;
+        }
+        long elapsed_ms = (now.tv_sec - last_stat_time.tv_sec) * 1000 + 
+                          (now.tv_usec - last_stat_time.tv_usec) / 1000;
+        if (elapsed_ms >= 1000) {
+            printf("[RTSP-VIDEO] sent=%d, ts=%u, size=%zu, fps=%d\n", 
+                   frame_count, ctx->timestamp, video_size, ctx->fps);
+            last_stat_time = now;
+        }
     }
     
-again:
+ again:
     if (U8Slice99_is_empty(ctx->video)) {
         if (ctx->pull_frame && ctx->release_frame) {
             send_nalu(ctx);
-            ctx->release_frame(NULL, NULL);
-            struct timeval tv = {.tv_sec = 0, .tv_usec = 10/*1e6 / ctx->fps*/};
+            ctx->release_frame((void **)&ctx->current_frame_data, &ctx->current_frame_size, NULL);
+            ctx->current_frame_data = NULL;
+            ctx->current_frame_size = 0;
+            // Immediately check for next frame to drain FIFO (0 timeout)
+            struct timeval tv = {.tv_sec = 0, .tv_usec = 0};
             event_add(ctx->ev, &tv);
         } else {
             send_nalu(ctx);
@@ -796,6 +1020,10 @@ again:
     if (!au_found) {
         goto again;
     }
+    
+    // If we sent a packet, process the rest of the frame immediately
+    struct timeval tv = {.tv_sec = 0, .tv_usec = 0};
+    event_add(ctx->ev, &tv);
 }
 
 static bool send_h264_nalu(VideoCtx *ctx) {
@@ -817,13 +1045,14 @@ static bool send_h264_nalu(VideoCtx *ctx) {
         unit_type == SMOLRTSP_H264_NAL_UNIT_CODED_SLICE_NON_IDR ||
         unit_type == SMOLRTSP_H264_NAL_UNIT_CODED_SLICE_IDR
     ) {
-        ctx->timestamp += ctx->sample_rate / ctx->fps;
+        // Timestamp is managed by the frame producer/container
+        // ctx->timestamp += ctx->sample_rate / ctx->fps;
         au_found = true;
     }
     //printf("timestamp: %d-%d-%d\n", ctx->timestamp, SmolRTSP_RtpTimestamp_Raw(ctx->timestamp), SmolRTSP_RtpTimestamp_SysClockUs(ctx->timestamp));
     if (ctx->has_extension) {
         if (SmolRTSP_NalTransport_send_packet_ext(
-                ctx->transport, SmolRTSP_RtpTimestamp_Raw(ctx->timestamp), nalu, &ctx->extension, sizeof(ctx->extension)) ==
+                ctx->transport, SmolRTSP_RtpTimestamp_Raw(ctx->timestamp), nalu, (uint8_t *)&ctx->extension, sizeof(ctx->extension)) ==
             -1) {
             perror("Failed to send RTP/NAL");
         }
@@ -843,7 +1072,7 @@ static bool send_h265_nalu(VideoCtx *ctx) {
     
     const SmolRTSP_NalUnit nalu = {
         .header = SmolRTSP_NalHeader_H265(
-            SmolRTSP_H265NalHeader_parse(ctx->nalu_start[0])),
+            SmolRTSP_H265NalHeader_parse(ctx->nalu_start)),
         .payload = U8Slice99_from_ptrdiff(ctx->nalu_start + 1, ctx->video.ptr),
     };
 
@@ -851,7 +1080,7 @@ static bool send_h265_nalu(VideoCtx *ctx) {
   
     if (SmolRTSP_NalHeader_unit_type(nalu.header) ==
         SMOLRTSP_H265_NAL_UNIT_AUD_NUT) {
-        ctx->timestamp += ctx->sample_rate / ctx->fps;
+        // ctx->timestamp += ctx->sample_rate / ctx->fps;
         au_found = true;
     }
     
@@ -873,11 +1102,20 @@ static bool send_nalu(VideoCtx *ctx) {
         return false;
     }
 }
-void* create_server(const struct rtsp_server_param *param)
+ void* create_server(const struct rtsp_server_param *param)
 {
     if (!param) {
-        printf("Invalid parameter.\n");
+        printf("[RTSP] Invalid parameter.\n");
         return NULL;
+    }
+    
+    printf("[RTSP] Creating RTSP server with audio_enable=%d, audio_codec=%d, audio_sample_rate=%d\n",
+           param->audio_enable, param->audio_codec, param->audio_sample_rate);
+    
+    if (param->audio_enable) {
+        printf("[RTSP] Audio params: codec=%d, rate=%d, channels=%d, samples_per_packet=%d\n",
+               param->audio_codec, param->audio_sample_rate, 
+               param->audio_channels, param->audio_samples_per_packet);
     }
 
     struct rtsp_server *server = (struct rtsp_server *)malloc(sizeof(struct rtsp_server));

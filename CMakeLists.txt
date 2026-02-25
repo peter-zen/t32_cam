@@ -1,7 +1,21 @@
 cmake_minimum_required(VERSION 3.16)
 
-# Specify the toolchain file
-set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/toolchain.cmake")
+# ============================================================================
+# Toolchain Selection - 必须在project()之前设置
+# ============================================================================
+# BUILD_FOR_SIMULATION选项必须通过cmake命令行传入:
+#   PC模拟编译:  cmake -DBUILD_FOR_SIMULATION=ON ..
+#   真机交叉编译: cmake ..
+# ============================================================================
+option(BUILD_FOR_SIMULATION "Build for PC simulation instead of target hardware" OFF)
+
+if(BUILD_FOR_SIMULATION)
+    message(STATUS "=== Configuring for PC Simulation (x86_64) ===")
+    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/toolchain_sim.cmake")
+else()
+    message(STATUS "=== Configuring for Target Hardware (Ingenic T32 MIPS) ===")
+    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/toolchain.cmake")
+endif()
 
 # Project name and version
 project(htc_firmware VERSION 1.0)
@@ -49,12 +63,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED True)
 
-add_definitions(
-    -O2
-    -Wall
-    -march=mips32r2
-)
+# ============================================================================
+# Platform-specific compiler flags
+# ============================================================================
+if(NOT BUILD_FOR_SIMULATION)
+    # 真机编译: 添加MIPS特定选项
+    add_definitions(
+        -O2
+        -Wall
+        -march=mips32r2
+    )
+else()
+    # PC模拟编译: 使用通用选项，并定义BUILD_FOR_SIMULATION宏
+    add_definitions(
+        -O2
+        -Wall
+        -DBUILD_FOR_SIMULATION
+    )
+endif()
 
 # Include subdirectory for common
 add_subdirectory(src)
 add_subdirectory(third_party)
+if(BUILD_FOR_SIMULATION)
+    add_subdirectory(tests)
+endif()

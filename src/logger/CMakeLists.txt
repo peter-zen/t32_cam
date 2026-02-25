@@ -4,18 +4,16 @@ file(GLOB SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
  )
 
-# Include current directory headers
-# include_directories(
-#         ${SDK_INC_PATH}/imp
-#         ${SDK_INC_PATH}/systemcall
-#         ${SDK_INC_PATH}/sysutils
-#         ${CMAKE_CURRENT_SOURCE_DIR}
-#         ${THIRD_PARTY_PATH}/crc16/include
-#         ${THIRD_PARTY_PATH}/jsoncpp/include
-# )
+# Include EasyLogger headers
+include_directories(
+        ${THIRD_PARTY_PATH}/easylogger/inc
+)
 
 # Create library
 add_library(logger SHARED ${SOURCE_FILES})
+
+# Link with EasyLogger
+target_link_libraries(logger PRIVATE easylogger)
 
 # Set the output directory for the library
 set_target_properties(logger PROPERTIES

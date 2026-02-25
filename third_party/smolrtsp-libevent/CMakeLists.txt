@@ -16,6 +16,7 @@ include_directories(
         ${THIRD_PARTY_PATH}/slice99
         ${THIRD_PARTY_PATH}/smolrtsp/include
         ${THIRD_PARTY_PATH}/libevent/include
+        ${CMAKE_BINARY_DIR}/third_party/libevent/include
 )
 
 # Create library

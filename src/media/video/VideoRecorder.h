@@ -8,12 +8,16 @@
 #include <functional>
 #include <pthread.h>
 #include <queue>
+#include <sys/types.h>
 #include <condition_variable>
-#include "media_common.h"
 #include "VideoParams.h"
 #include "AudioParams.h"
 #include "AudioRecorder.h"
-#define VIDEO_RECORDER_CHN_NUM 0
+#include "IVideo.h"
+#include "HalFactory.h"
+
+#define VIDEO_SENSOR_ID 0
+#define VIDEO_STREAM_ID 0
 namespace media
 {
     
@@ -39,11 +43,10 @@ public:
 private:
         bool initialize();
         void deinitialize();
-        bool record(int chnNum, int payloadType, const std::string &filename, int duration=0);
+        bool record(VideoCodecFormat payloadType, const std::string &filename, int duration=0);
         //video
         bool initVideo();
         bool uninitVideo();
-        bool sensorFilter(int index);
         ssize_t getNALSize(uint8_t *buf, ssize_t size);
         //audio
         bool initAudio();
@@ -69,6 +72,8 @@ private:
         bool audioIsAac;
         bool audioDsiSet;
         int64_t lastVideoTimestamp;
+        std::shared_ptr<hal::IVideo> video_;
+        std::shared_ptr<hal::IVideoStream> stream_;
 };
 }
 #endif

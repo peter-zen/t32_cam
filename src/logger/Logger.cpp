@@ -1,47 +1,77 @@
+/*
+ * Logger.cpp - Compatibility layer implementation wrapping EasyLogger
+ * 
+ * This implementation forwards all Logger calls to EasyLogger.
+ * New code should use EasyLogger API directly.
+ */
+
 #include "Logger.h"
 #include <cstdarg>
 #include <cstdio>
-LogLevel Logger::log_level = LogLevel::INFO;
+#include <elog.h>
+
+// Default tag for legacy Logger calls
+const char* Logger::TAG = "LEGACY";
+
+void Logger::setLogLevel(LogLevel level)
+{
+    // Map LogLevel to EasyLogger filter level
+    elog_set_filter_lvl(static_cast<uint8_t>(level));
+}
 
 void Logger::log(LogLevel level, const std::string &message)
 {
-	if (level >= log_level) {
-		std::cout << "[" << getLabel(level) << "] " << message
-			  << std::endl;
-	}
+    // Forward to EasyLogger based on level
+    switch (level) {
+    case LogLevel::ERROR:
+        elog_e(TAG, "%s", message.c_str());
+        break;
+    case LogLevel::WARNING:
+        elog_w(TAG, "%s", message.c_str());
+        break;
+    case LogLevel::INFO:
+        elog_i(TAG, "%s", message.c_str());
+        break;
+    case LogLevel::DEBUG:
+        elog_d(TAG, "%s", message.c_str());
+        break;
+    case LogLevel::VERBOSE:
+        elog_v(TAG, "%s", message.c_str());
+        break;
+    default:
+        elog_i(TAG, "%s", message.c_str());
+        break;
+    }
 }
 
 void Logger::log(LogLevel level, const char *format, ...)
 {
-	if (level >= log_level) {
-		va_list args;
-		va_start(args, format);
-		printf("[%s] ", getLabel(level).c_str());
-		vprintf(format, args);
-		printf("\n");
-		va_end(args);
-	}
-}
-
-void Logger::setLogLevel(LogLevel level)
-{
-	log_level = level;
-}
-
-std::string Logger::getLabel(LogLevel level)
-{
-	switch (level) {
-	case LogLevel::VERBOSE:
-		return "VERBOSE";
-	case LogLevel::DEBUG:
-		return "DEBUG";
-	case LogLevel::INFO:
-		return "INFO";
-	case LogLevel::WARNING:
-		return "WARNING";
-	case LogLevel::ERROR:
-		return "ERROR";
-	default:
-		return "UNKNOWN";
-	}
+    // Format the message first
+    char buffer[512];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    
+    // Forward to EasyLogger based on level
+    switch (level) {
+    case LogLevel::ERROR:
+        elog_e(TAG, "%s", buffer);
+        break;
+    case LogLevel::WARNING:
+        elog_w(TAG, "%s", buffer);
+        break;
+    case LogLevel::INFO:
+        elog_i(TAG, "%s", buffer);
+        break;
+    case LogLevel::DEBUG:
+        elog_d(TAG, "%s", buffer);
+        break;
+    case LogLevel::VERBOSE:
+        elog_v(TAG, "%s", buffer);
+        break;
+    default:
+        elog_i(TAG, "%s", buffer);
+        break;
+    }
 }

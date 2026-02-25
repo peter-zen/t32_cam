@@ -6,9 +6,11 @@
 #include <vector>
 #include <thread>
 #include <functional>
-#include "media_common.h"
+#include "IVideo.h"
+#include "HalFactory.h"
 
-#define SNAP_SENSOR_CHN_NUM  0
+#define SNAP_SENSOR_ID  0
+#define SNAP_STREAM_ID  0
 
 namespace media
 {
@@ -48,14 +50,13 @@ class ImageSnap {
     private:
         bool initialize();
         void deinitialize();
-        bool snap(int chnNum, const std::vector<std::string> &filenames);
-        bool initJpeg();
-        bool uninitJpeg();
-        bool sensorFilter(int index);
+        bool snap_internal(const std::vector<std::string> &filenames);
         bool daynight_switch(bool on);
         ImageSnapParams params;
         bool initialized;
         std::vector<std::thread> threads;
+        std::shared_ptr<hal::IVideo> video_;
+        std::shared_ptr<hal::IVideoStream> stream_;
 };
 }
 #endif

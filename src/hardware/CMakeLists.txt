@@ -1,0 +1,5 @@
+add_subdirectory(daynight)
+add_subdirectory(disk)
+add_subdirectory(gpio)
+add_subdirectory(mcu)
+add_subdirectory(power)

@@ -9,7 +9,7 @@
 #include "UsbDongle.h"
 #include "Settings.h"
 #include "DeviceConfig.h"
-#include "RTC.h"
+#include "time/rtc/RTC.h"
 #include "Power.h"
 #include "Disk.h"
 #include "StringConvert.h"

@@ -6,7 +6,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <string.h>
-#include "CRC.h"
+#include "utils/crc/CRC.h"
 #include <iomanip>
 #include <sstream>
 #include <fstream>
@@ -14,9 +14,9 @@
 #include "DeviceConfig.h"
 #include "Settings.h"
 #include "Common.h"
-#include "Misc.h"
+#include "misc/Misc.h"
 #include "StorageServClient.h"
-#include "Timezone.h"
+#include "time/timezone/Timezone.h"
 
 using namespace network;
 

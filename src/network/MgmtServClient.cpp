@@ -17,7 +17,7 @@
 #include "MgmtServClient.h"
 #include "Broadcast.h"
 #include "FirmwareUpdate.h"
-#include "Base64.h"
+#include "utils/base64/Base64.h"
 #include "MCU.h"
 #include "Rtmp.h"
 #include "Settings.h"
@@ -666,7 +666,7 @@ int MgmtServClient::sendHeartbeat(const std::string &message)
 	json_obj["Comm_Code"] = comm_code;
 	json_obj["File"] = "unknown";
 	json_obj["FileType"] = "json";
-	json_obj["FileSize"] = message_length;
+	json_obj["FileSize"] = static_cast<Json::Value::UInt64>(message_length);
 	json_obj["FileName"] = "unknown";
 	json_obj["Upload_Date"] = time_str;
 

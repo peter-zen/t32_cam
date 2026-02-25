@@ -1,1 +1,8 @@
 build
+build_sim
+ref
+debug
+sim_sdcard/video
+sim_sdcard/log
+*.log
+CMakeFiles

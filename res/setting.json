@@ -17,6 +17,7 @@
 	"endVol_l" : 0,
 	"euid" : "",
 	"ev" : 0,
+	"force_upload" : 0,
 	"gpsAltitudeRef" : 0,
 	"gpsAltitude_0" : 0,
 	"gpsAltitude_1" : 0,

@@ -10,7 +10,9 @@ typedef enum {
     FUNC_ID_PULL_VIDEO_FRAME = 0,
     FUNC_ID_PULL_AUDIO_FRAME,
     FUNC_ID_RELEASE_VIDEO_FRAME,
+    FUNC_ID_RELEASE_AUDIO_FRAME,
     FUNC_ID_ON_SESSION_CLOSED,
+    FUNC_ID_ON_SESSION_PLAY,
     FUNC_ID_MAX
 }func_id_t;
 
@@ -18,6 +20,13 @@ enum {
     CODEC_H264 = 0,
     CODEC_H265,
     CODEC_MAX,
+};
+
+enum {
+    AUDIO_CODEC_PCMU = 0,  // G.711 u-law
+    AUDIO_CODEC_PCMA,      // G.711 A-law
+    AUDIO_CODEC_L16,       // Linear PCM 16-bit
+    AUDIO_CODEC_MAX,
 };
 enum {
     RTSP_SERVER_PARAM_VIDEO_SPS = 0,
@@ -48,9 +57,11 @@ struct rtsp_server_param {
     size_t video_pps_len;
 
     int audio_enable;
+    int audio_codec;
     int audio_sample_rate;
     int audio_stream_id;
     int audio_samples_per_packet;
+    int audio_channels;
 };
 
 void* create_server(const struct rtsp_server_param *param);
@@ -59,7 +70,7 @@ int start_server(void *server);
 int stop_server(void *server);
 int destroy_server(void *server);
 int is_server_running(void *server);
-typedef int (*func_t)(void **data, size_t *size);
+typedef int (*func_t)(void **data, size_t *size, uint64_t *timestamp);
 int register_function(void *server, func_id_t id, func_t func);
 
 

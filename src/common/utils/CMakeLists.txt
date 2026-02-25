@@ -1,0 +1,5 @@
+add_subdirectory(base64)
+add_subdirectory(jpeg)
+add_subdirectory(crc)
+add_subdirectory(serial)
+add_subdirectory(string)

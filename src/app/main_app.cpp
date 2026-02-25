@@ -14,36 +14,41 @@
 #include <queue>
 #include <thread>
 #include <mutex>
+#include <unordered_map>
 
 
 #include "MgmtServClient.h"
-#include "RemoteCtrlClient.h"
 #include "RtspServer.h"
+#include "http_server.h"
 #include "DeviceConfig.h"
 #include "Common.h"
 #include "Logger.h"
+#include "ElogInit.h"
 #include "ImageSnap.h"
 #include "VideoRecorder.h"
 #include "EnvManager.h"
-#include "Misc.h"
-#include "CRC.h"
+#include "misc/Misc.h"
+#include "utils/crc/CRC.h"
 #include "Settings.h"
 #include "MCU.h"
 #include "Disk.h"
-#include "AudioRecorderFactory.h"
+#include "AudioRecorder.h"
 #include "AudioParams.h"
 #include "StringConvert.h"
 #include "WorkMode.h"
 #include "app.h"
 #include "DayNightSwitch.h"
 #include "Power.h"
-#include "AutoRelease.h"
-#include "RTC.h"
+#include "utils/AutoRelease.h"
+#include "time/rtc/RTC.h"
 #include "daemon_api.h"
+#include "DatabaseManager.h"
+#include "MediaScanner.h"
 #include "Timezone.h"
 #include "UsbDongle.h"
 
 using namespace network;
+
 using namespace media;
 static std::shared_ptr<DayNightSwitch> daynight_switch;
 std::shared_ptr<GPIO> gpio_rgb_led;
@@ -339,6 +344,54 @@ static bool syncWithMCU()
     return true;
 }
 
+// 简单的 INI 配置解析器
+static std::unordered_map<std::string, std::unordered_map<std::string, std::string>> parseIniFile(const std::string& filename)
+{
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> config;
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        return config;
+    }
+    
+    std::string currentSection;
+    std::string line;
+    while (std::getline(file, line)) {
+        // 去除首尾空白
+        size_t start = line.find_first_not_of(" \t\r\n");
+        if (start == std::string::npos) continue;
+        size_t end = line.find_last_not_of(" \t\r\n");
+        line = line.substr(start, end - start + 1);
+        
+        // 跳过空行和注释
+        if (line.empty() || line[0] == '#' || line[0] == ';') continue;
+        
+        // 解析 section
+        if (line[0] == '[' && line.back() == ']') {
+            currentSection = line.substr(1, line.size() - 2);
+            continue;
+        }
+        
+        // 解析 key=value
+        size_t eqPos = line.find('=');
+        if (eqPos != std::string::npos) {
+            std::string key = line.substr(0, eqPos);
+            std::string value = line.substr(eqPos + 1);
+            
+            // 去除 key 和 value 的首尾空白
+            start = key.find_first_not_of(" \t");
+            end = key.find_last_not_of(" \t");
+            if (start != std::string::npos) key = key.substr(start, end - start + 1);
+            
+            start = value.find_first_not_of(" \t");
+            end = value.find_last_not_of(" \t");
+            if (start != std::string::npos) value = value.substr(start, end - start + 1);
+            
+            config[currentSection][key] = value;
+        }
+    }
+    return config;
+}
+
 static void printUsage(char *argv[])
 {
     std::cout << "Usage: " << argv[0] << " <command> [options]" << std::endl;
@@ -354,7 +407,7 @@ static void printUsage(char *argv[])
     std::cout << "  -ar, --audio-record\tRecord audio" << std::endl;
     std::cout << "  -vr, --video-record\tRecord video" << std::endl;
     std::cout << "  -m, --mobile\t\tConnect to the mobile network" << std::endl;
-    std::cout << "  -rs, --rtsp-server\tStart the RTSP server" << std::endl;
+    std::cout << "  -rs, --rtsp-server\tStart the RTSP server (use --no-audio to disable audio)" << std::endl;
     std::cout << "  -grtc, --get-rtc\tGet RTC time" << std::endl;
     std::cout << "  -srtc, --set-rtc\tSet RTC time" << std::endl;
     std::cout << "  -uv, --uvc\t\tStart the UVC" << std::endl;
@@ -376,8 +429,8 @@ static void printUsage(char *argv[])
 #define CMD_SET_RTC (1 << 12)
 
 static bool already_in_exit_flow = false;
+static bool rtsp_audio_enabled = true;  // RTSP 音频默认开启
 static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
-static std::shared_ptr<RemoteCtrlClient> remoteCtrlClient = nullptr;
 static std::shared_ptr<StorageServClient> storageServClient = nullptr;
 // Signal handler for CTRL+C
 // 信号处理消息结构体
@@ -448,7 +501,10 @@ static void signalHandlerThreadFunc() {
                     }
                 }
 
-                remoteCtrlClient = nullptr;
+                if (http_server_is_running()) {
+                    http_server_stop();
+                    http_server_deinit();
+                }
                 mgmtServClient = nullptr;
                 storageServClient = nullptr;
 
@@ -479,7 +535,10 @@ static void signalHandlerThreadFunc() {
                     }
                 }
 
-                remoteCtrlClient = nullptr;
+                if (http_server_is_running()) {
+                    http_server_stop();
+                    http_server_deinit();
+                }
                 mgmtServClient = nullptr;
                 storageServClient = nullptr;
             
@@ -567,6 +626,12 @@ static void signalHandler(int signal)
         }
     }
     already_in_exit_flow = true;
+#ifdef BUILD_FOR_SIMULATION
+    // PC 模拟模式下，SIGTERM 不执行 poweroff/reboot，让程序正常退出
+    if (signal == SIGTERM) {
+        Logger::log(LogLevel::INFO, "[SIM] SIGTERM received, program will exit normally");
+    }
+#else
     if (signal == SIGTERM) {
         if (Power::getInstance()->isChangeModeRequested()) {
             Logger::log(LogLevel::INFO, "Waiting 2 seconds before reboot...");
@@ -582,6 +647,7 @@ static void signalHandler(int signal)
             while(1);
         }
     }
+#endif
 }
 
 // 工作线程全局变量
@@ -594,9 +660,59 @@ int main(int argc, char* argv[])
     bool is_rtc_work_well = true;
     enum workingMode working_mode = workingMode::WORKING_MODE_MAX;
     EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
-    // 启动信号处理工作线程
-    signalHandlerThread = std::thread(signalHandlerThreadFunc);
+    
+    // Initialize Database
+#ifdef BUILD_FOR_SIMULATION
+    // 动态计算路径，确保文件生成在 build 目录下
+    std::string exePath = Misc::getExecutablePath();
+    std::string simRootPath = exePath + "/../sdcard";  // build_sim/bin/../sdcard -> build_sim/sdcard
+    std::string projectRootPath = exePath + "/../..";  // build_sim/bin/../.. -> project_root
 
+    std::string db_path = simRootPath + "/data/db";
+    std::string media_root = simRootPath + "/DCIM";
+    std::string log_root = simRootPath + "/log";
+    std::string log_file = log_root + "/app.log";
+#else
+    std::string db_path = EnvManager::getInstance()->getEnv("DB_PATH", "/sdcard/data/db");
+    std::string media_root = "/sdcard/DCIM";
+#endif
+
+    if (!DatabaseManager::getInstance().init(db_path)) {
+        fprintf(stderr, "Failed to initialize Database\n");
+    }
+
+    // Start Media Scanner (async)
+    // Only scan if directory exists (avoid creating if no SD card)
+    struct stat st;
+    if (stat(media_root.c_str(), &st) == 0) {
+        MediaScanner::getInstance().startScan(media_root);
+    }
+    
+    // Initialize EasyLogger - must be called early before any logging
+#ifdef BUILD_FOR_SIMULATION
+
+    // Ensure log directory exists
+    Misc::createDirectory(log_root);
+
+    // PC 模拟环境：启用终端和文件日志，日志保存到 sdcard/log/
+    ElogConfig elog_config;
+    elog_config.enableTerminal = true;
+    elog_config.enableFile = true;
+    elog_config.logFilePath = log_file;
+    elog_config.logLevel = ELOG_LVL_DEBUG;
+    if (!elog_init_with_config(elog_config)) {
+        fprintf(stderr, "Failed to initialize EasyLogger\n");
+    }
+    
+    Logger::log(LogLevel::INFO, "[SIM] Simulation Root: %s", simRootPath.c_str());
+    Logger::log(LogLevel::INFO, "[SIM] Project Root: %s", projectRootPath.c_str());
+#else
+    // 真机环境：仅终端输出
+    if (!elog_init_default()) {
+        fprintf(stderr, "Failed to initialize EasyLogger\n");
+    }
+#endif
+    
     daynight_switch = DayNightSwitch::getInstance();
     if (daynight_switch) {
         daynight_switch->setCdsPins(CDS_SENSOR_PIN);
@@ -633,6 +749,9 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    // 启动信号处理工作线程
+    signalHandlerThread = std::thread(signalHandlerThreadFunc);
+
     if (argc != 5) {
         if (std::string(argv[1]) == "-w" || std::string(argv[1]) == "--wifi") {
             command = CMD_CONN_NET;
@@ -658,6 +777,12 @@ int main(int argc, char* argv[])
             command = CMD_CONN_NET | CMD_NTP;
         } else if (std::string(argv[1]) == "-rs" || std::string(argv[1]) == "--rtsp-server") {
             command = CMD_RTSP_SERVER;
+            // 检查是否有 --no-audio 参数
+            for (int i = 2; i < argc; i++) {
+                if (std::string(argv[i]) == "--no-audio") {
+                    rtsp_audio_enabled = false;
+                }
+            }
         } else if (std::string(argv[1]) == "-grtc" || std::string(argv[1]) == "--get-rtc") {
             command = CMD_GET_RTC;
         } else if (std::string(argv[1]) == "-srtc" || std::string(argv[1]) == "--set-rtc") {
@@ -731,6 +856,12 @@ int main(int argc, char* argv[])
     auto program_type = config->get(INI_SECTION_BOOT, INI_KEY_PTYPE, PTYPE_NO_NET);
     Logger::log(LogLevel::INFO, "program type %d", program_type);
     //mount sdcard
+#ifdef BUILD_FOR_SIMULATION
+    if (!Misc::mountSDCard(simRootPath)) {
+        Logger::log(LogLevel::ERROR, "mount sdcard error");
+        goto main_exit;
+    }
+#else
     if (!Misc::mountSDCard(SD_CARD_PATH)) {
         Logger::log(LogLevel::ERROR, "mount sdcard error");
         goto main_exit;
@@ -774,6 +905,8 @@ int main(int argc, char* argv[])
         Logger::log(LogLevel::INFO, "Set timezone to %s", timezone.c_str());
         Timezone::setTimezone(timezone);
     }
+    
+#endif
 
     //RTC
     if (command & CMD_GET_RTC) {
@@ -974,7 +1107,7 @@ int main(int argc, char* argv[])
         audioParam.setCodecFormat(AudioCodecFormat::AAC);
         audioParam.setSampleRate(AudioSampleRate::SR_16000);
         audioParam.setChannelCount(1);   
-        auto audioIn = media::AudioRecorderFactory::createRecorder(audioParam);
+        IAudioRecorder* audioIn = new AudioRecorder();
         audioIn->setRecordFilePath("./res/audioin_record.aac");
         Logger::log(LogLevel::INFO, "[Main] audioIn start...");
         if (audioIn->start()) {
@@ -986,7 +1119,7 @@ int main(int argc, char* argv[])
             Logger::log(LogLevel::ERROR, "audioIn start failed");
         }
         Logger::log(LogLevel::INFO, "[Main] destroyRecorder(audioIn)...");
-        media::AudioRecorderFactory::destroyRecorder(audioIn);
+        delete audioIn;
         Logger::log(LogLevel::INFO, "[Main] destroyRecorder(audioIn) done");
         Logger::log(LogLevel::INFO, "[Main] CMD_AUDIO_RECORD leave");
     }
@@ -1023,25 +1156,36 @@ int main(int argc, char* argv[])
         }
         Misc::connectWifi(wifi_ssid, wifi_pwd);
         Misc::startDHCP();
-        auto remoteCtrlServerIp = Misc::getGatewayAddress(Misc::getNetworkInterfaceName());
-        if (remoteCtrlServerIp.empty()) {
-            std::cout << "Failed to get gateway IP address" << std::endl;
+        
+        // 启动 HTTP Server 替代 RemoteCtrlClient
+        HttpServerConfig httpConfig = {8080, nullptr, 2};
+        if (http_server_init(&httpConfig) != 0) {
+            Logger::log(LogLevel::ERROR, "Failed to init HTTP server");
             goto main_exit;
         }
-        auto remoteCtrlServerPort = 7788;
-        remoteCtrlClient = std::make_shared<RemoteCtrlClient>(remoteCtrlServerIp, remoteCtrlServerPort);
-        if (EC_SUCCESS != remoteCtrlClient->connect(3000)) {
-            Logger::log(LogLevel::ERROR, "connect [%s:%d] failed", remoteCtrlServerIp.c_str(), remoteCtrlServerPort);
+        if (http_server_start() != 0) {
+            Logger::log(LogLevel::ERROR, "Failed to start HTTP server");
+            http_server_deinit();
             goto main_exit;
         }
+        Logger::log(LogLevel::INFO, "HTTP Server started on port 8080");
         
         bool sessionClosed = false;
-         RtspServer::getInstance()->registerOnsessionClosedCallback([&sessionClosed](void) {
+        RtspServer::getInstance()->registerOnsessionClosedCallback([&sessionClosed](void) {
             sessionClosed = true;
         });
         RtspServer::getInstance()->start();
-        while ((remoteCtrlClient->isConnected() || !sessionClosed) && !already_in_exit_flow) {
+        while (!sessionClosed && !already_in_exit_flow) {
             sleep(1);
+        }
+        
+        // 停止 RTSP Server
+        RtspServer::getInstance()->stop();
+        
+        // 停止 HTTP Server
+        if (http_server_is_running()) {
+            http_server_stop();
+            http_server_deinit();
         }
     }
 
@@ -1050,13 +1194,16 @@ int main(int argc, char* argv[])
         //auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
         //Misc::connectWifi(wifi_ssid, wifi_pwd);
         //Misc::startDHCP();
-        bool sessionClosed = false;
-        RtspServer::getInstance()->registerOnsessionClosedCallback([&sessionClosed](void) {
-            Logger::log(LogLevel::INFO, "session closed, stop rtsp server");
-            sessionClosed = true;
+        RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
+            Logger::log(LogLevel::INFO, "RTSP session closed, waiting for new connection...");
         });
+        
+#ifdef SIMULATION_MODE
+#endif
+        
         RtspServer::getInstance()->start();
-        while (!sessionClosed) {
+        /* RTSP 服务器持续运行，等待退出信号 */
+        while (!already_in_exit_flow) {
             sleep(1);
         }
         RtspServer::getInstance()->stop();
@@ -1229,15 +1376,22 @@ main_exit:
     Settings::getInstance()->saveToJsonFile(setting_file_path);
     
     Logger::log(LogLevel::INFO, "Power off From Main function");
+#ifndef BUILD_FOR_SIMULATION
     auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
     if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
         || !gpio_power_hold.setValue(GPIO_VALUE::LOW)) {
         Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
     }
+#endif
     auto_release.release();
     syncWithMCU();
     config->flush();
-    Misc::poweroff();
-    while(1);
+#ifdef BUILD_FOR_SIMULATION
+    Logger::log(LogLevel::INFO, "[SIM] Program exit normally");
     return 0;
+#else
+    //Misc::poweroff();
+    //while(1);
+    return 0;
+#endif
 }

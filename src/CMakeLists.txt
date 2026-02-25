@@ -3,6 +3,7 @@ include_directories(
     ${SDK_INC_PATH}
     ${SOURCES}/media/common
     ${SOURCES}/media/snap
+    ${THIRD_PARTY_PATH}/easylogger/inc
 )
 
 # Specify the directory where the libraries are located
@@ -11,27 +12,28 @@ link_directories(
     ${CMAKE_BINARY_DIR}/lib
 )
 
+# ============================================================================
+# SDK Stub for PC Simulation
+# ============================================================================
+if(BUILD_FOR_SIMULATION)
+endif()
+
 # Ensure static libraries are preferred
 #set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
 
 # Include subdirectory for common
 add_subdirectory(logger)
 add_subdirectory(common)
-add_subdirectory(env)
-add_subdirectory(devconf)
-add_subdirectory(misc)
-add_subdirectory(base64)
-add_subdirectory(setting)
+
+# HAL (Hardware Abstraction Layer)
+add_subdirectory(hal)
+add_subdirectory(config)
 add_subdirectory(media)
 add_subdirectory(network)
-add_subdirectory(power)
-add_subdirectory(disk)
-add_subdirectory(mcu)
-add_subdirectory(workmode)
-add_subdirectory(daynight)   
-add_subdirectory(gpio)
-add_subdirectory(time)
-add_subdirectory(timezone)
-add_subdirectory(tool)
-add_subdirectory(daemon)
+add_subdirectory(hardware)
+add_subdirectory(platform)
+add_subdirectory(service)
+add_subdirectory(storage)
+
 add_subdirectory(app)
+

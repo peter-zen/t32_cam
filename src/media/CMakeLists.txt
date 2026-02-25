@@ -1,5 +1,6 @@
-add_subdirectory(common)
 add_subdirectory(snap)
 add_subdirectory(video)
 add_subdirectory(audio)
+add_subdirectory(fifo)
+add_subdirectory(base)
 add_subdirectory(rtsp)

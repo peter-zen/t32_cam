@@ -1,32 +1,23 @@
-# Find source files in the current directory
 file(GLOB SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/VideoRecorder.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/VideoParams.cpp"
- )
+)
 
-# Include current directory headers
 include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../../common
         ${CMAKE_CURRENT_SOURCE_DIR}/../common
         ${CMAKE_CURRENT_SOURCE_DIR}/../../logger
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../daynight
-        ${SDK_INC_PATH}
-        ${SDK_INC_PATH}/imp
-        ${SDK_INC_PATH}/sysutils
-        ${SDK_INC_PATH}/samples/libimp-samples
-        ${SDK_INC_PATH}/samples/libsysutils-samples
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../hardware/daynight
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../hal/include
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../audio
         ${THIRD_PARTY_PATH}/minimp4/include
 )
 
-# Create library
 add_library(media_recorder SHARED ${SOURCE_FILES})
 
-# link libraries
-target_link_libraries(media_recorder PRIVATE media_common minimp4)
+target_link_libraries(media_recorder PUBLIC minimp4 hal_video hal_audio audio_recorder media_fifo media_base storage)
 
-# Set the output directory for the library
 set_target_properties(media_recorder PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )

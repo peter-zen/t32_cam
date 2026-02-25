@@ -6,15 +6,13 @@ file(GLOB SOURCE_FILES
 
 # Include current directory headers
 include_directories(
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../common
+    "${CMAKE_CURRENT_SOURCE_DIR}/../base"
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../common
         ${CMAKE_CURRENT_SOURCE_DIR}/../common
         ${CMAKE_CURRENT_SOURCE_DIR}/../../logger
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../daynight
-        ${SDK_INC_PATH}
-        ${SDK_INC_PATH}/imp
-        ${SDK_INC_PATH}/sysutils
-        ${SDK_INC_PATH}/samples/libimp-samples
-        ${SDK_INC_PATH}/samples/libsysutils-samples
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../hardware/daynight
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../hal/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../audio
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${THIRD_PARTY_PATH}/interface99
         ${THIRD_PARTY_PATH}/datatype99
@@ -32,7 +30,9 @@ include_directories(
 add_library(media_rtsp SHARED ${SOURCE_FILES})
 
 # link libraries
-target_link_libraries(media_rtsp PRIVATE media_common smolrtsp smolrtsp-libevent event)
+target_link_libraries(media_rtsp PRIVATE media_base media_fifo audio_recorder smolrtsp smolrtsp-libevent event atomic)
+
+# 仿真模式不再依赖内置资源头，改由 SimAudio/SimVideo 合成数据
 
 # Set the output directory for the library
 set_target_properties(media_rtsp PROPERTIES
