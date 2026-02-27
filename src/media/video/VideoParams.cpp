@@ -5,7 +5,7 @@ using namespace media;
 VideoParams::VideoParams()
     : width(1920)
     , height(1080)
-    , fps(15)
+    , fps(30)
     , bitrate(2000000)  // 默认2Mbps
     , codecFormat(VideoCodecFormat::H265)
     , rcMode(VideoRcMode::CBR) {

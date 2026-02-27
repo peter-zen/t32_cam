@@ -12,7 +12,7 @@
 #include <condition_variable>
 #include "VideoParams.h"
 #include "AudioParams.h"
-#include "AudioRecorder.h"
+#include "IAudio.h"
 #include "IVideo.h"
 #include "HalFactory.h"
 
@@ -51,6 +51,7 @@ private:
         //audio
         bool initAudio();
         bool uninitAudio();
+        void audioCaptureLoop();
         //others
         bool daynight_switch(bool on);
         std::shared_ptr<VideoParams> vidParam;
@@ -62,11 +63,15 @@ private:
         int audio_track_id;
         bool audioRecording;
         pthread_t audioThreadId;
-        std::shared_ptr<IAudioRecorder> audioRecorder;
+        std::shared_ptr<hal::IAudio> audio_;
+        std::shared_ptr<hal::IAudioStream> audioStream_;
+        std::shared_ptr<std::thread> audioThread;
+        bool audioThreadRunning;
         std::queue<QueuedAudioSample> audioDataQueue;
         std::mutex audioDataMutex;
         std::condition_variable audioDataCond;
         uint64_t audioTimestamp;
+        uint64_t audioCurrentTimestamp;
         int audioSampleRate;
         int audioChannels;
         bool audioIsAac;

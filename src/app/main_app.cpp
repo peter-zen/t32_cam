@@ -1105,9 +1105,14 @@ int main(int argc, char* argv[])
         audioParam.setVolume(80);    
         audioParam.setGain(28);      
         audioParam.setCodecFormat(AudioCodecFormat::AAC);
+        #ifdef BUILD_FOR_SIMULATION
+        audioParam.setSampleRate(AudioSampleRate::SR_44100);
+        #else
         audioParam.setSampleRate(AudioSampleRate::SR_16000);
+        #endif
         audioParam.setChannelCount(1);   
         IAudioRecorder* audioIn = new AudioRecorder();
+        audioIn->setAudioParams(audioParam);
         audioIn->setRecordFilePath("./res/audioin_record.aac");
         Logger::log(LogLevel::INFO, "[Main] audioIn start...");
         if (audioIn->start()) {
@@ -1138,7 +1143,11 @@ int main(int argc, char* argv[])
         audioParam->setVolume(80);    
         audioParam->setGain(28);      
         audioParam->setCodecFormat(AudioCodecFormat::AAC);
+        #ifdef BUILD_FOR_SIMULATION
+        audioParam->setSampleRate(AudioSampleRate::SR_44100);
+        #else
         audioParam->setSampleRate(AudioSampleRate::SR_16000);
+        #endif
         audioParam->setChannelCount(1);   
     
         auto recorder = std::make_shared<VideoRecorder>(videoParam, audioParam);
@@ -1198,9 +1207,6 @@ int main(int argc, char* argv[])
             Logger::log(LogLevel::INFO, "RTSP session closed, waiting for new connection...");
         });
         
-#ifdef SIMULATION_MODE
-#endif
-        
         RtspServer::getInstance()->start();
         /* RTSP 服务器持续运行，等待退出信号 */
         while (!already_in_exit_flow) {
@@ -1244,8 +1250,8 @@ int main(int argc, char* argv[])
         bool descfile_uploaded = false;
         auto desc_filenames = Misc::listFilenames(MEDIA_UPLOAD_PATH);
         for (auto &desc_filename : desc_filenames) {
-            Logger::log(LogLevel::INFO, "desc_filename %s", desc_filename.c_str());
             desc_filename = MEDIA_UPLOAD_PATH + desc_filename;
+            Logger::log(LogLevel::INFO, "desc_filename %s", desc_filename.c_str());
             std::ifstream ifs(desc_filename);
             
             if (!Misc::isJsonFile(desc_filename)) {
@@ -1278,9 +1284,11 @@ int main(int argc, char* argv[])
             descfile_uploaded = false;
             if (root["F_UploadedTag"].asInt() == 0) {
                 //upload file description json file
-                storageServClient->bindUploadCallback([&descfile_uploaded, desc_filename](const std::string &filename, int error_code) {
-                    Logger::log(LogLevel::INFO, "upload %s, error code: %d", filename.c_str(), error_code);
-                    if (filename == desc_filename) {
+                Logger::log(LogLevel::INFO, "original desc_filename %s", desc_filename.c_str());
+                auto target_filename = desc_filename;
+                storageServClient->bindUploadCallback([&descfile_uploaded, target_filename](const std::string &filename, int error_code) {
+                    Logger::log(LogLevel::INFO, "upload descfile [%s], error code: %d", filename.c_str(), error_code);
+                    if (filename == target_filename) {
                         descfile_uploaded = (error_code==EC_SUCCESS)?true:false;
                     }
                 });
@@ -1350,8 +1358,8 @@ int main(int argc, char* argv[])
                 ofs << root.toStyledString();
                 ofs.close();
                 if (allFileUploaded) {
-                    Logger::log(LogLevel::INFO, "upload all files finished");
-                    Misc::deleteFile(desc_filename);
+                    Logger::log(LogLevel::INFO, "upload all files finished in %s", desc_filename.c_str());
+                    //Misc::deleteFile(desc_filename);
                 }
             }    
         }
@@ -1384,12 +1392,12 @@ main_exit:
     }
 #endif
     auto_release.release();
-    syncWithMCU();
-    config->flush();
 #ifdef BUILD_FOR_SIMULATION
     Logger::log(LogLevel::INFO, "[SIM] Program exit normally");
-    return 0;
+    _exit(0);
 #else
+    syncWithMCU();
+    config->flush();
     //Misc::poweroff();
     //while(1);
     return 0;

@@ -133,10 +133,6 @@ bool SimAudioStream::adts_find_frame(const uint8_t* src, size_t len, size_t star
     static const int sf_table[16] = {96000,88200,64000,48000,44100,32000,24000,22050,16000,12000,11025,8000,7350,0,0,0};
     sample_rate = (sf_index >= 0 && sf_index < 16) ? sf_table[sf_index] : 16000;
     if (frame_off + frame_len > len) {
-        size_t tail = len - frame_off;
-        if (tail >= header_len) {
-            return true;
-        }
         return false;
     }
     return true;
@@ -160,34 +156,28 @@ void SimAudioStream::buildNextFrame(AudioEncodedFrame& out) {
     }
     if (cfg_.payload == AudioPayloadType::AAC) {
         size_t off = 0, flen = 0;
-        int samples = 1024, sr_detect = cfg_.sample_rate > 0 ? cfg_.sample_rate : 16000;
-        bool ok = adts_find_frame(src_, src_len_, read_offset_, off, flen, samples, sr_detect);
+        int samples = 1024, sr_actual = cfg_.sample_rate > 0 ? cfg_.sample_rate : 16000;
+        bool ok = adts_find_frame(src_, src_len_, read_offset_, off, flen, samples, sr_actual);
         if (!ok) {
-            buildG711AFrame();
-            AudioEncodedPiece p;
-            p.data = last_buffer_.data();
-            p.size = last_buffer_.size();
-            last_pieces_.push_back(p);
-            out.key = true;
-            return;
+            read_offset_ = 0;
+            ok = adts_find_frame(src_, src_len_, read_offset_, off, flen, samples, sr_actual);
+            if (!ok) {
+                return;
+            }
         }
         if (off + flen <= src_len_) {
             last_buffer_.assign(src_ + off, src_ + off + flen);
             read_offset_ = off + flen;
         } else {
-            size_t tail = src_len_ - off;
-            last_buffer_.resize(flen);
-            std::memcpy(last_buffer_.data(), src_ + off, tail);
-            size_t head = flen - tail;
-            std::memcpy(last_buffer_.data() + tail, src_, head);
-            read_offset_ = head;
+            read_offset_ = 0;
+            return;
         }
         AudioEncodedPiece p;
         p.data = last_buffer_.data();
         p.size = last_buffer_.size();
         last_pieces_.push_back(p);
         out.key = true;
-        uint64_t inc = (uint64_t)1000000ULL * (uint64_t)samples / (uint64_t)sr_detect;
+        uint64_t inc = (uint64_t)1000000ULL * (uint64_t)samples / (uint64_t)sr_actual;
         last_pts_ += inc;
         return;
     } else {

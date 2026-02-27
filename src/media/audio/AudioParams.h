@@ -20,6 +20,9 @@ enum class AudioCodecFormat {
 enum class AudioSampleRate {
     SR_8000,   // 8000 Hz
     SR_16000,  // 16000 Hz
+    SR_24000,  // 24000 Hz
+    SR_32000,  // 32000 Hz
+    SR_44100,  // 44100 Hz
     SR_48000,   // 48000 Hz
     MAX        // 最大采样率数量
 };

@@ -56,7 +56,7 @@
 #define CHN1_EN                             1
 #define CHN2_EN                             0
 #define FIRST_CROP_EN                       0
-#define FIRST_SENSOR_FRAME_RATE_NUM         15
+#define FIRST_SENSOR_FRAME_RATE_NUM         30
 #define FIRST_SENSOR_FRAME_RATE_DEN         1
 #define FIRST_SENSOR_WIDTH_SECOND           1280
 #define FIRST_SENSOR_HEIGHT_SECOND          720

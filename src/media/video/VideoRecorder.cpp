@@ -12,26 +12,45 @@
 #include "Common.h"
 #include "Logger.h"
 #include "minimp4.h"
-#include "AudioRecorder.h"
 #include "VideoRecorder.h"
 #include "DayNightSwitch.h"
 #include "MetadataDao.h"
-
+#include "Misc.h"
 
 using namespace media;
 
-void VideoRecorder::staticAudioDataCallback(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame, void* userData)
+void VideoRecorder::audioCaptureLoop()
 {
-    VideoRecorder* recorder = static_cast<VideoRecorder*>(userData);
-    if (recorder && size > 0) {
-        QueuedAudioSample sample;
-        sample.data.assign(data, data + size);
-        sample.timestamp = timestamp;
-        {
-            std::lock_guard<std::mutex> lock(recorder->audioDataMutex);
-            recorder->audioDataQueue.push(sample);
+    if (!audioStream_) return;
+    int sr = audParam ? audParam->getSampleRateValue() : 16000;
+    int npf = audParam ? audParam->getNumPerFrame() : 320;
+    int wait_ms = (sr > 0) ? (npf * 1000 / sr) : 20;
+    if (wait_ms < 1) wait_ms = 1;
+    audioThreadRunning = true;
+    while (audioThreadRunning) {
+        bool polled = audioStream_->polling(wait_ms);
+        if (!polled) continue;
+        hal::AudioEncodedFrame out;
+        memset(&out, 0, sizeof(out));
+        bool ok = audioStream_->getFrame(out);
+        if (!ok) continue;
+        uint64_t ts_ms = out.pts / 1000;
+        audioCurrentTimestamp = ts_ms;
+        for (int i = 0; i < out.piece_count; ++i) {
+            const hal::AudioEncodedPiece& p = out.pieces[i];
+            if (p.size > 0) {
+                QueuedAudioSample sample;
+                sample.data.assign(reinterpret_cast<const uint8_t*>(p.data),
+                                   reinterpret_cast<const uint8_t*>(p.data) + p.size);
+                sample.timestamp = ts_ms;
+                {
+                    std::lock_guard<std::mutex> lock(audioDataMutex);
+                    audioDataQueue.push(sample);
+                }
+                audioDataCond.notify_one();
+            }
         }
-        recorder->audioDataCond.notify_one();
+        audioStream_->releaseFrame(out);
     }
 }
 
@@ -49,8 +68,12 @@ VideoRecorder::VideoRecorder()
     , audio_track_id(-1)
     , audioRecording(false)
     , audioThreadId(0)
-    , audioRecorder(nullptr)
+    , audio_(nullptr)
+    , audioStream_(nullptr)
+    , audioThread(nullptr)
+    , audioThreadRunning(false)
     , audioTimestamp(0)
+    , audioCurrentTimestamp(0)
     , audioSampleRate(8000)
     , audioChannels(1)
     , audioIsAac(false)
@@ -66,8 +89,12 @@ VideoRecorder::VideoRecorder(const std::shared_ptr<VideoParams> vidParam, const 
     , audio_track_id(-1)
     , audioRecording(false)
     , audioThreadId(0)
-    , audioRecorder(nullptr)
+    , audio_(nullptr)
+    , audioStream_(nullptr)
+    , audioThread(nullptr)
+    , audioThreadRunning(false)
     , audioTimestamp(0)
+    , audioCurrentTimestamp(0)
     , audioSampleRate(8000)
     , audioChannels(1)
     , audioIsAac(false)
@@ -196,6 +223,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
 {
     int i = 0;
     int ret = 0;
+    int audioWaitLoops = 0;
 
     hal::VideoStreamInfo info{};
     if (stream_) {
@@ -230,6 +258,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     }
 
     audio_track_id = -1;
+    int configuredAudioChannels = audioChannels > 0 ? audioChannels : 1;
 
 	//int fps = params.getFps();
 	int fps = info.fps_num / info.fps_den;
@@ -254,6 +283,15 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     
     // Reset last timestamp for new recording
     lastVideoTimestamp = 0;
+    
+    // Pre-roll: wait for the first audio timestamp to align AV start
+    if (audioRecording) {
+        int wait_ms_total = 0;
+        while (audioThread && audioThreadRunning && audioCurrentTimestamp == 0 && wait_ms_total < 500) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            wait_ms_total += 10;
+        }
+    }
     
     while (checkRecordCondition()) {
     	/* Polling stream, set timeout as 1000msec */
@@ -310,17 +348,19 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
         }
 
         if (audioRecording) {
-            QueuedAudioSample audioSample;
-            bool hasAudioData = false;
-            {
-                std::lock_guard<std::mutex> lock(audioDataMutex);
-                if (!audioDataQueue.empty()) {
-                    audioSample = audioDataQueue.front();
-                    audioDataQueue.pop();
-                    hasAudioData = true;
+            while (true) {
+                QueuedAudioSample audioSample;
+                bool popped = false;
+                {
+                    std::lock_guard<std::mutex> lock(audioDataMutex);
+                    if (!audioDataQueue.empty()) {
+                        audioSample = audioDataQueue.front();
+                        audioDataQueue.pop();
+                        popped = true;
+                    }
                 }
-            }
-            if (hasAudioData) {
+                if (!popped) break;
+                audioTimestamp = audioSample.timestamp;
                 const std::vector<uint8_t>& audioData = audioSample.data;
                 if (audioIsAac) {
                     size_t offset = 0;
@@ -359,9 +399,12 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                                 case 11: sr = 8000; break;
                                 default: sr = 16000; break;
                             }
-                            Logger::log(LogLevel::INFO, "ADTS header: profile=%d sfi=%d sr=%d ch=%d frameLen=%d", profile, samplingFreqIndex, sr, channelConfig, frameLen);
                             audioSampleRate = sr;
-                            audioChannels = channelConfig;
+                            int parsedChannels = channelConfig;
+                            if (parsedChannels == 0) {
+                                parsedChannels = configuredAudioChannels;
+                            }
+                            audioChannels = parsedChannels > 0 ? parsedChannels : 1;
                             audioAdtsLogged = true;
                         }
                         if (audio_track_id < 0) {
@@ -370,17 +413,13 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                             audioTrack.object_type_indication = MP4_OBJECT_TYPE_AUDIO_ISO_IEC_14496_3;
                             strcpy((char*)audioTrack.language, "und");
                             audioTrack.track_media_kind = e_audio;
-                            audioTrack.time_scale = 90000;
-                            int sampleTicks = (audioSampleRate > 0) ? (1024 * 90000 / audioSampleRate) : (1024 * 90000 / 16000);
+                            audioTrack.time_scale = (audioSampleRate > 0) ? audioSampleRate : 16000;
+                            int sampleTicks = 1024;
                             audioTrack.default_duration = sampleTicks;
                             audioTrack.u.a.channelcount = audioChannels;
-                            Logger::log(LogLevel::INFO, "Add audio track: scale=%d, default_duration=%d, isAac=%d", audioTrack.time_scale, audioTrack.default_duration, audioIsAac);
                             audio_track_id = MP4E_add_track(muxer, &audioTrack);
                             if (audio_track_id < 0) {
-                                Logger::log(LogLevel::ERROR, "Add audio track failed: %d", audio_track_id);
                                 break;
-                            } else {
-                                Logger::log(LogLevel::INFO, "Add audio track success, track_id: %d", audio_track_id);
                             }
                             int sfi = 8;
                             switch (audioSampleRate) {
@@ -403,44 +442,36 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                             uint8_t asc[2];
                             asc[0] = static_cast<uint8_t>((audioObjectType << 3) | (sfi >> 1));
                             asc[1] = static_cast<uint8_t>(((sfi & 0x01) << 7) | (chCfg << 3));
-                            Logger::log(LogLevel::INFO, "Set AAC DSI: objectType=%d sfi=%d sampleRate=%d channels=%d", audioObjectType, sfi, audioSampleRate, audioChannels);
-                            if (MP4E_STATUS_OK != MP4E_set_dsi(muxer, audio_track_id, asc, 2)) {
-                                Logger::log(LogLevel::ERROR, "Set audio DSI failed");
-                            } else {
-                                audioDsiSet = true;
-                            }
+                            MP4E_set_dsi(muxer, audio_track_id, asc, 2);
+                            audioDsiSet = true;
                         }
                         const uint8_t* framePayload = p + headerLen;
                         int payloadLen = frameLen - headerLen;
-                        int sampleTicks = (audioSampleRate > 0) ? (1024 * 90000 / audioSampleRate) : (1024 * 90000 / 16000);
-                        if (MP4E_STATUS_OK != MP4E_put_sample(muxer, audio_track_id, framePayload, payloadLen, sampleTicks, MP4E_SAMPLE_DEFAULT)) {
-                            Logger::log(LogLevel::ERROR, "Write AAC audio sample failed");
-                        }
+                        int sampleTicks = 1024;
+                        MP4E_put_sample(muxer, audio_track_id, framePayload, payloadLen, sampleTicks, MP4E_SAMPLE_DEFAULT);
                         offset += frameLen;
                     }
                 } else {
                     if (audio_track_id < 0) {
+                        int bytesPerSample = audioChannels * 2;
+                        int pktSamples = (int)audioData.size() / (bytesPerSample > 0 ? bytesPerSample : 2);
                         MP4E_track_t audioTrack;
                         memset(&audioTrack, 0, sizeof(MP4E_track_t));
                         audioTrack.object_type_indication = MP4_OBJECT_TYPE_USER_PRIVATE;
                         strcpy((char*)audioTrack.language, "und");
                         audioTrack.track_media_kind = e_audio;
-                        audioTrack.time_scale = 90000;
-                        int sampleTicks = (audioSampleRate > 0) ? (90000 / 100) : (90000 / 100);
-                        audioTrack.default_duration = sampleTicks;
-                        audioTrack.u.a.channelcount = audioChannels;
-                        Logger::log(LogLevel::INFO, "Add audio track: scale=%d, default_duration=%d, isAac=%d", audioTrack.time_scale, audioTrack.default_duration, audioIsAac);
+                        audioTrack.time_scale = (audioSampleRate > 0) ? audioSampleRate : 16000;
+                        audioTrack.default_duration = (pktSamples > 0) ? pktSamples : (audioTrack.time_scale / 100);
+                        audioTrack.u.a.channelcount = audioChannels > 0 ? audioChannels : configuredAudioChannels;
                         audio_track_id = MP4E_add_track(muxer, &audioTrack);
                         if (audio_track_id < 0) {
-                            Logger::log(LogLevel::ERROR, "Add audio track failed: %d", audio_track_id);
-                        } else {
-                            Logger::log(LogLevel::INFO, "Add audio track success, track_id: %d", audio_track_id);
+                            continue;
                         }
                     }
-                    int audioFrameDuration = 90000 / 100;
-                    if (MP4E_STATUS_OK != MP4E_put_sample(muxer, audio_track_id, audioData.data(), static_cast<int>(audioData.size()), audioFrameDuration, MP4E_SAMPLE_DEFAULT)) {
-                        Logger::log(LogLevel::ERROR, "Write audio sample failed");
-                    }
+                    int bytesPerSample = audioChannels * 2;
+                    int pktSamples = (int)audioData.size() / (bytesPerSample > 0 ? bytesPerSample : 2);
+                    int audioFrameDuration = (pktSamples > 0) ? pktSamples : ((audioSampleRate > 0) ? (audioSampleRate / 100) : (16000 / 100));
+                    MP4E_put_sample(muxer, audio_track_id, audioData.data(), static_cast<int>(audioData.size()), audioFrameDuration, MP4E_SAMPLE_DEFAULT);
                 }
             }
         }
@@ -448,6 +479,85 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
         stream_->releaseFrame(frame);
     }
 
+    if (audioRecording) {
+        uint64_t videoEndMs = lastVideoTimestamp > 0 ? (uint64_t)(lastVideoTimestamp / 1000) : 0;
+        int waitLoops = 0;
+        while (audioTimestamp < videoEndMs && waitLoops < 50) {
+            QueuedAudioSample audioSample;
+            bool popped = false;
+            {
+                std::unique_lock<std::mutex> lock(audioDataMutex);
+                audioDataCond.wait_for(lock, std::chrono::milliseconds(10), [&]() { return !audioDataQueue.empty(); });
+                if (!audioDataQueue.empty()) {
+                    audioSample = audioDataQueue.front();
+                    audioDataQueue.pop();
+                    popped = true;
+                }
+            }
+            if (!popped) {
+                waitLoops++;
+                continue;
+            }
+            audioTimestamp = audioSample.timestamp;
+            const std::vector<uint8_t>& audioData = audioSample.data;
+            if (audioIsAac) {
+                size_t offset = 0;
+                while (offset + 7 <= audioData.size()) {
+                    const uint8_t* p = audioData.data() + offset;
+                    if (!(p[0] == 0xFF && (p[1] & 0xF0) == 0xF0)) break;
+                    int protection_absent = p[1] & 0x01;
+                    int headerLen = protection_absent ? 7 : 9;
+                    if (offset + headerLen >= audioData.size()) break;
+                    int frameLen = ((p[3] & 0x03) << 11) | (p[4] << 3) | ((p[5] & 0xE0) >> 5);
+                    if (frameLen <= headerLen || offset + frameLen > audioData.size()) break;
+                    const uint8_t* framePayload = p + headerLen;
+                    int payloadLen = frameLen - headerLen;
+                    MP4E_put_sample(muxer, audio_track_id, framePayload, payloadLen, 1024, MP4E_SAMPLE_DEFAULT);
+                    offset += frameLen;
+                }
+            } else {
+                int bytesPerSample = audioChannels * 2;
+                int pktSamples = (int)audioData.size() / (bytesPerSample > 0 ? bytesPerSample : 2);
+                int audioFrameDuration = (pktSamples > 0) ? pktSamples : ((audioSampleRate > 0) ? (audioSampleRate / 100) : (16000 / 100));
+                MP4E_put_sample(muxer, audio_track_id, audioData.data(), static_cast<int>(audioData.size()), audioFrameDuration, MP4E_SAMPLE_DEFAULT);
+            }
+        }
+        while (true) {
+            QueuedAudioSample audioSample;
+            bool popped = false;
+            {
+                std::lock_guard<std::mutex> lock(audioDataMutex);
+                if (!audioDataQueue.empty()) {
+                    audioSample = audioDataQueue.front();
+                    audioDataQueue.pop();
+                    popped = true;
+                }
+            }
+            if (!popped) break;
+            const std::vector<uint8_t>& audioData = audioSample.data;
+            if (audioIsAac) {
+                size_t offset = 0;
+                while (offset + 7 <= audioData.size()) {
+                    const uint8_t* p = audioData.data() + offset;
+                    if (!(p[0] == 0xFF && (p[1] & 0xF0) == 0xF0)) break;
+                    int protection_absent = p[1] & 0x01;
+                    int headerLen = protection_absent ? 7 : 9;
+                    if (offset + headerLen >= audioData.size()) break;
+                    int frameLen = ((p[3] & 0x03) << 11) | (p[4] << 3) | ((p[5] & 0xE0) >> 5);
+                    if (frameLen <= headerLen || offset + frameLen > audioData.size()) break;
+                    const uint8_t* framePayload = p + headerLen;
+                    int payloadLen = frameLen - headerLen;
+                    MP4E_put_sample(muxer, audio_track_id, framePayload, payloadLen, 1024, MP4E_SAMPLE_DEFAULT);
+                    offset += frameLen;
+                }
+            } else {
+                int bytesPerSample = audioChannels * 2;
+                int pktSamples = (int)audioData.size() / (bytesPerSample > 0 ? bytesPerSample : 2);
+                int audioFrameDuration = (pktSamples > 0) ? pktSamples : ((audioSampleRate > 0) ? (audioSampleRate / 100) : (16000 / 100));
+                MP4E_put_sample(muxer, audio_track_id, audioData.data(), static_cast<int>(audioData.size()), audioFrameDuration, MP4E_SAMPLE_DEFAULT);
+            }
+        }
+    }
     MP4E_close(muxer);
 	mp4_h26x_write_close(&mp4wr);
     long fileSize = ftell(fp);
@@ -513,7 +623,7 @@ bool VideoRecorder::initVideo()
     cfg.channel.stream_index = VIDEO_STREAM_ID;
     cfg.width = w;
     cfg.height = h;
-    cfg.fps_num = 15;
+    cfg.fps_num = vidParam ? vidParam->getFrameRate() : 30;
     cfg.fps_den = 1;
     cfg.rc_mode = hal::VideoRcMode::CBR;
     cfg.enable_ivdc = true;
@@ -593,45 +703,126 @@ bool VideoRecorder::initAudio()
     }
 
     try {
-        AudioDeviceType deviceType = audParam->getDeviceType();
+        #ifndef BUILD_FOR_SIMULATION
+        {
+            std::string checkCommand = "lsmod | grep audio";
+            if (Misc::syscall(checkCommand.c_str()) != 0) {
+                std::string command = "insmod /system/modules/audio/audio.ko";
+                if (audParam->getDeviceType() == AudioDeviceType::DMIC_IN) {
+                    command += " dmic_enable=1 dmic_gpio=1";
+                }
+                command += " spk_gpio=-1 spk_level=-1";
+                int ret = Misc::syscall(command.c_str(), 1000);
+                (void)ret;
+            }
+        }
+        #endif
         AudioCodecFormat codecFormat = audParam->getCodecFormat();
         audioIsAac = (codecFormat == AudioCodecFormat::AAC);
         audioDsiSet = false;
-        audioRecorder = std::make_shared<AudioRecorder>();
-        audioRecorder->setAudioParams(*audParam);
-        audioRecorder->setAudioDataCallback(staticAudioDataCallback, this);
-
-        if (!audioRecorder->start()) {
-            Logger::log(LogLevel::ERROR, "Start audio recorder failed");
-            audioRecorder.reset();
+        audio_ = hal::HalFactory::createAudio();
+        if (!audio_) {
             return false;
         }
-
-        int sampleRate = audParam->getSampleRateValue();
-        int channels = audParam->getChannelCount();
-        int bitDepth = audParam->getBitWidthValue();
-        
-        audioSampleRate = sampleRate;
-        audioChannels = channels;
+        if (!audio_->init()) {
+            audio_.reset();
+            return false;
+        }
+        audioStream_ = audio_->createAudioStream();
+        if (!audioStream_) {
+            audio_->exit();
+            audio_.reset();
+            return false;
+        }
+        hal::AudioStreamConfig cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        switch (codecFormat) {
+            case AudioCodecFormat::G711A: cfg.payload = hal::AudioPayloadType::G711A; break;
+            case AudioCodecFormat::G711U: cfg.payload = hal::AudioPayloadType::G711U; break;
+            case AudioCodecFormat::AAC:   cfg.payload = hal::AudioPayloadType::AAC;   break;
+            default:                      cfg.payload = hal::AudioPayloadType::PCM16; break;
+        }
+        cfg.channel.device_index = audParam->getDeviceId();
+        cfg.channel.channel_index = audParam->getChannelId();
+        cfg.sample_rate = audParam->getSampleRateValue();
+        cfg.channels = (audParam->getSoundMode() == AudioSoundMode::MONO) ? 1 : 2;
+        cfg.bit_width = audParam->getBitWidthValue();
+        cfg.num_per_frame = audParam->getNumPerFrame();
+        cfg.frame_num = audParam->getFrameNum();
+        cfg.volume = audParam->getVolume();
+        cfg.gain = audParam->getGain();
+        cfg.bitrate_per_channel = audParam->getAacBitRatePerChannel();
+        AacQualityProfile ap = audParam->getAacQualityProfile();
+        cfg.quality = (ap == AacQualityProfile::ENVIRONMENT) ? 1 : ((ap == AacQualityProfile::MUSIC_HIGH) ? 2 : 0);
+        cfg.input = (audParam->getDeviceType() == AudioDeviceType::DMIC_IN) ? hal::AudioInputType::DMIC : hal::AudioInputType::AI;
+        if (!audioStream_->configure(cfg)) {
+            audioStream_.reset();
+            audio_->exit();
+            audio_.reset();
+            return false;
+        }
+        if (!audioStream_->start()) {
+            audioStream_.reset();
+            audio_->exit();
+            audio_.reset();
+            return false;
+        }
+        audioSampleRate = cfg.sample_rate;
+        audioChannels = cfg.channels;
         audioTimestamp = 0;
-
+        audioCurrentTimestamp = 0;
+        audioThreadRunning = true;
+        try {
+            audioThread = std::make_shared<std::thread>(&VideoRecorder::audioCaptureLoop, this);
+        } catch (...) {
+            audioThreadRunning = false;
+            audioStream_->stop();
+            audioStream_.reset();
+            audio_->exit();
+            audio_.reset();
+            return false;
+        }
+        int bitDepth = audParam->getBitWidthValue();
         audioRecording = true;
-        Logger::log(LogLevel::INFO, "Audio recorder init success: sampleRate=%d, channels=%d, bitDepth=%d", 
+        Logger::log(LogLevel::INFO, "Audio init success: sampleRate=%d, channels=%d, bitDepth=%d",
                    audioSampleRate, audioChannels, bitDepth);
         return true;
     } catch (const std::exception& e) {
         Logger::log(LogLevel::ERROR, "Init audio failed: %s", e.what());
-        audioRecorder.reset();
+        audioThreadRunning = false;
+        if (audioThread) {
+            try { audioThread->join(); } catch (...) {}
+            audioThread.reset();
+        }
+        if (audioStream_) {
+            audioStream_->stop();
+            audioStream_.reset();
+        }
+        if (audio_) {
+            audio_->exit();
+            audio_.reset();
+        }
         return false;
     }
 }
 
 bool VideoRecorder::uninitAudio()
 {
-    if (audioRecorder) {
+    if (audioThread || audioStream_ || audio_) {
         try {
-            audioRecorder->stop();
-            audioRecorder.reset();
+            audioThreadRunning = false;
+            if (audioThread) {
+                audioThread->join();
+                audioThread.reset();
+            }
+            if (audioStream_) {
+                audioStream_->stop();
+                audioStream_.reset();
+            }
+            if (audio_) {
+                audio_->exit();
+                audio_.reset();
+            }
             audioRecording = false;
             
             // 清空音频数据队列
@@ -642,7 +833,7 @@ bool VideoRecorder::uninitAudio()
                 }
             }
             
-            Logger::log(LogLevel::INFO, "Audio recorder uninit success");
+            Logger::log(LogLevel::INFO, "Audio uninit success");
         } catch (const std::exception& e) {
             Logger::log(LogLevel::ERROR, "Uninit audio failed: %s", e.what());
             return false;
