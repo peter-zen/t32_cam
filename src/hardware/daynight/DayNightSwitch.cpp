@@ -6,7 +6,7 @@
 #include "DayNightSwitch.h"
 #include "Logger.h"
 #include "GPIO.h"
-#include "HalFactory.h"
+#include "HalProvider.h"
 #include "IVideo.h"
 #include "Common.h"
 #include "DeviceConfig.h"
@@ -170,7 +170,7 @@ bool DayNightSwitch::controlISP(DayNightState state)
         state = DayNightState::DAY;
     }
  
-    auto cfg = hal::HalFactory::createVideoControl();
+    auto cfg = hal::HalProvider::createVideoControl();
     if (!cfg) return false;
     hal::ISPDaynightMode current;
     if (!cfg->getISPMode(current)) return false;

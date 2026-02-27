@@ -7,7 +7,7 @@
 #include <thread>
 #include <functional>
 #include "IVideo.h"
-#include "HalFactory.h"
+#include "HalProvider.h"
 
 #define SNAP_SENSOR_ID  0
 #define SNAP_STREAM_ID  0

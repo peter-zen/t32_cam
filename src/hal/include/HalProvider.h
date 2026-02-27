@@ -3,10 +3,8 @@
 #include "IVideo.h"
 #include "IAudio.h"
 #include "IGpio.h"
-
 namespace hal {
-
-class HalFactory {
+class HalProvider {
 public:
     static std::shared_ptr<IVideo> createVideo();
     static std::shared_ptr<IAudio> createAudio();

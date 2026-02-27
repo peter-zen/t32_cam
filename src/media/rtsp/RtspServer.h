@@ -10,7 +10,7 @@
 #include <mutex>
 #include <condition_variable>
 #include "IVideo.h"
-#include "HalFactory.h"
+#include "HalProvider.h"
 #include "AudioRecorder.h"
 #include "AudioParams.h"
 

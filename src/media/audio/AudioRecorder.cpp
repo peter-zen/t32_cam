@@ -1,6 +1,6 @@
 #include "AudioRecorder.h"
 #include "IAudio.h"
-#include "HalFactory.h"
+#include "HalProvider.h"
 #include "Logger.h"
 #include "Misc.h"
 #include <stdint.h>
@@ -83,7 +83,7 @@ bool AudioRecorder::start() {
     } else {
         recordFile = nullptr;
     }
-    audio_ = hal::HalFactory::createAudio();
+    audio_ = hal::HalProvider::createAudio();
     if (!audio_) {
         if (recordFile) {
             fclose(recordFile);

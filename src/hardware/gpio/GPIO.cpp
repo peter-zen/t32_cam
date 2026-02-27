@@ -11,7 +11,7 @@
 #include "utils/string/StringConvert.h"
 
 #include "IGpio.h"
-#include "HalFactory.h"
+#include "HalProvider.h"
 
 // GPIO sysfs基本路径 (仅真机模式使用)
 #ifndef BUILD_FOR_SIMULATION
@@ -26,7 +26,7 @@ GPIO::GPIO(int num) :
     m_currentDutyCycle(0.5)
 {
     m_gpioPath = "";
-    m_halGpio = hal::HalFactory::createGpio();
+    m_halGpio = hal::HalProvider::createGpio();
     
     // 初始化成员变量
     m_blinkActive = false;

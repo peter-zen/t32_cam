@@ -600,7 +600,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
 
 bool VideoRecorder::initVideo()
 {
-    video_ = hal::HalFactory::createVideo();
+    video_ = hal::HalProvider::createVideo();
     if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
         return false;
@@ -720,7 +720,7 @@ bool VideoRecorder::initAudio()
         AudioCodecFormat codecFormat = audParam->getCodecFormat();
         audioIsAac = (codecFormat == AudioCodecFormat::AAC);
         audioDsiSet = false;
-        audio_ = hal::HalFactory::createAudio();
+        audio_ = hal::HalProvider::createAudio();
         if (!audio_) {
             return false;
         }

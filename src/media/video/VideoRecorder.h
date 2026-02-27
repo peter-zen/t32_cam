@@ -14,7 +14,7 @@
 #include "AudioParams.h"
 #include "IAudio.h"
 #include "IVideo.h"
-#include "HalFactory.h"
+#include "HalProvider.h"
 
 #define VIDEO_SENSOR_ID 0
 #define VIDEO_STREAM_ID 0

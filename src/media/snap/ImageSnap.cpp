@@ -15,7 +15,7 @@
 #include <thread>
 #include "DayNightSwitch.h"
 #include "MetadataDao.h"
-#include "HalFactory.h"
+#include "HalProvider.h"
 #include "IVideo.h"
 
 using namespace media;
@@ -72,7 +72,7 @@ bool ImageSnap::setParams(const ImageSnapParams& params) {
 
 bool ImageSnap::initialize()
 {
-    video_ = hal::HalFactory::createVideo();
+    video_ = hal::HalProvider::createVideo();
     if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
         return false;

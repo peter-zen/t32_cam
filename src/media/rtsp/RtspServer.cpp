@@ -16,7 +16,7 @@
 #include "rtsp.h"
 #include "DayNightSwitch.h"
 #include "IVideo.h"
-#include "HalFactory.h"
+#include "HalProvider.h"
 
 using namespace media;
 
@@ -521,7 +521,7 @@ int RtspServer::onSessionPlay(void **data, size_t *size, uint64_t *timestamp)
 
 bool RtspServer::initVideo()
 {
-    video_ = hal::HalFactory::createVideo();
+    video_ = hal::HalProvider::createVideo();
     if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
         return false;
