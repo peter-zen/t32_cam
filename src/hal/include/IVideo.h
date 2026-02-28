@@ -117,6 +117,7 @@ struct VideoEncodedFrame {
      // 释放 getFrame 获取的资源（如需）
      virtual void releaseFrame(VideoEncodedFrame& out) = 0;
      virtual bool getInfo(VideoStreamInfo& info) = 0;
+     virtual bool requestIDR() = 0;
  };
  
 // 视频子系统抽象接口，负责底层传感器、帧源与编码资源的生命周期

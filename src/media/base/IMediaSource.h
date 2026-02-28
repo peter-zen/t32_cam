@@ -25,6 +25,7 @@ public:
     virtual int releaseData(void** data, size_t* size, uint64_t* timestamp) = 0;
     
     virtual void reset() {}
+    virtual bool requestIDR() { return false; }
     virtual MediaType getMediaType() const = 0;
     
     virtual MediaParams getParams() const = 0;

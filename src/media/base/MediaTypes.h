@@ -21,9 +21,10 @@ enum class VideoCodec {
 };
 
 enum class AudioCodec {
-    PCMU = 0,  
-    PCMA = 1,      
-    L16 = 2       
+    PCMU = 0,
+    PCMA = 1,
+    L16 = 2,
+    AAC = 3
 };
 
 struct MediaParams {
@@ -31,6 +32,7 @@ struct MediaParams {
     int sampleRate = 16000;
     int channels = 1;
     int bitsPerSample = 16;
+    AudioCodec audioCodec = AudioCodec::PCMA;
     VideoCodec videoCodec = VideoCodec::H264;
     int videoWidth = 1920;
     int videoHeight = 1080;

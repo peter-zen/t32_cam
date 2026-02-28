@@ -17,10 +17,11 @@
 #include "DayNightSwitch.h"
 #include "IVideo.h"
 #include "HalProvider.h"
+#include "MediaSession.h"
+#include "VideoSource.h"
+#include "AudioSource.h"
 
 using namespace media;
-
-frame_fifo_t RtspServer::frame_fifo = {0};
 
 bool RtspServer::extractSpsPps(const uint8_t* h264Data, size_t dataSize, std::vector<uint8_t>& sps, std::vector<uint8_t>& pps)
 {
@@ -116,7 +117,6 @@ bool RtspServer::extractSpsPps(const uint8_t* h264Data, size_t dataSize, std::ve
     // Return true if at least one of SPS or PPS was found
     return foundSps || foundPps;
 };
-size_t RtspServer::frame_buffer_size = 0;
 std::function<void(void)> RtspServer::onSessionClosedCallback = nullptr;
 using namespace media;
 
@@ -183,8 +183,8 @@ bool RtspServer::stop()
 		this->pullFrameThread = nullptr;
 	}
 
-    if (this->stream_) {
-        this->stream_->stop();
+    if (this->videoSession_) {
+        this->videoSession_->stop();
     }
     uninitAudio();
 
@@ -207,14 +207,12 @@ bool RtspServer::start()
 
 	//day-night switch
 	daynight_switch(true);
-
-    /* Step.6 Get stream */
-	this->pullFrameThreadRun = true;
-	this->pullFrameThread = std::make_shared<std::thread>([this]() {
+    this->pullFrameThreadRun = true;
+    this->pullFrameThread = std::make_shared<std::thread>([this]() {
         start_internal();
     });
 
-	return true;
+    return true;
 }
 
 int RtspServer::onSessionClosed(void **data, size_t *size, uint64_t *timestamp)
@@ -223,7 +221,6 @@ int RtspServer::onSessionClosed(void **data, size_t *size, uint64_t *timestamp)
     RtspServer *server = RtspServer::getInstance().get();
     if (server) {
         server->uninitAudio();
-        server->audioRecording_ = false;
         server->streamingEnabled_ = false;
     }
 	if (onSessionClosedCallback) {
@@ -234,280 +231,120 @@ int RtspServer::onSessionClosed(void **data, size_t *size, uint64_t *timestamp)
 
 int RtspServer::pullFrame(void **data, size_t *size, uint64_t *timestamp)
 {
-    if (frame_fifo.count == 0) {
+    auto instance = RtspServer::getInstance();
+    if (!instance || !instance->videoSession_) {
         return -1;
     }
-	
-    frame_buffer_t *frame = &frame_fifo.frames[frame_fifo.head];
-    *data = frame->buffer;
-    *size = frame->used_size;
-    if (timestamp) {
-        *timestamp = frame->pts;
-    }
-
-	Logger::log(LogLevel::DEBUG, "Frame retrieved from FIFO, remaining: %d", frame_fifo.count);
-
-    return 0;
+    return MediaSession::pullFrame(data, size, timestamp, instance->videoSession_.get());
 }
 
 int RtspServer::releaseFrame(void **data, size_t *size, uint64_t *timestamp)
 {
-    if (frame_fifo.count == 0) {
+    auto instance = RtspServer::getInstance();
+    if (!instance || !instance->videoSession_) {
         return -1;
     }
-
-	{
-		std::unique_lock<std::mutex> lock(frame_fifo.mutex);
-		frame_fifo.head = (frame_fifo.head + 1) % FIFO_MAX_FRAMES;
-		frame_fifo.count--;
-	}
-
-    frame_fifo.not_full.notify_one();
-
-    return 0;
+    return MediaSession::releaseFrame(data, size, timestamp, instance->videoSession_.get());
 }
 
 int RtspServer::pullAudioFrame(void **data, size_t *size, uint64_t *timestamp)
 {
-    RtspServer *server = RtspServer::getInstance().get();
-    if (!server) return -1;
-    if (server->audioRecorder_ && !server->audioRecording_) {
-        if (server->audioRecorder_->start()) {
-            server->audioRecording_ = true;
-        } else {
-            return -1;
-        }
-    }
-    std::lock_guard<std::mutex> lock(server->audioDataMutex_);
-    if (server->audioDataQueue_.empty()) {
+    auto instance = RtspServer::getInstance();
+    if (!instance || !instance->audioSession_) {
         return -1;
     }
-    const AudioQueued &front = server->audioDataQueue_.front();
-    server->audioWorkBuf_.assign(front.data.begin(), front.data.end());
-    server->audioDataQueue_.pop();
-    *data = server->audioWorkBuf_.empty() ? nullptr : server->audioWorkBuf_.data();
-    *size = server->audioWorkBuf_.size();
-    if (timestamp) {
-        *timestamp = front.timestamp_ms;
-    }
-    return (*data && *size) ? 0 : -1;
+    return MediaSession::pullFrame(data, size, timestamp, instance->audioSession_.get());
 }
 
 int RtspServer::releaseAudioFrame(void **data, size_t *size, uint64_t *timestamp)
 {
-    (void)timestamp;
-    RtspServer *server = RtspServer::getInstance().get();
-    if (!server) return -1;
-    if (data) *data = nullptr;
-    if (size) *size = 0;
-    return 0;
-}
-
-void RtspServer::staticAudioDataCallback(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame, void* userData)
-{
-    RtspServer *server = static_cast<RtspServer *>(userData);
-    if (!server || !data || size == 0) {
-        return;
+    auto instance = RtspServer::getInstance();
+    if (!instance || !instance->audioSession_) {
+        return -1;
     }
-    std::vector<uint8_t> buf(size);
-    memcpy(buf.data(), data, size);
-    {
-        std::lock_guard<std::mutex> lock(server->audioDataMutex_);
-        server->audioDataQueue_.push(AudioQueued{std::move(buf), timestamp});
-    }
+    return MediaSession::releaseFrame(data, size, timestamp, instance->audioSession_.get());
 }
 
 bool RtspServer::start_internal()
 {
-    if (!stream_) {
-        Logger::log(LogLevel::ERROR, "HAL stream is not ready");
+    if (!videoSession_) {
+        Logger::log(LogLevel::ERROR, "Video session is not ready");
         return false;
     }
-    hal::VideoStreamInfo info{};
-    if (!stream_->getInfo(info)) {
-        Logger::log(LogLevel::WARNING, "stream info: query failed");
-    }
-    int fps = (info.fps_den > 0) ? (info.fps_num / info.fps_den) : 15;
+    MediaParams vParams = videoSession_->getParams();
+    int fps = vParams.videoFrameRate;
     struct rtsp_server_param rtsp_server_param = {0};
     rtsp_server_param.port = 8554;
     Logger::log(LogLevel::DEBUG, "rtsp_server_param.port = %d", rtsp_server_param.port);
-    //video
     rtsp_server_param.video_enable = 1;
     rtsp_server_param.video_fps = fps;
-	if (info.payload == hal::VideoPayloadType::H264) {
+    if (vParams.videoCodec == VideoCodec::H264) {
         rtsp_server_param.video_codec = CODEC_H264;
-	} else if (info.payload == hal::VideoPayloadType::H265) {
-	    rtsp_server_param.video_codec = CODEC_H265;
-	}
+    } else if (vParams.videoCodec == VideoCodec::H265) {
+        rtsp_server_param.video_codec = CODEC_H265;
+    }
     rtsp_server_param.video_sample_rate = 90000;
     rtsp_server_param.video_stream_id = 1;
-    rtsp_server_param.audio_enable = (enableAudio_ && audioRecorder_) ? 1 : 0;
+    rtsp_server_param.audio_enable = (enableAudio_ && audioSession_) ? 1 : 0;
     rtsp_server_param.audio_sample_rate = audioSampleRate_;
     rtsp_server_param.audio_stream_id = 0;
     rtsp_server_param.audio_samples_per_packet = audioNumPerFrame_;
-    rtsp_server_param.audio_codec = AUDIO_CODEC_PCMU;
+    rtsp_server_param.audio_codec = AUDIO_CODEC_PCMA;
     rtsp_server_param.audio_channels = 1;
+
+    std::vector<uint8_t> pre_sps;
+    std::vector<uint8_t> pre_pps;
+    if (videoSession_ && videoSession_->start()) {
+        Logger::log(LogLevel::INFO, "Preopen video session for SDP");
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (!alreadyGetSpsPps && std::chrono::steady_clock::now() < deadline) {
+            void* d = nullptr;
+            size_t sz = 0;
+            uint64_t ts = 0;
+            int r = MediaSession::pullFrame(&d, &sz, &ts, videoSession_.get());
+            if (r == 0 && d && sz > 0) {
+                std::vector<uint8_t> sps, pps;
+                if (extractSpsPps(static_cast<uint8_t*>(d), sz, sps, pps) && !sps.empty() && !pps.empty()) {
+                    alreadyGetSpsPps = true;
+                    pre_sps = std::move(sps);
+                    pre_pps = std::move(pps);
+                    Logger::log(LogLevel::INFO, "Preopen extracted SPS=%zu, PPS=%zu", pre_sps.size(), pre_pps.size());
+                }
+                MediaSession::releaseFrame(&d, &sz, nullptr, videoSession_.get());
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+        videoSession_->stop();
+        Logger::log(LogLevel::INFO, "Preopen video session finished");
+    }
+
     this->rtsp_server = create_server(&rtsp_server_param);
     if (!this->rtsp_server) {
-        stream_->stop();
         return false;
     }
-	
-    frame_fifo.head = 0;
-    frame_fifo.tail = 0;
-    frame_fifo.count = 0;
 
-    for (int i = 0; i < FIFO_MAX_FRAMES; i++) {
-        frame_fifo.frames[i].buffer = malloc(DEFAULT_FRAME_BUFFER_SIZE);
-        if (!frame_fifo.frames[i].buffer) {
-            Logger::log(LogLevel::ERROR, "Failed to preallocate frame buffer %d", i);
-            for (int j = 0; j < i; j++) {
-                free(frame_fifo.frames[j].buffer);
-                frame_fifo.frames[j].buffer = nullptr;
-            }
-            stream_->stop();
-            return false;
-        }
-        frame_fifo.frames[i].buffer_size = DEFAULT_FRAME_BUFFER_SIZE;
+    if (alreadyGetSpsPps && !pre_sps.empty() && !pre_pps.empty()) {
+        set_server_param(this->rtsp_server, RTSP_SERVER_PARAM_VIDEO_SPS, pre_sps.data(), pre_sps.size());
+        set_server_param(this->rtsp_server, RTSP_SERVER_PARAM_VIDEO_PPS, pre_pps.data(), pre_pps.size());
+        Logger::log(LogLevel::INFO, "Injected SPS/PPS to RTSP: sps=%zu, pps=%zu", pre_sps.size(), pre_pps.size());
     }
-    Logger::log(LogLevel::DEBUG, "Preallocated %d frame buffers of size %zu bytes", FIFO_MAX_FRAMES, DEFAULT_FRAME_BUFFER_SIZE);
 
     register_function(this->rtsp_server, FUNC_ID_PULL_VIDEO_FRAME, RtspServer::pullFrame);
-	register_function(this->rtsp_server, FUNC_ID_RELEASE_VIDEO_FRAME, RtspServer::releaseFrame);
+    register_function(this->rtsp_server, FUNC_ID_RELEASE_VIDEO_FRAME, RtspServer::releaseFrame);
     register_function(this->rtsp_server, FUNC_ID_PULL_AUDIO_FRAME, RtspServer::pullAudioFrame);
     register_function(this->rtsp_server, FUNC_ID_RELEASE_AUDIO_FRAME, RtspServer::releaseAudioFrame);
-	register_function(this->rtsp_server, FUNC_ID_ON_SESSION_CLOSED, RtspServer::onSessionClosed);
+    register_function(this->rtsp_server, FUNC_ID_ON_SESSION_CLOSED, RtspServer::onSessionClosed);
     register_function(this->rtsp_server, FUNC_ID_ON_SESSION_PLAY, RtspServer::onSessionPlay);
     start_server(this->rtsp_server);
-	
-    bool streamStarted = false;
+    Logger::log(LogLevel::INFO, "RTSP server started on port %d", rtsp_server_param.port);
+
     while (this->pullFrameThreadRun) {
-        if (!streamingEnabled_) {
-            if (streamStarted) {
-                stream_->stop();
-                streamStarted = false;
-                {
-                    std::lock_guard<std::mutex> lock(frame_fifo.mutex);
-                    frame_fifo.head = 0;
-                    frame_fifo.tail = 0;
-                    frame_fifo.count = 0;
-                    frame_fifo.not_empty.notify_all();
-                    frame_fifo.not_full.notify_all();
-                }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
-        if (!streamStarted) {
-            if (!stream_->start()) {
-                Logger::log(LogLevel::ERROR, "Start HAL stream failed");
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                continue;
-            }
-            streamStarted = true;
-        }
-    	/* Polling stream, set timeout as 1000msec */
-        if (!stream_->polling(1000)) {
-            Logger::log(LogLevel::ERROR, "stream_->polling(1000) timeout");
-            continue;
-        }
-		
-        hal::VideoEncodedFrame frame;
-        if (!stream_->getFrame(frame)) {
-            Logger::log(LogLevel::ERROR, "getFrame failed");
-            continue;
-        }
-
-        size_t total_length = 0;
-        for (int i = 0; i < (int)frame.piece_count; i++) {
-            total_length += frame.pieces[i].size;
-        }
-		
-        while (frame_fifo.count >= FIFO_MAX_FRAMES) {
-            Logger::log(LogLevel::DEBUG, "Frame FIFO full, dropping oldest to reduce latency");
-            std::unique_lock<std::mutex> lock(frame_fifo.mutex);
-            frame_fifo.head = (frame_fifo.head + 1) % FIFO_MAX_FRAMES;
-            frame_fifo.count--;
-        }
-
-        int current_tail = frame_fifo.tail;
-        void *frame_buffer = frame_fifo.frames[current_tail].buffer;
-        size_t buffer_size = frame_fifo.frames[current_tail].buffer_size;
-
-        if (total_length > buffer_size) {
-            Logger::log(LogLevel::INFO, "Frame size %zu exceeds buffer size %zu, reallocating", total_length, buffer_size);
-            void *new_buffer = realloc(frame_buffer, total_length);
-            if (!new_buffer) {
-                Logger::log(LogLevel::ERROR, "realloc failed for frame data");
-                stream_->releaseFrame(frame);
-                continue;
-            }
-            frame_buffer = new_buffer;
-			{
-				std::unique_lock<std::mutex> lock(frame_fifo.mutex);
-				frame_fifo.frames[current_tail].buffer = frame_buffer;
-				frame_fifo.frames[current_tail].buffer_size = total_length;
-			}
-        }
-		
-        size_t offset = 0;
-        for (int i = 0; i < (int)frame.piece_count; i++) {
-            size_t datasize = frame.pieces[i].size;
-            uint8_t *inputData = (uint8_t*)frame.pieces[i].data;
-            memcpy((uint8_t*)frame_buffer + offset, inputData, datasize);
-            offset += datasize;
-        }
-		frame_fifo.frames[current_tail].used_size = total_length;
-        frame_fifo.frames[current_tail].pts = frame.pts;
-#if PPS_SPS_IN_SDP
-		std::vector<uint8_t> sps, pps;
-		if (!alreadyGetSpsPps && info.payload == hal::VideoPayloadType::H264 && extractSpsPps(static_cast<uint8_t*>(frame_buffer), total_length, sps, pps)) {
-			alreadyGetSpsPps = true;
-			uint8_t *sps_data = (uint8_t*)malloc(sps.size());
-			uint8_t *pps_data = (uint8_t*)malloc(pps.size());
-			for (int i=0; i < (int)sps.size(); i++) {
-				sps_data[i] = sps[i];
-				Logger::log(LogLevel::DEBUG, "sps_data[%d] = 0x%02x", i, sps_data[i]);
-			}
-			for (int i=0; i < (int)pps.size(); i++) {
-				pps_data[i] = pps[i];
-				Logger::log(LogLevel::DEBUG, "pps_data[%d] = 0x%02x", i, pps_data[i]);
-			}
-			set_server_param(this->rtsp_server, RTSP_SERVER_PARAM_VIDEO_SPS, sps_data, sps.size());
-			set_server_param(this->rtsp_server, RTSP_SERVER_PARAM_VIDEO_PPS, pps_data, pps.size());
-		}
-#endif
-		{
-			std::unique_lock<std::mutex> lock(frame_fifo.mutex);
-			frame_fifo.tail = (frame_fifo.tail + 1) % FIFO_MAX_FRAMES;
-			frame_fifo.count++;
-		}
-
-        Logger::log(LogLevel::DEBUG, "Frame added to FIFO, count: %d", frame_fifo.count);
-
-        frame_fifo.not_empty.notify_one();
-        stream_->releaseFrame(frame);
-    }
-exit_loop:
-	
-    stream_->stop();
-
-    {
-        std::lock_guard<std::mutex> lock(frame_fifo.mutex);
-        for (int i = 0; i < FIFO_MAX_FRAMES; i++) {
-            if (frame_fifo.frames[i].buffer) {
-                free(frame_fifo.frames[i].buffer);
-                frame_fifo.frames[i].buffer = nullptr;
-            }
-        }
-        frame_fifo.head = 0;
-        frame_fifo.tail = 0;
-        frame_fifo.count = 0;
-        frame_fifo.not_empty.notify_all();
-        frame_fifo.not_full.notify_all();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
     return true;
+
 }
 
 int RtspServer::onSessionPlay(void **data, size_t *size, uint64_t *timestamp)
@@ -515,23 +352,33 @@ int RtspServer::onSessionPlay(void **data, size_t *size, uint64_t *timestamp)
     RtspServer *server = RtspServer::getInstance().get();
     if (server) {
         server->streamingEnabled_ = true;
+        if (server->videoSession_ && !server->videoSession_->isRunning()) {
+            server->videoSession_->start();
+            Logger::log(LogLevel::INFO, "onSessionPlay: video session started");
+            server->videoSession_->requestIDR();
+            Logger::log(LogLevel::INFO, "onSessionPlay: requested IDR");
+        }
+        if (server->audioSession_ && !server->audioSession_->isRunning()) {
+            server->audioSession_->start();
+            Logger::log(LogLevel::INFO, "onSessionPlay: audio session started");
+        }
     }
     return 0;
 }
 
 bool RtspServer::initVideo()
 {
-    video_ = hal::HalProvider::createVideo();
-    if (!video_) {
+    auto video = hal::HalProvider::createVideo();
+    if (!video) {
         Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
         return false;
     }
-    if (!video_->init()) {
+    if (!video->init()) {
         Logger::log(LogLevel::ERROR, "initialize: video init failed");
         return false;
     }
-    stream_ = video_->createVideoStream();
-    if (!stream_) {
+    auto stream = video->createVideoStream();
+    if (!stream) {
         Logger::log(LogLevel::ERROR, "initialize: createVideoStream failed");
         return false;
     }
@@ -546,21 +393,21 @@ bool RtspServer::initVideo()
     cfg.fps_den = 1;
     cfg.rc_mode = hal::VideoRcMode::CBR;
     cfg.enable_ivdc = true;
-    if (!stream_->configure(cfg)) {
+    if (!stream->configure(cfg)) {
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
         return false;
     }
+    auto videoSource = std::make_shared<VideoSource>(stream);
+    videoSession_ = std::make_shared<MediaSession>(videoSource, 60);
     return true;
 }
 
 bool RtspServer::uninitVideo(void)
 {
     if (initialized) {
-        if (stream_) {
-            stream_->stop();
-        }
-        if (video_) {
-            video_->exit();
+        if (videoSession_) {
+            videoSession_->stop();
+            videoSession_.reset();
         }
     }
     return true;
@@ -568,35 +415,49 @@ bool RtspServer::uninitVideo(void)
 
 bool RtspServer::initAudio()
 {
-    AudioParams ap;
-    ap.setDeviceType(AudioDeviceType::AUDIO_IN);
-    ap.setDeviceId(1);  
-    ap.setChannelId(0);
-    ap.setVolume(80);    
-    ap.setGain(28);      
-    ap.setCodecFormat(AudioCodecFormat::G711U);
-    ap.setSampleRate(AudioSampleRate::SR_16000);
-    ap.setSoundMode(AudioSoundMode::MONO);
-    audioSampleRate_ = ap.getSampleRateValue();
-    audioNumPerFrame_ = ap.getNumPerFrame();
-    audioRecorder_ = std::make_shared<AudioRecorder>();
-    audioRecorder_->setAudioParams(ap);
-    audioRecorder_->setAudioDataCallback(RtspServer::staticAudioDataCallback, this);
-    audioRecording_ = false;
+    auto audio = hal::HalProvider::createAudio();
+    if (!audio) {
+        return false;
+    }
+    if (!audio->init()) {
+        return false;
+    }
+    auto audioStream = audio->createAudioStream();
+    if (!audioStream) {
+        audio->exit();
+        return false;
+    }
+    hal::AudioStreamConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.payload = hal::AudioPayloadType::G711A; // 使用 PCMA (G.711A-law) 编码，8000Hz 是最通用的配置
+    cfg.channel.device_index = 1;
+    cfg.channel.channel_index = 0;
+    cfg.sample_rate = 8000;
+    cfg.channels = 1;
+    cfg.bit_width = 16;
+    cfg.num_per_frame = 320; // 20ms @ 8000Hz
+    cfg.frame_num = 10;
+    cfg.volume = 80;
+    cfg.gain = 28;
+    cfg.bitrate_per_channel = 64000; // 8kHz * 8bit = 64kbps
+    cfg.quality = 0;
+    cfg.input = hal::AudioInputType::AI;
+    if (!audioStream->configure(cfg)) {
+        audio->exit();
+        return false;
+    }
+    audioSampleRate_ = cfg.sample_rate;
+    audioNumPerFrame_ = cfg.num_per_frame;
+    auto audioSource = std::make_shared<AudioSource>(audioStream);
+    audioSession_ = std::make_shared<MediaSession>(audioSource, 80);
     return true;
 }
 
 bool RtspServer::uninitAudio()
 {
-    if (audioRecorder_) {
-        audioRecorder_->stop();
-        audioRecorder_.reset();
-    }
-    {
-        std::lock_guard<std::mutex> lock(audioDataMutex_);
-        while (!audioDataQueue_.empty()) {
-            audioDataQueue_.pop();
-        }
+    if (audioSession_) {
+        audioSession_->stop();
+        audioSession_.reset();
     }
 
     return true;

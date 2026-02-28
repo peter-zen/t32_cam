@@ -1,6 +1,9 @@
 # Find source files in the current directory
 file(GLOB SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/RtspServer.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/MediaSession.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/VideoSource.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/AudioSource.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/rtsp.c"
  )
 

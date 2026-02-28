@@ -951,6 +951,10 @@ bool IngenicVideoStream::getInfo(VideoStreamInfo& info) {
     }
     return true;
 }
+bool IngenicVideoStream::requestIDR() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return IMP_Encoder_RequestIDR(channel_id_) == 0;
+}
 IngenicVideo::IngenicVideo() : direct_switch_(0), gosd_enable_(0) {
 
 }

@@ -66,6 +66,11 @@ bool SimAudioStream::start() {
             } else if (cfg_.payload == AudioPayloadType::G711U) {
                 std::string name = pick("g711u");
                 if (!name.empty()) file_path_ = base + "/" + name;
+            } else if (cfg_.payload == AudioPayloadType::PCM16) {
+                // PCM16 fallback to G711U file if no pcm file is configured
+                std::string name = pick("pcm");
+                if (name.empty()) name = pick("g711u");
+                if (!name.empty()) file_path_ = base + "/" + name;
             } else {
                 file_path_.clear();
             }

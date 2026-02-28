@@ -136,6 +136,7 @@ typedef struct {
     uint64_t base_capture_us;
     uint32_t base_rtp_ts;
     bool first_frame;
+    bool need_idr;
     uint8_t *current_frame_data;
     size_t current_frame_size;
     uint64_t last_capture_us;
@@ -252,6 +253,9 @@ Client_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     (void)req;
 
     struct rtsp_server_param rtsp_param = self->peer->param;
+    elog_i(RTSP_LOG_TAG, "DESCRIBE: video=%d sps_len=%zu pps_len=%zu audio=%d asr=%d",
+           rtsp_param.video_enable, rtsp_param.video_sps_len, rtsp_param.video_pps_len,
+           rtsp_param.audio_enable, rtsp_param.audio_sample_rate);
 
     char sdp_buf[1024] = {0};
     SmolRTSP_Writer sdp = smolrtsp_string_writer(sdp_buf);
@@ -377,6 +381,7 @@ Client_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     } else {
         stream->session_id = (uint64_t)rand();
     }
+    elog_i(RTSP_LOG_TAG, "SETUP: stream_id=%zu session_id=%" PRIu64, stream_id, stream->session_id);
 
     if (rtsp_param.audio_stream_id == stream_id) {
         int audio_pt;
@@ -389,9 +394,11 @@ Client_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         }
         stream->transport = SmolRTSP_RtpTransport_new(
             transport, audio_pt, rtsp_param.audio_sample_rate);
+        elog_i(RTSP_LOG_TAG, "SETUP: audio transport created pt=%d sr=%d", audio_pt, rtsp_param.audio_sample_rate);
     } else {
         stream->transport = SmolRTSP_RtpTransport_new(
             transport, VIDEO_PAYLOAD_TYPE, rtsp_param.video_sample_rate);
+        elog_i(RTSP_LOG_TAG, "SETUP: video transport created pt=%d sr=%d", VIDEO_PAYLOAD_TYPE, rtsp_param.video_sample_rate);
     }
 
     smolrtsp_header(
@@ -413,6 +420,7 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         return;
     }
     struct rtsp_server_param rtsp_param = self->peer->param;
+    elog_i(RTSP_LOG_TAG, "PLAY: session=%" PRIu64, session_id);
 
     if (self->peer && self->peer->funcs[FUNC_ID_ON_SESSION_PLAY]) {
         self->peer->funcs[FUNC_ID_ON_SESSION_PLAY](NULL, NULL, NULL);
@@ -422,6 +430,7 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     for (size_t i = 0; i < MAX_STREAMS; i++) {
         if (self->streams[i].session_id == session_id) {
             if (rtsp_param.audio_stream_id == i) {
+                elog_i(RTSP_LOG_TAG, "PLAY: select audio stream_id=%zu", i);
                 self->streams[i].ctx = play_audio(
                     rtsp_param.audio_sample_rate, rtsp_param.audio_samples_per_packet,
                     rtsp_param.audio_codec, rtsp_param.audio_channels,
@@ -430,6 +439,7 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
                     self->base, self->bev, self->streams[i].transport,
                     &self->streams[i].ev, &self->streams_playing);
             } else {
+                elog_i(RTSP_LOG_TAG, "PLAY: select video stream_id=%zu", i);
                 self->streams[i].ctx = play_video(
                     self->peer->param.video_fps,
                     self->peer->param.video_sample_rate,
@@ -446,6 +456,7 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     }
 
     if (!played) {
+        elog_w(RTSP_LOG_TAG, "PLAY: session not found %" PRIu64, session_id);
         smolrtsp_respond(
             ctx, SMOLRTSP_STATUS_SESSION_NOT_FOUND, "Invalid Session ID");
         return;
@@ -747,7 +758,18 @@ static void send_audio_packet_cb(evutil_socket_t fd, short events, void *arg) {
         // RTP 时间戳
         uint32_t rtp_timestamp;
         if (ctx->pull_frame && ctx->release_frame) {
-            rtp_timestamp = (uint32_t)(timestamp * ctx->sample_rate / 1000);
+            // RTP 时间戳计算：(采集时间(us) * 采样率) / 1000000
+            // 为了更好的音视频同步，我们应该从 0 开始或者对齐首帧
+            if (ctx->first_frame) {
+                ctx->base_timestamp_us = timestamp;
+                ctx->base_rtp_timestamp = 0;
+                ctx->first_frame = false;
+                printf("[RTSP-AUDIO] First frame: capture_ts=%llu us, rtp_ts=0\n",
+                       (unsigned long long)timestamp);
+            }
+            
+            // 计算相对于首帧的 RTP 时间戳
+            rtp_timestamp = (uint32_t)((timestamp - ctx->base_timestamp_us) * ctx->sample_rate / 1000000);
         } else {
             rtp_timestamp = ctx->i * ctx->samples_per_packet;
         }
@@ -794,15 +816,18 @@ static void send_audio_packet_cb(evutil_socket_t fd, short events, void *arg) {
                           (now.tv_usec - last_stat_time.tv_usec) / 1000;
         if (elapsed_ms >= 1000) {
             int expected_pps = ctx->sample_rate / ctx->samples_per_packet;
-            printf("[RTSP-AUDIO] sent=%d, ts=%u, expected_pps=%d\n", 
-                   audio_send_count, (unsigned)(ctx->i * ctx->samples_per_packet), expected_pps);
+            printf("[RTSP-AUDIO] sent=%d, ts=%u, size=%zu, expected_pps=%d\n", 
+                   audio_send_count, rtp_timestamp, audio_size, expected_pps);
             last_stat_time = now;
         }
         
         // Pace next send according to expected packets per second
+        // 修正：增加 1-2ms 的缓冲延时，防止高频空转导致的 CPU 占用过高
         int pps = ctx->sample_rate / ctx->samples_per_packet;
         if (pps <= 0) pps = 25;
-        struct timeval tv = {.tv_sec = 0, .tv_usec = (int)(1000000.0 / pps)};
+        int interval_us = 1000000 / pps;
+        if (interval_us < 2000) interval_us = 2000; // 最低 2ms 间隔
+        struct timeval tv = {.tv_sec = 0, .tv_usec = interval_us};
         event_add(ctx->ev, &tv);
         return;
     }
@@ -842,6 +867,7 @@ static SmolRTSP_Droppable play_video(
             .release_frame = release_frame,
             .sps_pps_bypass = sps_pps_bypass,
             .has_extension = false,
+            .need_idr = true,
         };
     }
     
@@ -989,8 +1015,8 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
             ctx->release_frame((void **)&ctx->current_frame_data, &ctx->current_frame_size, NULL);
             ctx->current_frame_data = NULL;
             ctx->current_frame_size = 0;
-            // Immediately check for next frame to drain FIFO (0 timeout)
-            struct timeval tv = {.tv_sec = 0, .tv_usec = 0};
+            // 修正：不再使用 0 延时，而是使用正常的帧间隔，防止高频空转抢占 CPU
+            struct timeval tv = {.tv_sec = 0, .tv_usec = 1000000 / ctx->fps};
             event_add(ctx->ev, &tv);
         } else {
             send_nalu(ctx);
@@ -1021,8 +1047,8 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
         goto again;
     }
     
-    // If we sent a packet, process the rest of the frame immediately
-    struct timeval tv = {.tv_sec = 0, .tv_usec = 0};
+    // 修正：发送完一个 NALU 后，稍微延迟一下再处理下一个，避免短时间内发送过多包
+    struct timeval tv = {.tv_sec = 0, .tv_usec = 1000}; // 1ms delay
     event_add(ctx->ev, &tv);
 }
 
@@ -1041,12 +1067,20 @@ static bool send_h264_nalu(VideoCtx *ctx) {
         return au_found;
     }
 
+    if (ctx->need_idr) {
+        if (unit_type == SMOLRTSP_H264_NAL_UNIT_CODED_SLICE_IDR) {
+            ctx->need_idr = false;
+        } else if (unit_type == SMOLRTSP_H264_NAL_UNIT_AUD || unit_type == SMOLRTSP_H264_NAL_UNIT_SPS || unit_type == SMOLRTSP_H264_NAL_UNIT_PPS) {
+            // allow AUD/SPS/PPS before IDR
+        } else {
+            // drop non-IDR slices until first IDR
+            return au_found;
+        }
+    }
     if (unit_type == SMOLRTSP_H264_NAL_UNIT_AUD || 
         unit_type == SMOLRTSP_H264_NAL_UNIT_CODED_SLICE_NON_IDR ||
         unit_type == SMOLRTSP_H264_NAL_UNIT_CODED_SLICE_IDR
     ) {
-        // Timestamp is managed by the frame producer/container
-        // ctx->timestamp += ctx->sample_rate / ctx->fps;
         au_found = true;
     }
     //printf("timestamp: %d-%d-%d\n", ctx->timestamp, SmolRTSP_RtpTimestamp_Raw(ctx->timestamp), SmolRTSP_RtpTimestamp_SysClockUs(ctx->timestamp));
@@ -1054,6 +1088,7 @@ static bool send_h264_nalu(VideoCtx *ctx) {
         if (SmolRTSP_NalTransport_send_packet_ext(
                 ctx->transport, SmolRTSP_RtpTimestamp_Raw(ctx->timestamp), nalu, (uint8_t *)&ctx->extension, sizeof(ctx->extension)) ==
             -1) {
+            perror("Failed to send RTP/NAL");
             perror("Failed to send RTP/NAL");
         }
     } else {

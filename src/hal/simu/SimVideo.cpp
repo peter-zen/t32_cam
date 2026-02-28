@@ -306,6 +306,7 @@ bool SimVideoStream::getInfo(VideoStreamInfo& info) {
     info.ae_converged = true;
     return true;
 }
+bool SimVideoStream::requestIDR() { return true; }
 
 SimVideo::SimVideo() {}
 SimVideo::~SimVideo() {}

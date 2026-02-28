@@ -18,6 +18,7 @@ public:
     bool getFrame(VideoEncodedFrame& out) override;
     void releaseFrame(VideoEncodedFrame& out) override;
     bool getInfo(VideoStreamInfo& info) override;
+    bool requestIDR() override;
 
 private:
     void buildSampleBitstream(bool key);
