@@ -1,9 +1,9 @@
 #include "SimVideo.h"
-#include "video.h264.h"
-#include "video.h265.h"
-#include "image.jpeg.h"
 #include <cstring>
 #include <thread>
+#include <fstream>
+#include <string>
+#include <sstream>
 namespace hal {
 
 SimVideoStream::SimVideoStream()
@@ -32,12 +32,64 @@ bool SimVideoStream::start() {
     std::lock_guard<std::mutex> lock(mtx_);
     if (!configured_) return false;
     started_ = true;
-    if (cfg_.payload == VideoPayloadType::H264) {
-        src_ = ___sim_video_h264;
-        src_len_ = ___sim_video_h264_len;
-    } else if (cfg_.payload == VideoPayloadType::H265) {
-        src_ = ___sim_video_h265;
-        src_len_ = ___sim_video_h265_len;
+    std::string config_path = "res/config.json";
+    std::string base;
+    {
+        std::ifstream ifs(config_path);
+        if (ifs.good()) {
+            std::ostringstream ss;
+            ss << ifs.rdbuf();
+            std::string cfg = ss.str();
+            auto pick = [&](const std::string& key) -> std::string {
+                std::string pat = "\"" + key + "\"";
+                size_t p = cfg.find(pat);
+                if (p == std::string::npos) return "";
+                size_t q = cfg.find(':', p);
+                if (q == std::string::npos) return "";
+                size_t s = cfg.find('"', q);
+                if (s == std::string::npos) return "";
+                size_t e = cfg.find('"', s + 1);
+                if (e == std::string::npos) return "";
+                return cfg.substr(s + 1, e - s - 1);
+            };
+            size_t pos = config_path.find_last_of("/\\");
+            std::string dir = (pos == std::string::npos) ? "." : config_path.substr(0, pos);
+            std::string b = pick("base");
+            if (b.empty()) base = dir; else base = (b[0] == '/') ? b : (dir + "/" + b);
+            if (cfg_.payload == VideoPayloadType::H264) {
+                std::string name = pick("h264");
+                if (!name.empty()) file_path_ = base + "/" + name;
+            } else if (cfg_.payload == VideoPayloadType::H265) {
+                std::string name = pick("h265");
+                if (!name.empty()) file_path_ = base + "/" + name;
+            } else if (cfg_.payload == VideoPayloadType::JPEG) {
+                std::string name = pick("jpg");
+                if (!name.empty()) file_path_ = base + "/" + name;
+            } else {
+                file_path_.clear();
+            }
+        }
+    }
+    if (!file_path_.empty()) {
+        std::ifstream vf(file_path_, std::ios::binary);
+        if (vf.good()) {
+            vf.seekg(0, std::ios::end);
+            std::streampos sz = vf.tellg();
+            vf.seekg(0, std::ios::beg);
+            file_buf_.resize((size_t)sz);
+            if (sz > 0) vf.read((char*)file_buf_.data(), sz);
+            if (cfg_.payload == VideoPayloadType::JPEG) {
+                last_buffer_.assign(file_buf_.begin(), file_buf_.end());
+                src_ = nullptr;
+                src_len_ = 0;
+            } else {
+                src_ = file_buf_.data();
+                src_len_ = file_buf_.size();
+            }
+        } else {
+            src_ = nullptr;
+            src_len_ = 0;
+        }
     } else {
         src_ = nullptr;
         src_len_ = 0;
@@ -102,12 +154,8 @@ static inline bool is_idr_h265(int t) { return t == 19 || t == 20 || t == 21; }
 
 void SimVideoStream::buildSampleBitstream(bool key) {
     last_buffer_.clear();
-    if (cfg_.payload == VideoPayloadType::H264) {
-        last_buffer_.assign(___sim_video_h264, ___sim_video_h264 + ___sim_video_h264_len);
-    } else if (cfg_.payload == VideoPayloadType::H265) {
-        last_buffer_.assign(___sim_video_h265, ___sim_video_h265 + ___sim_video_h265_len);
-    } else if (cfg_.payload == VideoPayloadType::JPEG) {
-        last_buffer_.assign(___sim_image_jpeg, ___sim_image_jpeg + ___sim_image_jpeg_len);
+    if (cfg_.payload == VideoPayloadType::JPEG && !file_buf_.empty()) {
+        last_buffer_.assign(file_buf_.begin(), file_buf_.end());
     }
     last_pieces_.clear();
     VideoEncodedPiece p;

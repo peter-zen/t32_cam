@@ -1,10 +1,10 @@
 #include "SimAudio.h"
-#include "audio.aac.h"
-#include "audio.g711a.h"
-#include "audio.g711u.h"
 #include <cmath>
 #include <cstring>
 #include <thread>
+#include <fstream>
+#include <string>
+#include <sstream>
 namespace hal {
 
 SimAudioStream::SimAudioStream()
@@ -33,15 +33,58 @@ bool SimAudioStream::start() {
     std::lock_guard<std::mutex> lock(mtx_);
     if (!configured_) return false;
     started_ = true;
-    if (cfg_.payload == AudioPayloadType::AAC) {
-        src_ = ___sim_audio_aac;
-        src_len_ = ___sim_audio_aac_len;
-    } else if (cfg_.payload == AudioPayloadType::G711A) {
-        src_ = ___sim_audio_g711a;
-        src_len_ = ___sim_audio_g711a_len;
-    } else if (cfg_.payload == AudioPayloadType::G711U) {
-        src_ = ___sim_audio_g711u;
-        src_len_ = ___sim_audio_g711u_len;
+    std::string config_path = "res/config.json";
+    std::string base;
+    {
+        std::ifstream ifs(config_path);
+        if (ifs.good()) {
+            std::ostringstream ss;
+            ss << ifs.rdbuf();
+            std::string cfg = ss.str();
+            auto pick = [&](const std::string& key) -> std::string {
+                std::string pat = "\"" + key + "\"";
+                size_t p = cfg.find(pat);
+                if (p == std::string::npos) return "";
+                size_t q = cfg.find(':', p);
+                if (q == std::string::npos) return "";
+                size_t s = cfg.find('"', q);
+                if (s == std::string::npos) return "";
+                size_t e = cfg.find('"', s + 1);
+                if (e == std::string::npos) return "";
+                return cfg.substr(s + 1, e - s - 1);
+            };
+            size_t pos = config_path.find_last_of("/\\");
+            std::string dir = (pos == std::string::npos) ? "." : config_path.substr(0, pos);
+            std::string b = pick("base");
+            if (b.empty()) base = dir; else base = (b[0] == '/') ? b : (dir + "/" + b);
+            if (cfg_.payload == AudioPayloadType::AAC) {
+                std::string name = pick("aac");
+                if (!name.empty()) file_path_ = base + "/" + name;
+            } else if (cfg_.payload == AudioPayloadType::G711A) {
+                std::string name = pick("g711a");
+                if (!name.empty()) file_path_ = base + "/" + name;
+            } else if (cfg_.payload == AudioPayloadType::G711U) {
+                std::string name = pick("g711u");
+                if (!name.empty()) file_path_ = base + "/" + name;
+            } else {
+                file_path_.clear();
+            }
+        }
+    }
+    if (!file_path_.empty()) {
+        std::ifstream af(file_path_, std::ios::binary);
+        if (af.good()) {
+            af.seekg(0, std::ios::end);
+            std::streampos sz = af.tellg();
+            af.seekg(0, std::ios::beg);
+            file_buf_.resize((size_t)sz);
+            if (sz > 0) af.read((char*)file_buf_.data(), sz);
+            src_ = file_buf_.data();
+            src_len_ = file_buf_.size();
+        } else {
+            src_ = nullptr;
+            src_len_ = 0;
+        }
     } else {
         src_ = nullptr;
         src_len_ = 0;

@@ -37,6 +37,8 @@ private:
     const uint8_t* src_;
     size_t src_len_;
     size_t read_offset_;
+    std::vector<uint8_t> file_buf_;
+    std::string file_path_;
 };
 
 class SimVideo : public IVideo {

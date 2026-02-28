@@ -37,6 +37,8 @@ private:
     const uint8_t* src_;
     size_t src_len_;
     size_t read_offset_;
+    std::vector<uint8_t> file_buf_;
+    std::string file_path_;
     void buildNextFrame(AudioEncodedFrame& out);
     static bool adts_find_frame(const uint8_t* src, size_t len, size_t start, size_t& frame_off, size_t& frame_len, int& samples, int& sample_rate);
 };
