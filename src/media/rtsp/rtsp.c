@@ -30,6 +30,8 @@
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <string.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -108,6 +110,12 @@ typedef struct {
     uint64_t base_timestamp_us;
     uint32_t base_rtp_timestamp;
     bool first_frame;
+    uint32_t pace_interval_us;
+    uint64_t next_deadline_us;
+    int send_count;
+    int pull_fail_count;
+    int full_log_count;
+    uint64_t last_stat_log_us;
 } AudioCtx;
 static SmolRTSP_Droppable play_audio(
     int sample_rate, int samples_per_packet, int audio_codec, int channels,
@@ -128,6 +136,8 @@ typedef struct {
     int *streams_playing;
     int sample_rate;
     int fps;
+    uint64_t au_retry_us;
+    bool pace_no_skip;
     func_t pull_frame;
     func_t release_frame;
     bool sps_pps_bypass;
@@ -140,6 +150,54 @@ typedef struct {
     uint8_t *current_frame_data;
     size_t current_frame_size;
     uint64_t last_capture_us;
+    uint32_t pace_interval_us;
+    uint64_t next_deadline_us;
+    uint64_t expected_fire_us;
+    uint8_t expected_sched_kind;
+    int frame_count;
+    int pull_fail_count;
+    int full_log_count;
+    uint64_t last_stat_log_us;
+    uint64_t frame_start_us;
+    uint32_t frame_nal_count;
+    uint32_t frame_cb_count;
+    uint64_t frame_done_count;
+    uint64_t frame_nal_total;
+    uint64_t frame_nal_max;
+    uint64_t frame_cb_total;
+    uint64_t frame_cb_max;
+    uint64_t frame_proc_total_us;
+    uint64_t frame_proc_max_us;
+    uint64_t cb_exec_total_us;
+    uint64_t cb_exec_count;
+    uint64_t cb_exec_max_us;
+    uint64_t deadline_lag_total_us;
+    uint64_t deadline_lag_count;
+    uint64_t deadline_lag_max_us;
+    uint64_t deadline_lag_over_2ms_count;
+    uint64_t pace_lag_total_us;
+    uint64_t pace_lag_count;
+    uint64_t pace_lag_max_us;
+    uint64_t pace_lag_over_2ms_count;
+    uint64_t retry_lag_total_us;
+    uint64_t retry_lag_count;
+    uint64_t retry_lag_max_us;
+    uint64_t retry_lag_over_2ms_count;
+    uint64_t last_log_frame_done_count;
+    uint64_t last_log_frame_nal_total;
+    uint64_t last_log_frame_cb_total;
+    uint64_t last_log_frame_proc_total_us;
+    uint64_t last_log_cb_exec_total_us;
+    uint64_t last_log_cb_exec_count;
+    uint64_t last_log_deadline_lag_total_us;
+    uint64_t last_log_deadline_lag_count;
+    uint64_t last_log_deadline_lag_over_2ms_count;
+    uint64_t last_log_pace_lag_total_us;
+    uint64_t last_log_pace_lag_count;
+    uint64_t last_log_pace_lag_over_2ms_count;
+    uint64_t last_log_retry_lag_total_us;
+    uint64_t last_log_retry_lag_count;
+    uint64_t last_log_retry_lag_over_2ms_count;
 } VideoCtx;
 
 static SmolRTSP_Droppable play_video(
@@ -148,6 +206,131 @@ static SmolRTSP_Droppable play_video(
     struct event **ev, int *streams_playing);
 static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg);
 static bool send_nalu(VideoCtx *ctx);
+
+static uint64_t monotonic_time_us(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+    }
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+}
+
+static void event_add_after_us(struct event *ev, uint64_t delay_us) {
+    if (!ev) {
+        return;
+    }
+    if (delay_us == 0) {
+        delay_us = 1;
+    }
+    struct timeval tv = {
+        .tv_sec = (long)(delay_us / 1000000ULL),
+        .tv_usec = (suseconds_t)(delay_us % 1000000ULL),
+    };
+    event_add(ev, &tv);
+}
+
+static void schedule_next_deadline(struct event *ev, uint64_t *next_deadline_us, uint32_t interval_us) {
+    if (!next_deadline_us) {
+        return;
+    }
+    if (interval_us == 0) {
+        interval_us = 1000;
+    }
+
+    uint64_t now_us = monotonic_time_us();
+    if (*next_deadline_us == 0) {
+        *next_deadline_us = now_us + interval_us;
+    } else {
+        *next_deadline_us += interval_us;
+        if (*next_deadline_us <= now_us) {
+            uint64_t lag = now_us - *next_deadline_us;
+            uint64_t skipped = lag / interval_us + 1;
+            *next_deadline_us += skipped * interval_us;
+        }
+    }
+
+    uint64_t delay_us = (*next_deadline_us > now_us) ? (*next_deadline_us - now_us) : 1;
+    event_add_after_us(ev, delay_us);
+}
+
+static void schedule_retry_us(struct event *ev, uint64_t retry_us) {
+    event_add_after_us(ev, retry_us > 0 ? retry_us : 1000);
+}
+
+static uint64_t parse_u64_env_or_default(const char *key, uint64_t default_value) {
+    if (!key) {
+        return default_value;
+    }
+    const char *val = getenv(key);
+    if (!val || !*val) {
+        return default_value;
+    }
+    char *end = NULL;
+    unsigned long long parsed = strtoull(val, &end, 10);
+    if (end == val || (end && *end != '\0')) {
+        return default_value;
+    }
+    return (uint64_t)parsed;
+}
+
+static void video_ctx_record_cb_exec(VideoCtx *ctx, uint64_t cb_begin_us) {
+    if (!ctx || cb_begin_us == 0) {
+        return;
+    }
+
+    const uint64_t now_us = monotonic_time_us();
+    const uint64_t cb_cost_us = (now_us >= cb_begin_us) ? (now_us - cb_begin_us) : 0;
+    ctx->cb_exec_total_us += cb_cost_us;
+    ctx->cb_exec_count++;
+    if (cb_cost_us > ctx->cb_exec_max_us) {
+        ctx->cb_exec_max_us = cb_cost_us;
+    }
+}
+
+#define VIDEO_SCHED_UNKNOWN 0
+#define VIDEO_SCHED_PACE 1
+#define VIDEO_SCHED_RETRY 2
+
+static void video_schedule_next_deadline(VideoCtx *ctx) {
+    if (!ctx) {
+        return;
+    }
+    uint32_t interval_us = ctx->pace_interval_us > 0 ? ctx->pace_interval_us : 1000;
+    uint64_t now_us = monotonic_time_us();
+
+    if (ctx->next_deadline_us == 0) {
+        ctx->next_deadline_us = now_us + interval_us;
+    } else {
+        ctx->next_deadline_us += interval_us;
+        if (ctx->next_deadline_us <= now_us) {
+            if (ctx->pace_no_skip) {
+                // Catch up quickly when callback is late: do not skip future pacing slots.
+                ctx->next_deadline_us = now_us + 1;
+            } else {
+                uint64_t lag = now_us - ctx->next_deadline_us;
+                uint64_t skipped = lag / interval_us + 1;
+                ctx->next_deadline_us += skipped * interval_us;
+            }
+        }
+    }
+
+    uint64_t delay_us = (ctx->next_deadline_us > now_us) ? (ctx->next_deadline_us - now_us) : 1;
+    event_add_after_us(ctx->ev, delay_us);
+    ctx->expected_fire_us = ctx->next_deadline_us;
+    ctx->expected_sched_kind = VIDEO_SCHED_PACE;
+}
+
+static void video_schedule_retry(VideoCtx *ctx, uint64_t retry_us) {
+    if (!ctx) {
+        return;
+    }
+    const uint64_t use_retry_us = retry_us > 0 ? retry_us : 1000;
+    ctx->expected_fire_us = monotonic_time_us() + use_retry_us;
+    ctx->expected_sched_kind = VIDEO_SCHED_RETRY;
+    schedule_retry_us(ctx->ev, use_retry_us);
+}
 
 static void listener_cb(
     struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *sa,
@@ -162,7 +345,7 @@ static void listener_cb(
     struct bufferevent *bev;
     if ((bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE)) ==
         NULL) {
-        printf("bufferevent_socket_new failed.\n");
+        elog_e(RTSP_LOG_TAG, "bufferevent_socket_new failed");
         event_base_loopbreak(base);
         return;
     }
@@ -190,13 +373,13 @@ static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     struct rtsp_server *server = client ? client->peer : NULL;
 
     if (events & BEV_EVENT_EOF) {
-        puts("Connection closed.");
+        elog_i(RTSP_LOG_TAG, "Connection closed");
         // Access server if needed
         if (server && server->funcs[FUNC_ID_ON_SESSION_CLOSED]) {
             server->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL, NULL);
         }
     } else if (events & BEV_EVENT_ERROR) {
-        perror("Got an error on the connection");
+        elog_e(RTSP_LOG_TAG, "Connection error");
         // Access server if needed
         if (server && server->funcs[FUNC_ID_ON_SESSION_CLOSED]) {
             server->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL, NULL);
@@ -213,7 +396,7 @@ static void on_sigint_cb(evutil_socket_t sig, short events, void *ctx) {
 
     struct event_base *base = ctx;
 
-    puts("Caught an interrupt signal; exiting cleanly in two seconds.");
+    elog_i(RTSP_LOG_TAG, "Caught interrupt signal; exiting cleanly in two seconds");
 
     struct timeval delay = {2, 0};
     event_base_loopexit(base, &delay);
@@ -307,8 +490,8 @@ Client_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
 
                 base64_encode((char *)rtsp_param.video_sps, rtsp_param.video_sps_len, (char *)base64_video_sps, &base64_video_sps_len);
                 base64_encode((char *)rtsp_param.video_pps, rtsp_param.video_pps_len, (char *)base64_video_pps, &base64_video_pps_len);
-                printf("base64_video_sps: %s\n", base64_video_sps);
-                printf("base64_video_pps: %s\n", base64_video_pps);
+                elog_d(RTSP_LOG_TAG, "base64_video_sps: %s", base64_video_sps);
+                elog_d(RTSP_LOG_TAG, "base64_video_pps: %s", base64_video_pps);
 
                 SMOLRTSP_SDP_DESCRIBE(
                 ret, sdp,
@@ -519,10 +702,9 @@ Client_before(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     (void)self;
     (void)ctx;
 
-    printf(
-        "%s %s CSeq=%" PRIu32 ".\n",
-        CharSlice99_alloca_c_str(req->start_line.method),
-        CharSlice99_alloca_c_str(req->start_line.uri), req->cseq);
+    elog_i(RTSP_LOG_TAG, "%s %s CSeq=%" PRIu32,
+           CharSlice99_alloca_c_str(req->start_line.method),
+           CharSlice99_alloca_c_str(req->start_line.uri), req->cseq);
 
     return SmolRTSP_ControlFlow_Continue;
 }
@@ -536,7 +718,7 @@ static void Client_after(
     (void)req;
 
     if (ret < 0) {
-        perror("Failed to respond");
+        elog_e(RTSP_LOG_TAG, "Failed to respond");
     }
 }
 
@@ -554,6 +736,9 @@ static int setup_transport(
         return -1;
     }
 
+    elog_i(RTSP_LOG_TAG, "SETUP: Transport request=%s",
+           CharSlice99_alloca_c_str(transport_val));
+
     SmolRTSP_TransportConfig config;
     if (smolrtsp_parse_transport(&config, transport_val) == -1) {
         smolrtsp_respond(
@@ -563,12 +748,14 @@ static int setup_transport(
 
     switch (config.lower) {
     case SmolRTSP_LowerTransport_TCP:
+        elog_i(RTSP_LOG_TAG, "SETUP: transport lower=TCP");
         if (setup_tcp(ctx, t, config) == -1) {
             smolrtsp_respond_internal_error(ctx);
             return -1;
         }
         break;
     case SmolRTSP_LowerTransport_UDP:
+        elog_i(RTSP_LOG_TAG, "SETUP: transport lower=UDP");
         if (setup_udp((const struct sockaddr *)&self->addr, ctx, t, config) ==
             -1) {
             smolrtsp_respond_internal_error(ctx);
@@ -584,6 +771,8 @@ static int setup_tcp(
     SmolRTSP_Context *ctx, SmolRTSP_Transport *t,
     SmolRTSP_TransportConfig config) {
     ifLet(config.interleaved, SmolRTSP_ChannelPair_Some, interleaved) {
+        elog_i(RTSP_LOG_TAG, "SETUP: TCP interleaved=%" PRIu8 "-%" PRIu8,
+               interleaved->rtp_channel, interleaved->rtcp_channel);
         *t = smolrtsp_transport_tcp(
             SmolRTSP_Context_get_writer(ctx), interleaved->rtp_channel, 512 * 1024);
 
@@ -604,6 +793,8 @@ static int setup_udp(
     SmolRTSP_TransportConfig config) {
 
     ifLet(config.client_port, SmolRTSP_PortPair_Some, client_port) {
+        elog_i(RTSP_LOG_TAG, "SETUP: UDP client_port=%" PRIu16 "-%" PRIu16,
+               client_port->rtp_port, client_port->rtcp_port);
         int fd;
         if ((fd = smolrtsp_dgram_socket(
                  addr->sa_family, smolrtsp_sockaddr_ip(addr),
@@ -640,6 +831,17 @@ static SmolRTSP_Droppable play_audio(
     func_t pull_frame, func_t release_frame,
     struct event_base *base, struct bufferevent *bev, SmolRTSP_RtpTransport *t,
     struct event **ev, int *streams_playing) {
+    const int safe_sample_rate = sample_rate > 0 ? sample_rate : 8000;
+    const int safe_samples_per_packet = samples_per_packet > 0 ? samples_per_packet : 320;
+    int pps = safe_sample_rate / safe_samples_per_packet;
+    if (pps <= 0) {
+        pps = 25;
+    }
+    uint32_t interval_us = (uint32_t)(1000000 / pps);
+    if (interval_us < 2000) {
+        interval_us = 2000;
+    }
+
     AudioCtx *ctx = malloc(sizeof *ctx);
     assert(ctx);
     *ctx = (AudioCtx){
@@ -648,8 +850,8 @@ static SmolRTSP_Droppable play_audio(
         .ev = NULL,
         .streams_playing = streams_playing,
         .bev = bev,
-        .sample_rate = sample_rate,
-        .samples_per_packet = samples_per_packet,
+        .sample_rate = safe_sample_rate,
+        .samples_per_packet = safe_samples_per_packet,
         .audio_codec = audio_codec,
         .channels = channels,
         .pull_frame = pull_frame,
@@ -657,19 +859,21 @@ static SmolRTSP_Droppable play_audio(
         .current_data = NULL,
         .current_size = 0,
         .base_timestamp_us = 0,
-    .base_rtp_timestamp = 0,
-    .first_frame = true,
+        .base_rtp_timestamp = 0,
+        .first_frame = true,
+        .pace_interval_us = interval_us,
+        .next_deadline_us = 0,
+        .send_count = 0,
+        .pull_fail_count = 0,
+        .full_log_count = 0,
+        .last_stat_log_us = 0,
     };
 
     ctx->ev = event_new(
         base, -1, EV_PERSIST | EV_TIMEOUT, send_audio_packet_cb, (void *)ctx);
     assert(ctx->ev);
-
-    event_add(
-        ctx->ev, &(const struct timeval){
-                     .tv_sec = 0,
-                     .tv_usec = (int)(1000000.0 / (ctx->sample_rate / (double)ctx->samples_per_packet)),
-                 });
+    ctx->next_deadline_us = monotonic_time_us() + ctx->pace_interval_us;
+    event_add_after_us(ctx->ev, ctx->pace_interval_us);
     *ev = ctx->ev;
     (*streams_playing)++;
 
@@ -681,62 +885,51 @@ static void send_audio_packet_cb(evutil_socket_t fd, short events, void *arg) {
     (void)events;
 
     AudioCtx *ctx = arg;
-    static int audio_send_count = 0;
-    static int audio_pull_fail_count = 0;
-    static struct timeval last_stat_time = {0, 0};
     
     // Flow Control: Check if transport buffer is full
     if (SmolRTSP_RtpTransport_is_full(ctx->transport)) {
-        static int audio_full_log = 0;
-        audio_full_log++;
-        if (audio_full_log % 50 == 1) { // Log occasionally
-            printf("[RTSP-AUDIO] Network buffer full, skipping packet.\n");
+        ctx->full_log_count++;
+        if (ctx->full_log_count % 50 == 1) {
+            elog_w(RTSP_LOG_TAG, "[AUDIO] Network buffer full, skipping this pacing slot");
         }
-        // Wait for next slot
-        struct timeval tv = {.tv_sec = 0, .tv_usec = (1e6 / (ctx->sample_rate / ctx->samples_per_packet))};
-        event_add(ctx->ev, &tv);
+        schedule_next_deadline(ctx->ev, &ctx->next_deadline_us, ctx->pace_interval_us);
         return;
     }
 
     // 使用外部音频源
-        if (ctx->pull_frame && ctx->release_frame) {
+    if (ctx->pull_frame && ctx->release_frame) {
         uint8_t *audio_data = NULL;
         size_t audio_size = 0;
         uint64_t timestamp = 0;
         
         int pull_result = ctx->pull_frame((void **)&audio_data, &audio_size, &timestamp);
         if (pull_result != 0) {
-            audio_pull_fail_count++;
+            ctx->pull_fail_count++;
 
             ctx->current_data = NULL;
             ctx->current_size = 0;
             
             // 区分不同的错误类型
             if (pull_result == -1) {
-                // 文件需要循环重试，使用更短的间隔
-                struct timeval tv = {.tv_sec = 0, .tv_usec = 1000}; // 1ms retry
-                event_add(ctx->ev, &tv);
+                schedule_retry_us(ctx->ev, 5000);
                 return;
             } else if (pull_result == -2) {
-                // 音频真正结束，停止音频流
-                if (audio_pull_fail_count % 100 == 1) {
-                    printf("[RTSP-AUDIO] Audio stream ended (%d consecutive failures)\n", audio_pull_fail_count);
+                if (ctx->pull_fail_count % 100 == 1) {
+                    elog_w(RTSP_LOG_TAG, "[AUDIO] stream ended (%d consecutive failures)", ctx->pull_fail_count);
                 }
-                // 不立即停止，给一些时间看是否会恢复
-                struct timeval tv = {.tv_sec = 0, .tv_usec = 10000}; // 10ms
-                event_add(ctx->ev, &tv);
+                schedule_retry_us(ctx->ev, 10000);
                 return;
             } else {
-                // 其他错误
-                struct timeval tv = {.tv_sec = 0, .tv_usec = 5000}; // 5ms retry
-                event_add(ctx->ev, &tv);
+                schedule_retry_us(ctx->ev, 5000);
                 return;
             }
         }
         
-        if (audio_pull_fail_count > 0) {
-            printf("[RTSP-AUDIO] Recovered after %d pull failures\n", audio_pull_fail_count);
-            audio_pull_fail_count = 0;
+        if (ctx->pull_fail_count > 0) {
+            if (ctx->pull_fail_count >= 5) {
+                elog_i(RTSP_LOG_TAG, "[AUDIO] recovered after %d pull failures", ctx->pull_fail_count);
+            }
+            ctx->pull_fail_count = 0;
         }
 
         ctx->current_data = audio_data;
@@ -764,8 +957,7 @@ static void send_audio_packet_cb(evutil_socket_t fd, short events, void *arg) {
                 ctx->base_timestamp_us = timestamp;
                 ctx->base_rtp_timestamp = 0;
                 ctx->first_frame = false;
-                printf("[RTSP-AUDIO] First frame: capture_ts=%llu us, rtp_ts=0\n",
-                       (unsigned long long)timestamp);
+                elog_i(RTSP_LOG_TAG, "[AUDIO] First frame: capture_ts=%" PRIu64 " us, rtp_ts=0", timestamp);
             }
             
             // 计算相对于首帧的 RTP 时间戳
@@ -797,42 +989,38 @@ static void send_audio_packet_cb(evutil_socket_t fd, short events, void *arg) {
         const U8Slice99 header = U8Slice99_empty(),
                         payload = U8Slice99_new(send_data, audio_size);
 
+        size_t sent_audio_size = audio_size;
+
         if (SmolRTSP_RtpTransport_send_packet(
                 ctx->transport, ts, marker, header, payload) == -1) {
-            perror("Failed to send RTP audio");
+            const int err = errno;
+            elog_e(
+                RTSP_LOG_TAG,
+                "[AUDIO] Failed to send RTP packet errno=%d(%s)",
+                err, strerror(err));
         }
         
         ctx->release_frame((void **)&audio_data, &audio_size, NULL);
         ctx->i++;
-        audio_send_count++;
+        ctx->send_count++;
         
         // 每秒输出一次统计
-        struct timeval now;
-        gettimeofday(&now, NULL);
-        if (last_stat_time.tv_sec == 0) {
-            last_stat_time = now;
+        uint64_t now_us = monotonic_time_us();
+        if (ctx->last_stat_log_us == 0) {
+            ctx->last_stat_log_us = now_us;
         }
-        long elapsed_ms = (now.tv_sec - last_stat_time.tv_sec) * 1000 + 
-                          (now.tv_usec - last_stat_time.tv_usec) / 1000;
-        if (elapsed_ms >= 1000) {
+        if (now_us - ctx->last_stat_log_us >= 1000000ULL) {
             int expected_pps = ctx->sample_rate / ctx->samples_per_packet;
-            printf("[RTSP-AUDIO] sent=%d, ts=%u, size=%zu, expected_pps=%d\n", 
-                   audio_send_count, rtp_timestamp, audio_size, expected_pps);
-            last_stat_time = now;
+            elog_i(RTSP_LOG_TAG, "[AUDIO] sent=%d, ts=%u, size=%zu, expected_pps=%d",
+                   ctx->send_count, rtp_timestamp, sent_audio_size, expected_pps);
+            ctx->last_stat_log_us = now_us;
         }
-        
-        // Pace next send according to expected packets per second
-        // 修正：增加 1-2ms 的缓冲延时，防止高频空转导致的 CPU 占用过高
-        int pps = ctx->sample_rate / ctx->samples_per_packet;
-        if (pps <= 0) pps = 25;
-        int interval_us = 1000000 / pps;
-        if (interval_us < 2000) interval_us = 2000; // 最低 2ms 间隔
-        struct timeval tv = {.tv_sec = 0, .tv_usec = interval_us};
-        event_add(ctx->ev, &tv);
+
+        schedule_next_deadline(ctx->ev, &ctx->next_deadline_us, ctx->pace_interval_us);
         return;
     }
-    
- 
+
+    schedule_next_deadline(ctx->ev, &ctx->next_deadline_us, ctx->pace_interval_us);
 }
 
 static void VideoCtx_drop(VSelf) {
@@ -849,6 +1037,13 @@ static SmolRTSP_Droppable play_video(
     int fps, int sample_rate, int codec, func_t pull_frame, func_t release_frame,
     bool sps_pps_bypass, struct event_base *base, struct bufferevent *bev, SmolRTSP_RtpTransport *t,
     struct event **ev, int *streams_playing) {
+    const int safe_fps = fps > 0 ? fps : 15;
+    const uint64_t au_retry_us = parse_u64_env_or_default("RTSP_VIDEO_AU_RETRY_US", 1000);
+    const bool pace_no_skip = parse_u64_env_or_default("RTSP_VIDEO_PACE_NO_SKIP", 0) > 0;
+    uint32_t interval_us = (uint32_t)(1000000 / safe_fps);
+    if (interval_us < 2000) {
+        interval_us = 2000;
+    }
     
     VideoCtx *ctx = malloc(sizeof *ctx);
     assert(ctx);
@@ -861,26 +1056,34 @@ static SmolRTSP_Droppable play_video(
             .ev = NULL,
             .bev = bev,
             .streams_playing = streams_playing,
-            .fps = fps,
+            .fps = safe_fps,
             .sample_rate = sample_rate,
+            .au_retry_us = au_retry_us,
+            .pace_no_skip = pace_no_skip,
             .pull_frame = pull_frame,
             .release_frame = release_frame,
             .sps_pps_bypass = sps_pps_bypass,
             .has_extension = false,
+            .first_frame = true,
             .need_idr = true,
+            .pace_interval_us = interval_us,
+            .next_deadline_us = 0,
+            .frame_count = 0,
+            .pull_fail_count = 0,
+            .full_log_count = 0,
+            .last_stat_log_us = 0,
         };
     }
-    
+
+    elog_i(RTSP_LOG_TAG, "[VIDEO] pacing=%u us, au_retry_us=%" PRIu64 ", pace_no_skip=%d",
+           interval_us, au_retry_us, pace_no_skip ? 1 : 0);
+
 
     ctx->ev = event_new(
         base, -1, EV_PERSIST | EV_TIMEOUT, send_video_packet_cb, (void *)ctx);
     assert(ctx->ev);
-
-    event_add(
-        ctx->ev, &(const struct timeval){
-                     .tv_sec = 0,
-                     .tv_usec = 1000000 / fps,  // 根据 FPS 计算帧间隔
-                 });
+    ctx->next_deadline_us = monotonic_time_us() + ctx->pace_interval_us;
+    event_add_after_us(ctx->ev, ctx->pace_interval_us);
     *ev = ctx->ev;
     (*streams_playing)++;
 
@@ -892,22 +1095,51 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
     (void)events;
 
     VideoCtx *ctx = arg;
-    static int frame_count = 0;
-    static int pull_fail_count = 0;
-    static struct timeval last_stat_time = {0, 0};
+    const uint64_t cb_begin_us = monotonic_time_us();
+
+    if (ctx->expected_fire_us > 0 && cb_begin_us > ctx->expected_fire_us) {
+        const uint64_t lag_us = cb_begin_us - ctx->expected_fire_us;
+        ctx->deadline_lag_total_us += lag_us;
+        ctx->deadline_lag_count++;
+        if (lag_us > ctx->deadline_lag_max_us) {
+            ctx->deadline_lag_max_us = lag_us;
+        }
+        if (lag_us > 2000) {
+            ctx->deadline_lag_over_2ms_count++;
+        }
+        if (ctx->expected_sched_kind == VIDEO_SCHED_PACE) {
+            ctx->pace_lag_total_us += lag_us;
+            ctx->pace_lag_count++;
+            if (lag_us > ctx->pace_lag_max_us) {
+                ctx->pace_lag_max_us = lag_us;
+            }
+            if (lag_us > 2000) {
+                ctx->pace_lag_over_2ms_count++;
+            }
+        } else if (ctx->expected_sched_kind == VIDEO_SCHED_RETRY) {
+            ctx->retry_lag_total_us += lag_us;
+            ctx->retry_lag_count++;
+            if (lag_us > ctx->retry_lag_max_us) {
+                ctx->retry_lag_max_us = lag_us;
+            }
+            if (lag_us > 2000) {
+                ctx->retry_lag_over_2ms_count++;
+            }
+        }
+    }
+
+    if (!U8Slice99_is_empty(ctx->video)) {
+        ctx->frame_cb_count++;
+    }
 
     // Flow Control: Check if transport buffer is full (Backpressure)
     if (SmolRTSP_NalTransport_is_full(ctx->transport)) {
-        static int full_log_counter = 0;
-        full_log_counter++;
-        if (full_log_counter % 25 == 1) { // Log once per second (approx)
-            printf("[RTSP-VIDEO] Network buffer full (backpressure active), skipping frame pull.\n");
+        ctx->full_log_count++;
+        if (ctx->full_log_count % 25 == 1) {
+            elog_w(RTSP_LOG_TAG, "[VIDEO] Network buffer full (backpressure), skipping frame pull");
         }
-        // Reschedule immediately to check again soon, but don't pull data
-        // Or better: stick to FPS schedule to allow buffer to drain?
-        // Let's stick to FPS schedule (40ms) to give TCP time to drain.
-        struct timeval tv = {.tv_sec = 0, .tv_usec = 1000000 / ctx->fps};
-        event_add(ctx->ev, &tv);
+        video_schedule_next_deadline(ctx);
+        video_ctx_record_cb_exec(ctx, cb_begin_us);
         return;
     }
     
@@ -919,44 +1151,45 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
 
         int pull_result = ctx->pull_frame((void **)&video_data, &video_size, &timestamp);
 
-        if (frame_count % 30 == 0) {  // 每30帧打印一次
-            printf("[RTSP-VIDEO] Pull result: %d, capture_ts=%llu\n", pull_result, (unsigned long long)timestamp);
+        if (ctx->frame_count % 30 == 0) {
+            elog_i(RTSP_LOG_TAG, "[VIDEO] Pull result: %d, capture_ts=%" PRIu64, pull_result, timestamp);
         }
         if (pull_result) {
-            pull_fail_count++;
+            ctx->pull_fail_count++;
             
             // 区分不同的错误类型
             if (pull_result == -1) {
-                // 文件循环重试，使用较短间隔
-                struct timeval tv = {.tv_sec = 0, .tv_usec = 5000}; // 5ms retry for file loop
-                event_add(ctx->ev, &tv);
+                video_schedule_retry(ctx, 5000);
+                video_ctx_record_cb_exec(ctx, cb_begin_us);
                 return;
             } else if (pull_result == -2) {
-                // 视频真正结束
-                if (pull_fail_count % 100 == 1) {
-                    printf("[RTSP-VIDEO] Video stream ended (%d consecutive failures)\n", pull_fail_count);
+                if (ctx->pull_fail_count % 100 == 1) {
+                    elog_w(RTSP_LOG_TAG, "[VIDEO] stream ended (%d consecutive failures)", ctx->pull_fail_count);
                 }
-                // 给一些时间看是否会恢复
-                struct timeval tv = {.tv_sec = 0, .tv_usec = 100000}; // 100ms
-                event_add(ctx->ev, &tv);
+                video_schedule_retry(ctx, 100000);
+                video_ctx_record_cb_exec(ctx, cb_begin_us);
                 return;
             } else {
-                // 其他错误，使用正常帧间隔
-                if (pull_fail_count % 100 == 1) {
-                    printf("[RTSP-VIDEO] pull_frame failed, count=%d\n", pull_fail_count);
+                if (ctx->pull_fail_count % 100 == 1) {
+                    elog_w(RTSP_LOG_TAG, "[VIDEO] pull_frame failed, count=%d", ctx->pull_fail_count);
                 }
-                struct timeval tv = {.tv_sec = 0, .tv_usec = 1000000 / ctx->fps};
-                event_add(ctx->ev, &tv);
+                video_schedule_next_deadline(ctx);
+                video_ctx_record_cb_exec(ctx, cb_begin_us);
                 return;
             }
         }
         
-        if (pull_fail_count > 0) {
-            printf("[RTSP-VIDEO] Recovered after %d pull failures\n", pull_fail_count);
-            pull_fail_count = 0;
+        if (ctx->pull_fail_count > 0) {
+            if (ctx->pull_fail_count >= 3) {
+                elog_i(RTSP_LOG_TAG, "[VIDEO] recovered after %d pull failures", ctx->pull_fail_count);
+            }
+            ctx->pull_fail_count = 0;
         }
         
-        frame_count++;
+        ctx->frame_count++;
+        ctx->frame_start_us = cb_begin_us;
+        ctx->frame_nal_count = 0;
+        ctx->frame_cb_count = 1;
 
         ctx->current_frame_data = video_data;
         ctx->current_frame_size = video_size;
@@ -965,10 +1198,10 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
 
         SmolRTSP_NalStartCodeTester start_code_tester;
         if ((start_code_tester = smolrtsp_determine_start_code(video)) == NULL) {
-            printf("%s:Invalid video file.\n", __func__);
+            elog_e(RTSP_LOG_TAG, "[VIDEO] Invalid video bitstream (missing start code)");
             ctx->release_frame((void **)&ctx->current_frame_data, &ctx->current_frame_size, NULL);
-            struct timeval tv = {.tv_sec = 0, .tv_usec = 1000000 / ctx->fps};
-            event_add(ctx->ev, &tv);
+            video_schedule_next_deadline(ctx);
+            video_ctx_record_cb_exec(ctx, cb_begin_us);
             return;
         }
 
@@ -979,8 +1212,8 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
             ctx->base_capture_us = timestamp;
             ctx->base_rtp_ts = ctx->timestamp;
             ctx->first_frame = false;
-            printf("[RTSP-VIDEO] First frame: capture_ts=%llu us, rtp_ts=%u\n",
-                   (unsigned long long)timestamp, ctx->timestamp);
+            elog_i(RTSP_LOG_TAG, "[VIDEO] First frame: capture_ts=%" PRIu64 " us, rtp_ts=%u",
+                   timestamp, ctx->timestamp);
         } else {
             // 也可以使用差值计算（可选）
             // ctx->timestamp = ctx->base_rtp_ts + (uint32_t)((timestamp - ctx->base_capture_us) * 90000 / 1000000);
@@ -994,17 +1227,74 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
         ctx->extension.frameSize = video_size;
         
         // 每秒输出一次统计
-        struct timeval now;
-        gettimeofday(&now, NULL);
-        if (last_stat_time.tv_sec == 0) {
-            last_stat_time = now;
+        uint64_t now_us = monotonic_time_us();
+        if (ctx->last_stat_log_us == 0) {
+            ctx->last_stat_log_us = now_us;
         }
-        long elapsed_ms = (now.tv_sec - last_stat_time.tv_sec) * 1000 + 
-                          (now.tv_usec - last_stat_time.tv_usec) / 1000;
-        if (elapsed_ms >= 1000) {
-            printf("[RTSP-VIDEO] sent=%d, ts=%u, size=%zu, fps=%d\n", 
-                   frame_count, ctx->timestamp, video_size, ctx->fps);
-            last_stat_time = now;
+        if (now_us - ctx->last_stat_log_us >= 1000000ULL) {
+            const uint64_t frame_delta = ctx->frame_done_count - ctx->last_log_frame_done_count;
+            const uint64_t frame_nal_delta = ctx->frame_nal_total - ctx->last_log_frame_nal_total;
+            const uint64_t frame_cb_delta = ctx->frame_cb_total - ctx->last_log_frame_cb_total;
+            const uint64_t frame_proc_delta_us = ctx->frame_proc_total_us - ctx->last_log_frame_proc_total_us;
+            const uint64_t cb_count_delta = ctx->cb_exec_count - ctx->last_log_cb_exec_count;
+            const uint64_t cb_cost_delta_us = ctx->cb_exec_total_us - ctx->last_log_cb_exec_total_us;
+            const uint64_t lag_count_delta = ctx->deadline_lag_count - ctx->last_log_deadline_lag_count;
+            const uint64_t lag_total_delta_us = ctx->deadline_lag_total_us - ctx->last_log_deadline_lag_total_us;
+            const uint64_t lag_over_2ms_delta =
+                ctx->deadline_lag_over_2ms_count - ctx->last_log_deadline_lag_over_2ms_count;
+            const uint64_t pace_lag_count_delta = ctx->pace_lag_count - ctx->last_log_pace_lag_count;
+            const uint64_t pace_lag_total_delta_us = ctx->pace_lag_total_us - ctx->last_log_pace_lag_total_us;
+            const uint64_t pace_lag_over_2ms_delta =
+                ctx->pace_lag_over_2ms_count - ctx->last_log_pace_lag_over_2ms_count;
+            const uint64_t retry_lag_count_delta = ctx->retry_lag_count - ctx->last_log_retry_lag_count;
+            const uint64_t retry_lag_total_delta_us = ctx->retry_lag_total_us - ctx->last_log_retry_lag_total_us;
+            const uint64_t retry_lag_over_2ms_delta =
+                ctx->retry_lag_over_2ms_count - ctx->last_log_retry_lag_over_2ms_count;
+
+            const double avg_nal_per_frame =
+                (frame_delta > 0) ? ((double)frame_nal_delta / (double)frame_delta) : 0.0;
+            const double avg_cb_per_frame =
+                (frame_delta > 0) ? ((double)frame_cb_delta / (double)frame_delta) : 0.0;
+            const double avg_frame_proc_ms =
+                (frame_delta > 0) ? ((double)frame_proc_delta_us / (double)frame_delta / 1000.0) : 0.0;
+            const double avg_cb_cost_us =
+                (cb_count_delta > 0) ? ((double)cb_cost_delta_us / (double)cb_count_delta) : 0.0;
+            const double avg_lag_us =
+                (lag_count_delta > 0) ? ((double)lag_total_delta_us / (double)lag_count_delta) : 0.0;
+            const double avg_pace_lag_us =
+                (pace_lag_count_delta > 0) ? ((double)pace_lag_total_delta_us / (double)pace_lag_count_delta) : 0.0;
+            const double avg_retry_lag_us =
+                (retry_lag_count_delta > 0) ? ((double)retry_lag_total_delta_us / (double)retry_lag_count_delta) : 0.0;
+
+            elog_i(RTSP_LOG_TAG,
+                   "[VIDEO] sent=%d, ts=%u, size=%zu, fps=%d, obs{frame=%" PRIu64 ", nal_avg=%.2f nal_max=%" PRIu64 ", cbpf_avg=%.2f cbpf_max=%" PRIu64 ", frame_ms_avg=%.2f frame_ms_max=%.2f, cb_us_avg=%.2f cb_us_max=%.2f, lag_us_avg=%.2f lag_us_max=%.2f lag2ms=%" PRIu64 ", pace_lag_us_avg=%.2f pace_lag2ms=%" PRIu64 ", retry_lag_us_avg=%.2f retry_lag2ms=%" PRIu64 "}",
+                   ctx->frame_count, ctx->timestamp, video_size, ctx->fps,
+                   frame_delta,
+                   avg_nal_per_frame, ctx->frame_nal_max,
+                   avg_cb_per_frame, ctx->frame_cb_max,
+                   avg_frame_proc_ms, (double)ctx->frame_proc_max_us / 1000.0,
+                   avg_cb_cost_us, (double)ctx->cb_exec_max_us,
+                   avg_lag_us, (double)ctx->deadline_lag_max_us,
+                   lag_over_2ms_delta,
+                   avg_pace_lag_us, pace_lag_over_2ms_delta,
+                   avg_retry_lag_us, retry_lag_over_2ms_delta);
+
+            ctx->last_log_frame_done_count = ctx->frame_done_count;
+            ctx->last_log_frame_nal_total = ctx->frame_nal_total;
+            ctx->last_log_frame_cb_total = ctx->frame_cb_total;
+            ctx->last_log_frame_proc_total_us = ctx->frame_proc_total_us;
+            ctx->last_log_cb_exec_total_us = ctx->cb_exec_total_us;
+            ctx->last_log_cb_exec_count = ctx->cb_exec_count;
+            ctx->last_log_deadline_lag_total_us = ctx->deadline_lag_total_us;
+            ctx->last_log_deadline_lag_count = ctx->deadline_lag_count;
+            ctx->last_log_deadline_lag_over_2ms_count = ctx->deadline_lag_over_2ms_count;
+            ctx->last_log_pace_lag_total_us = ctx->pace_lag_total_us;
+            ctx->last_log_pace_lag_count = ctx->pace_lag_count;
+            ctx->last_log_pace_lag_over_2ms_count = ctx->pace_lag_over_2ms_count;
+            ctx->last_log_retry_lag_total_us = ctx->retry_lag_total_us;
+            ctx->last_log_retry_lag_count = ctx->retry_lag_count;
+            ctx->last_log_retry_lag_over_2ms_count = ctx->retry_lag_over_2ms_count;
+            ctx->last_stat_log_us = now_us;
         }
     }
     
@@ -1012,12 +1302,32 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
     if (U8Slice99_is_empty(ctx->video)) {
         if (ctx->pull_frame && ctx->release_frame) {
             send_nalu(ctx);
+            const uint64_t frame_end_us = monotonic_time_us();
+            const uint64_t frame_proc_us =
+                (ctx->frame_start_us > 0 && frame_end_us >= ctx->frame_start_us)
+                    ? (frame_end_us - ctx->frame_start_us)
+                    : 0;
+            ctx->frame_done_count++;
+            ctx->frame_nal_total += ctx->frame_nal_count;
+            ctx->frame_cb_total += ctx->frame_cb_count;
+            ctx->frame_proc_total_us += frame_proc_us;
+            if (ctx->frame_nal_count > ctx->frame_nal_max) {
+                ctx->frame_nal_max = ctx->frame_nal_count;
+            }
+            if (ctx->frame_cb_count > ctx->frame_cb_max) {
+                ctx->frame_cb_max = ctx->frame_cb_count;
+            }
+            if (frame_proc_us > ctx->frame_proc_max_us) {
+                ctx->frame_proc_max_us = frame_proc_us;
+            }
+
             ctx->release_frame((void **)&ctx->current_frame_data, &ctx->current_frame_size, NULL);
             ctx->current_frame_data = NULL;
             ctx->current_frame_size = 0;
-            // 修正：不再使用 0 延时，而是使用正常的帧间隔，防止高频空转抢占 CPU
-            struct timeval tv = {.tv_sec = 0, .tv_usec = 1000000 / ctx->fps};
-            event_add(ctx->ev, &tv);
+            ctx->frame_start_us = 0;
+            ctx->frame_nal_count = 0;
+            ctx->frame_cb_count = 0;
+            video_schedule_next_deadline(ctx);
         } else {
             send_nalu(ctx);
             event_del(ctx->ev);
@@ -1026,6 +1336,7 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
                 bufferevent_trigger_event(ctx->bev, BEV_EVENT_EOF, 0);
             }
         }
+        video_ctx_record_cb_exec(ctx, cb_begin_us);
         return;
     }
 
@@ -1046,10 +1357,13 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
     if (!au_found) {
         goto again;
     }
-    
-    // 修正：发送完一个 NALU 后，稍微延迟一下再处理下一个，避免短时间内发送过多包
-    struct timeval tv = {.tv_sec = 0, .tv_usec = 1000}; // 1ms delay
-    event_add(ctx->ev, &tv);
+
+    if (ctx->au_retry_us == 0) {
+        goto again;
+    }
+    // 默认分片发送场景按小延迟调度；可通过 RTSP_VIDEO_AU_RETRY_US 覆盖
+    video_schedule_retry(ctx, ctx->au_retry_us);
+    video_ctx_record_cb_exec(ctx, cb_begin_us);
 }
 
 static bool send_h264_nalu(VideoCtx *ctx) {
@@ -1088,14 +1402,21 @@ static bool send_h264_nalu(VideoCtx *ctx) {
         if (SmolRTSP_NalTransport_send_packet_ext(
                 ctx->transport, SmolRTSP_RtpTimestamp_Raw(ctx->timestamp), nalu, (uint8_t *)&ctx->extension, sizeof(ctx->extension)) ==
             -1) {
-            perror("Failed to send RTP/NAL");
-            perror("Failed to send RTP/NAL");
+            const int err = errno;
+            elog_e(
+                RTSP_LOG_TAG,
+                "[VIDEO] Failed to send RTP/NAL(ext) errno=%d(%s)",
+                err, strerror(err));
         }
     } else {
         if (SmolRTSP_NalTransport_send_packet(
                 ctx->transport, SmolRTSP_RtpTimestamp_Raw(ctx->timestamp), nalu) ==
             -1) {
-            perror("Failed to send RTP/NAL");
+            const int err = errno;
+            elog_e(
+                RTSP_LOG_TAG,
+                "[VIDEO] Failed to send RTP/NAL errno=%d(%s)",
+                err, strerror(err));
         }
     }
     
@@ -1122,13 +1443,20 @@ static bool send_h265_nalu(VideoCtx *ctx) {
     if (SmolRTSP_NalTransport_send_packet(
             ctx->transport, SmolRTSP_RtpTimestamp_Raw(ctx->timestamp), nalu) ==
         -1) {
-        perror("Failed to send RTP/NAL");
+        const int err = errno;
+        elog_e(
+            RTSP_LOG_TAG,
+            "[VIDEO] Failed to send RTP/NAL errno=%d(%s)",
+            err, strerror(err));
     }
     
     return au_found;
 }
 
 static bool send_nalu(VideoCtx *ctx) {
+    if (ctx && ctx->frame_start_us > 0) {
+        ctx->frame_nal_count++;
+    }
     if (ctx->codec == CODEC_H264) {
         return send_h264_nalu(ctx);
     } else if (ctx->codec == CODEC_H265) {
@@ -1140,22 +1468,22 @@ static bool send_nalu(VideoCtx *ctx) {
  void* create_server(const struct rtsp_server_param *param)
 {
     if (!param) {
-        printf("[RTSP] Invalid parameter.\n");
+        elog_e(RTSP_LOG_TAG, "Invalid parameter");
         return NULL;
     }
     
-    printf("[RTSP] Creating RTSP server with audio_enable=%d, audio_codec=%d, audio_sample_rate=%d\n",
+    elog_i(RTSP_LOG_TAG, "Creating RTSP server: audio_enable=%d codec=%d sample_rate=%d",
            param->audio_enable, param->audio_codec, param->audio_sample_rate);
     
     if (param->audio_enable) {
-        printf("[RTSP] Audio params: codec=%d, rate=%d, channels=%d, samples_per_packet=%d\n",
-               param->audio_codec, param->audio_sample_rate, 
+        elog_i(RTSP_LOG_TAG, "Audio params: codec=%d rate=%d channels=%d samples_per_packet=%d",
+               param->audio_codec, param->audio_sample_rate,
                param->audio_channels, param->audio_samples_per_packet);
     }
 
     struct rtsp_server *server = (struct rtsp_server *)malloc(sizeof(struct rtsp_server));
     if (!server) {
-        printf("Failed to allocate memory for server.\n");
+        elog_e(RTSP_LOG_TAG, "Failed to allocate memory for server");
         return NULL;
     }
     memset(server, 0, sizeof(struct rtsp_server));
@@ -1164,7 +1492,7 @@ static bool send_nalu(VideoCtx *ctx) {
     // Create event base
     server->base = event_base_new();
     if (!server->base) {
-        printf("event_base_new failed.\n");
+        elog_e(RTSP_LOG_TAG, "event_base_new failed");
         free(server);
         return NULL;
     }
@@ -1181,7 +1509,7 @@ static bool send_nalu(VideoCtx *ctx) {
         LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE, -1,
         (struct sockaddr *)&sin, sizeof sin);
     if (!server->listener) {
-        printf("evconnlistener_new_bind failed.\n");
+        elog_e(RTSP_LOG_TAG, "evconnlistener_new_bind failed");
         event_base_free(server->base);
         free(server);
         return NULL;
@@ -1209,24 +1537,24 @@ static void *event_loop_thread(void *arg)
 int start_server(void *server)
 {
     if (!server) {
-        printf("Invalid server pointer.\n");
+        elog_e(RTSP_LOG_TAG, "Invalid server pointer");
         return EXIT_FAILURE;
     }
 
     struct rtsp_server *rtsp_server = (struct rtsp_server *)server;
 
     if (rtsp_server->is_running) {
-        printf("Server is already running on port %d.\n", rtsp_server->param.port);
+        elog_w(RTSP_LOG_TAG, "Server is already running on port %d", rtsp_server->param.port);
         return EXIT_SUCCESS;
     }
 
-    printf("Server started on port %d.\n", rtsp_server->param.port);
+    elog_i(RTSP_LOG_TAG, "Server started on port %d", rtsp_server->param.port);
     rtsp_server->is_running = true;
 
     // Create thread to run event loop
     pthread_t thread_id;
     if (pthread_create(&thread_id, NULL, event_loop_thread, rtsp_server) != 0) {
-        perror("pthread_create failed");
+        elog_e(RTSP_LOG_TAG, "pthread_create failed");
         rtsp_server->is_running = false;
         return EXIT_FAILURE;
     }
@@ -1240,28 +1568,28 @@ int start_server(void *server)
 int stop_server(void *server)
 {
     if (!server) {
-        printf("Invalid server pointer.\n");
+        elog_e(RTSP_LOG_TAG, "Invalid server pointer");
         return EXIT_FAILURE;
     }
 
     struct rtsp_server *rtsp_server = (struct rtsp_server *)server;
 
     if (!rtsp_server->is_running) {
-        printf("Server is not running.\n");
+        elog_w(RTSP_LOG_TAG, "Server is not running");
         return EXIT_SUCCESS;
     }
 
     // Stop the event loop
     event_base_loopbreak(rtsp_server->base);
     rtsp_server->is_running = false;
-    puts("Server stopped.");
+    elog_i(RTSP_LOG_TAG, "Server stopped");
     return EXIT_SUCCESS;
 }
 
 int destroy_server(void *server)
 {
     if (!server) {
-        printf("Invalid server pointer.\n");
+        elog_e(RTSP_LOG_TAG, "Invalid server pointer");
         return EXIT_FAILURE;
     }
 
@@ -1281,14 +1609,14 @@ int destroy_server(void *server)
     }
 
     free(server);
-    puts("Server destroyed.");
+    elog_i(RTSP_LOG_TAG, "Server destroyed");
     return EXIT_SUCCESS;
 }
 
 int register_function(void *server, func_id_t id, func_t func)
 {
     if (!server) {
-        printf("Invalid server pointer.\n");
+        elog_e(RTSP_LOG_TAG, "Invalid server pointer");
         return EXIT_FAILURE;
     }
 
@@ -1300,7 +1628,7 @@ int register_function(void *server, func_id_t id, func_t func)
 int is_server_running(void *server)
 {
     if (!server) {
-        printf("Invalid server pointer.\n");
+        elog_e(RTSP_LOG_TAG, "Invalid server pointer");
         return 0;
     }
 
@@ -1311,7 +1639,7 @@ int is_server_running(void *server)
 int set_server_param(void *server, int param_id, void *param, size_t size)
 {
     if (!server) {
-        printf("Invalid server pointer.\n");
+        elog_e(RTSP_LOG_TAG, "Invalid server pointer");
         return EXIT_FAILURE;
     }
 
@@ -1330,7 +1658,7 @@ int set_server_param(void *server, int param_id, void *param, size_t size)
             rtsp_server->param.video_pps_len = size;
             break;
         default:
-            printf("Invalid param id.\n");
+            elog_e(RTSP_LOG_TAG, "Invalid param id");
             break;
     }
 

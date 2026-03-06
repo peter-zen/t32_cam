@@ -32,6 +32,7 @@ struct MediaParams {
     int sampleRate = 16000;
     int channels = 1;
     int bitsPerSample = 16;
+    int audioFrameDurationUs = 0; // expected audio packet interval for pacing
     AudioCodec audioCodec = AudioCodec::PCMA;
     VideoCodec videoCodec = VideoCodec::H264;
     int videoWidth = 1920;

@@ -138,6 +138,11 @@ cd build_sim && make -j$(nproc)
 - Keep API signatures consistent with IMP SDK
 - Return appropriate error codes
 
+### Collaboration Ownership Rules (Multi-Developer)
+- `src/hal/**` is PIC-owned (including `src/hal/CMakeLists.txt`, `src/hal/include/`, `src/hal/ingenic/`, `src/hal/simu/`, and all files under this tree).
+- Agents must **not** directly modify files under `src/hal/**` during normal tasks.
+- If a HAL change is needed, provide a written change proposal first (scope, rationale, impact), and wait for PIC confirmation before applying any code changes.
+
 ### Comments and Documentation
 - Use Doxygen-style comments for public APIs:
   ```cpp

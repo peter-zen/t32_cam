@@ -670,7 +670,10 @@ int main(int argc, char* argv[])
 
     std::string db_path = simRootPath + "/data/db";
     std::string media_root = simRootPath + "/DCIM";
-    std::string log_root = simRootPath + "/log";
+    const char* envLogDir = std::getenv("SIM_LOG_DIR");
+    std::string log_root = (envLogDir && envLogDir[0] != '\0')
+                           ? std::string(envLogDir)
+                           : (simRootPath + "/logs");  // default: build_sim/sdcard/logs
     std::string log_file = log_root + "/app.log";
 #else
     std::string db_path = EnvManager::getInstance()->getEnv("DB_PATH", "/sdcard/data/db");
@@ -694,7 +697,7 @@ int main(int argc, char* argv[])
     // Ensure log directory exists
     Misc::createDirectory(log_root);
 
-    // PC 模拟环境：启用终端和文件日志，日志保存到 sdcard/log/
+    // PC 模拟环境：启用终端和文件日志，默认保存到 build_sim/sdcard/logs/
     ElogConfig elog_config;
     elog_config.enableTerminal = true;
     elog_config.enableFile = true;
@@ -706,6 +709,8 @@ int main(int argc, char* argv[])
     
     Logger::log(LogLevel::INFO, "[SIM] Simulation Root: %s", simRootPath.c_str());
     Logger::log(LogLevel::INFO, "[SIM] Project Root: %s", projectRootPath.c_str());
+    Logger::log(LogLevel::INFO, "[SIM] Log Directory: %s", log_root.c_str());
+    Logger::log(LogLevel::INFO, "[SIM] Log File: %s", log_file.c_str());
 #else
     // 真机环境：仅终端输出
     if (!elog_init_default()) {

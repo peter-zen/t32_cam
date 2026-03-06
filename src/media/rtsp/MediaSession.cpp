@@ -3,6 +3,9 @@
 #include <chrono>
 #include <cstring>
 
+#ifdef LOG_TAG
+#undef LOG_TAG
+#endif
 #define LOG_TAG "MED_SESSION"
 
 namespace media {
@@ -33,10 +36,26 @@ bool MediaSession::start()
     MediaParams params = source_->getParams();
     sessionType_ = (params.type == MediaType::VIDEO) ? "VIDEO" : "AUDIO";
 
+    if (params.type == MediaType::AUDIO) {
+        int frameMs = params.audioFrameDurationUs > 0 ? (params.audioFrameDurationUs / 1000) : 40;
+        int timeoutMs = std::max(5, std::min(20, frameMs / 2));
+        popTimeoutMs_.store(timeoutMs);
+    } else {
+        int fps = params.videoFrameRate > 0 ? params.videoFrameRate : 15;
+        int frameMs = std::max(1, 1000 / fps);
+        int timeoutMs = std::max(3, std::min(12, frameMs / 2));
+        popTimeoutMs_.store(timeoutMs);
+    }
+
     if (!source_->open()) {
         elog_e(LOG_TAG, "Failed to open source");
         return false;
     }
+
+    frameCount_ = 0;
+    consumedCount_ = 0;
+    pullTimeoutCount_ = 0;
+    fifo_->resetStats();
 
     running_ = true;
     startTimeUs_ = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -45,6 +64,8 @@ bool MediaSession::start()
 
     elog_i(LOG_TAG, "[%s] MediaSession started. FIFO size: %zu",
             sessionType_.c_str(), fifoSize_);
+    elog_i(LOG_TAG, "[%s] Consumer pop timeout=%d ms",
+           sessionType_.c_str(), popTimeoutMs_.load());
 
     return true;
 }
@@ -67,15 +88,27 @@ bool MediaSession::stop()
         source_->close();
     }
 
-    uint64_t frames = frameCount_.load();
+    uint64_t produced = frameCount_.load();
+    uint64_t consumed = consumedCount_.load();
+    uint64_t pullTimeouts = pullTimeoutCount_.load();
+    size_t fifoDrops = fifo_->getDropCount();
     uint64_t durationUs = stopTimeUs_ - startTimeUs_;
     double durationSec = durationUs / 1000000.0;
-    double avgRate = (durationSec > 0) ? (frames / durationSec) : 0.0;
+    double avgProducedRate = (durationSec > 0) ? (produced / durationSec) : 0.0;
+    double avgConsumedRate = (durationSec > 0) ? (consumed / durationSec) : 0.0;
 
     const char* rateUnit = (sessionType_ == "VIDEO") ? "fps" : "pps";
 
-    elog_i(LOG_TAG, "[%s] MediaSession stopped. Frames produced: %lu, duration: %.3f sec, avg rate: %.2f %s",
-            sessionType_.c_str(), (unsigned long)frames, durationSec, avgRate, rateUnit);
+    elog_i(LOG_TAG,
+           "[%s] MediaSession stopped. produced=%llu consumed=%llu pull_timeout=%llu fifo_drop=%zu duration=%.3f sec avg_produced=%.2f %s avg_consumed=%.2f %s",
+           sessionType_.c_str(),
+           (unsigned long long)produced,
+           (unsigned long long)consumed,
+           (unsigned long long)pullTimeouts,
+           fifoDrops,
+           durationSec,
+           avgProducedRate, rateUnit,
+           avgConsumedRate, rateUnit);
 
     return true;
 }
@@ -127,19 +160,40 @@ void MediaSession::producerLoop()
 {
     MediaParams params = source_->getParams();
     bool isVideo = (params.type == MediaType::VIDEO);
-    std::chrono::microseconds frameInterval(0);
+    std::chrono::microseconds pacingInterval(0);
 
     elog_i(LOG_TAG, "[%s] ProducerLoop started", sessionType_.c_str());
 
     if (isVideo) {
         int fps = params.videoFrameRate;
         if (fps > 0) {
-            frameInterval = std::chrono::microseconds(1000000 / fps);
+            pacingInterval = std::chrono::microseconds(1000000 / fps);
+            elog_i(LOG_TAG, "[%s] Producer pacing by fps=%d (%lld us)",
+                   sessionType_.c_str(), fps, (long long)pacingInterval.count());
         }
+    } else if (params.audioFrameDurationUs > 0) {
+        pacingInterval = std::chrono::microseconds(params.audioFrameDurationUs);
+        elog_i(LOG_TAG, "[%s] Producer pacing by audioFrameDurationUs=%d",
+               sessionType_.c_str(), params.audioFrameDurationUs);
     }
 
-    auto nextFrameTime = std::chrono::steady_clock::now() + frameInterval;
+    auto pushToSessionFifo = [this](void* data, size_t size, uint64_t timestamp, bool isKeyFrame) -> bool {
+        if (fifo_->push(data, size, timestamp, isKeyFrame)) {
+            frameCount_++;
+            return true;
+        }
+        return false;
+    };
+
+    auto nextFrameTime = std::chrono::steady_clock::now() + pacingInterval;
     bool droppingGop = false;
+    uint64_t lastFifoFullLogMs = 0;
+
+    auto lastStatTime = std::chrono::steady_clock::now();
+    uint64_t lastProduced = frameCount_.load();
+    uint64_t lastConsumed = consumedCount_.load();
+    uint64_t lastPullTimeout = pullTimeoutCount_.load();
+    size_t lastFifoDrops = fifo_->getDropCount();
 
     while (running_) {
         void* data = nullptr;
@@ -167,68 +221,104 @@ void MediaSession::producerLoop()
             isKeyFrame = true;
         }
 
-        if (frameInterval.count() > 0) {
-            if (isVideo && droppingGop) {
+        if (isVideo) {
+            if (droppingGop) {
                 if (isKeyFrame) {
                     droppingGop = false;
-                    if (!fifo_->push(data, size, timestamp, isKeyFrame)) {
+                    if (!pushToSessionFifo(data, size, timestamp, isKeyFrame)) {
                         if (fifo_->dropFirstNonKeyFrame()) {
-                            elog_w(LOG_TAG, "FIFO full, dropped oldest P-frame for new I-frame");
-                            if (!fifo_->push(data, size, timestamp, isKeyFrame)) {
-                                elog_w(LOG_TAG, "FIFO still full after drop, forcing head drop");
+                            elog_w(LOG_TAG, "[%s] FIFO full(%zu/%zu), dropped oldest P-frame for incoming I-frame",
+                                   sessionType_.c_str(), fifo_->size(), fifoSize_);
+                            if (!pushToSessionFifo(data, size, timestamp, isKeyFrame)) {
+                                elog_w(LOG_TAG, "[%s] FIFO still full(%zu/%zu) after drop, forcing head drop",
+                                       sessionType_.c_str(), fifo_->size(), fifoSize_);
                                 fifo_->dropOldest();
-                                fifo_->push(data, size, timestamp, isKeyFrame);
+                                pushToSessionFifo(data, size, timestamp, isKeyFrame);
                             }
                         } else {
-                            elog_w(LOG_TAG, "FIFO full of KeyFrames, dropped oldest I-frame for new I-frame");
+                            elog_w(LOG_TAG, "[%s] FIFO full(%zu/%zu) of key frames, dropped oldest I-frame",
+                                   sessionType_.c_str(), fifo_->size(), fifoSize_);
                             fifo_->dropOldest();
-                            fifo_->push(data, size, timestamp, isKeyFrame);
+                            pushToSessionFifo(data, size, timestamp, isKeyFrame);
                         }
                     }
                 } else {
                     source_->releaseData(&data, &size, &timestamp);
                 }
             } else {
-                if (!fifo_->push(data, size, timestamp, isKeyFrame)) {
-                    if (isVideo && !isKeyFrame) {
-                        elog_w(LOG_TAG, "FIFO full, dropping incoming P-frame and starting GOP drop");
+                if (!pushToSessionFifo(data, size, timestamp, isKeyFrame)) {
+                    if (!isKeyFrame) {
+                        elog_w(LOG_TAG, "[%s] FIFO full(%zu/%zu), dropping incoming P-frame and starting GOP drop",
+                               sessionType_.c_str(), fifo_->size(), fifoSize_);
                         droppingGop = true;
                         source_->releaseData(&data, &size, &timestamp);
                     } else {
                         if (fifo_->dropFirstNonKeyFrame()) {
-                            elog_w(LOG_TAG, "FIFO full, dropped oldest P-frame for new KeyFrame");
-                            fifo_->push(data, size, timestamp, isKeyFrame);
+                            elog_w(LOG_TAG, "[%s] FIFO full(%zu/%zu), dropped oldest P-frame for incoming key frame",
+                                   sessionType_.c_str(), fifo_->size(), fifoSize_);
+                            pushToSessionFifo(data, size, timestamp, isKeyFrame);
                         } else {
-                            elog_w(LOG_TAG, "FIFO full of KeyFrames, dropping oldest I-frame for new KeyFrame");
+                            elog_w(LOG_TAG, "[%s] FIFO full(%zu/%zu) of key frames, dropping oldest I-frame",
+                                   sessionType_.c_str(), fifo_->size(), fifoSize_);
                             fifo_->dropOldest();
-                            fifo_->push(data, size, timestamp, isKeyFrame);
+                            pushToSessionFifo(data, size, timestamp, isKeyFrame);
                         }
                     }
                 }
             }
-
-            if (frameInterval.count() > 0) {
-                auto now = std::chrono::steady_clock::now();
-                if (now > nextFrameTime + frameInterval) {
-                    nextFrameTime = now + frameInterval;
-                } else {
-                    std::this_thread::sleep_until(nextFrameTime);
-                    nextFrameTime += frameInterval;
-                }
-            }
         } else {
-            if (fifo_->push(data, size, timestamp, isKeyFrame)) {
-                frameCount_++;
-            } else {
-                static uint64_t lastLog = 0;
-                uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            if (!pushToSessionFifo(data, size, timestamp, isKeyFrame)) {
+                uint64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
-                if (now - lastLog > 1000) {
-                    elog_w(LOG_TAG, "FIFO full, dropping new frame (live source)");
-                    lastLog = now;
+                if (nowMs - lastFifoFullLogMs > 1000) {
+                    elog_w(LOG_TAG,
+                           "[%s] FIFO full(%zu/%zu), dropping new frame. fifo_drops=%zu, produced=%llu, consumed=%llu, pull_timeout=%llu",
+                           sessionType_.c_str(),
+                           fifo_->size(), fifoSize_,
+                           fifo_->getDropCount(),
+                           (unsigned long long)frameCount_.load(),
+                           (unsigned long long)consumedCount_.load(),
+                           (unsigned long long)pullTimeoutCount_.load());
+                    lastFifoFullLogMs = nowMs;
                 }
                 source_->releaseData(&data, &size, &timestamp);
             }
+        }
+
+        if (data) {
+            source_->releaseData(&data, &size, &timestamp);
+        }
+
+        if (pacingInterval.count() > 0) {
+            auto now = std::chrono::steady_clock::now();
+            if (now > nextFrameTime + pacingInterval) {
+                nextFrameTime = now + pacingInterval;
+            } else {
+                std::this_thread::sleep_until(nextFrameTime);
+                nextFrameTime += pacingInterval;
+            }
+        }
+
+        auto statNow = std::chrono::steady_clock::now();
+        if (statNow - lastStatTime >= std::chrono::seconds(1)) {
+            uint64_t produced = frameCount_.load();
+            uint64_t consumed = consumedCount_.load();
+            uint64_t pullTimeouts = pullTimeoutCount_.load();
+            size_t fifoDrops = fifo_->getDropCount();
+            elog_i(LOG_TAG,
+                   "[%s] Stats: produced=%llu/s consumed=%llu/s pull_timeout=%llu/s fifo=%zu/%zu fifo_drops=%zu(+%zu)",
+                   sessionType_.c_str(),
+                   (unsigned long long)(produced - lastProduced),
+                   (unsigned long long)(consumed - lastConsumed),
+                   (unsigned long long)(pullTimeouts - lastPullTimeout),
+                   fifo_->size(), fifoSize_,
+                   fifoDrops, fifoDrops - lastFifoDrops);
+
+            lastProduced = produced;
+            lastConsumed = consumed;
+            lastPullTimeout = pullTimeouts;
+            lastFifoDrops = fifoDrops;
+            lastStatTime = statNow;
         }
     }
 }
@@ -236,7 +326,9 @@ void MediaSession::producerLoop()
 int MediaSession::pullDataInternal(void** data, size_t* size, uint64_t* timestamp)
 {
     MediaFIFO<uint8_t>::Frame frame;
-    if (!fifo_->popBlocking(frame, std::chrono::milliseconds(5))) {
+    const int timeoutMs = std::max(1, popTimeoutMs_.load());
+    if (!fifo_->popBlocking(frame, std::chrono::milliseconds(timeoutMs))) {
+        pullTimeoutCount_++;
         return -1;
     }
 
@@ -245,6 +337,7 @@ int MediaSession::pullDataInternal(void** data, size_t* size, uint64_t* timestam
     if (timestamp) {
         *timestamp = frame.timestamp_us;
     }
+    consumedCount_++;
 
     return 0;
 }

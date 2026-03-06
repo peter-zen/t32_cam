@@ -9,7 +9,9 @@ namespace media {
 
 class AudioSource : public IMediaSource {
 public:
-    explicit AudioSource(std::shared_ptr<hal::IAudioStream> stream);
+    explicit AudioSource(std::shared_ptr<hal::IAudioStream> stream,
+                         int pollTimeoutMs = 20,
+                         int frameDurationUs = 0);
     bool open() override;
     void close() override;
     bool isOpen() const override;
@@ -20,6 +22,8 @@ public:
 private:
     std::shared_ptr<hal::IAudioStream> stream_;
     bool open_;
+    int pollTimeoutMs_;
+    int frameDurationUs_;
 };
 
 } // namespace media

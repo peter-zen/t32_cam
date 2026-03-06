@@ -41,6 +41,9 @@ private:
     std::atomic<bool> running_{false};
     size_t fifoSize_;
     std::atomic<uint64_t> frameCount_{0};
+    std::atomic<uint64_t> consumedCount_{0};
+    std::atomic<uint64_t> pullTimeoutCount_{0};
+    std::atomic<int> popTimeoutMs_{5};
     uint64_t startTimeUs_;
     uint64_t stopTimeUs_;
     std::string sessionType_;  // "VIDEO" or "AUDIO"

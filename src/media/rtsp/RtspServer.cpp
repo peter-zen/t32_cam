@@ -146,6 +146,12 @@ RtspServer::~RtspServer()
 
 bool RtspServer::initialize()
 {
+#ifdef BUILD_FOR_SIMULATION
+    Logger::log(LogLevel::INFO, "RTSP initialize: BUILD_FOR_SIMULATION=ON (HAL provider expected: SimVideo/SimAudio)");
+#else
+    Logger::log(LogLevel::INFO, "RTSP initialize: BUILD_FOR_SIMULATION=OFF (HAL provider expected: IngenicVideo/IngenicAudio)");
+#endif
+
     if (!initVideo()) {
         Logger::log(LogLevel::ERROR, "Video init failed");
         return false;
@@ -220,6 +226,7 @@ int RtspServer::onSessionClosed(void **data, size_t *size, uint64_t *timestamp)
 	Logger::log(LogLevel::INFO, "onSessionClosed");
     RtspServer *server = RtspServer::getInstance().get();
     if (server) {
+        server->uninitVideo();
         server->uninitAudio();
         server->streamingEnabled_ = false;
     }
@@ -389,7 +396,7 @@ bool RtspServer::initVideo()
     cfg.channel.stream_index = RTSP_STREAM_ID;
     cfg.width = 1280;
     cfg.height = 720;
-    cfg.fps_num = 15;
+    cfg.fps_num = 30;
     cfg.fps_den = 1;
     cfg.rc_mode = hal::VideoRcMode::CBR;
     cfg.enable_ivdc = true;
@@ -435,7 +442,7 @@ bool RtspServer::initAudio()
     cfg.sample_rate = 8000;
     cfg.channels = 1;
     cfg.bit_width = 16;
-    cfg.num_per_frame = 320; // 20ms @ 8000Hz
+    cfg.num_per_frame = 320; // 40ms @ 8000Hz
     cfg.frame_num = 10;
     cfg.volume = 80;
     cfg.gain = 28;
@@ -448,7 +455,20 @@ bool RtspServer::initAudio()
     }
     audioSampleRate_ = cfg.sample_rate;
     audioNumPerFrame_ = cfg.num_per_frame;
-    auto audioSource = std::make_shared<AudioSource>(audioStream);
+    int audioFrameDurationUs = 0;
+    if (cfg.sample_rate > 0 && cfg.num_per_frame > 0) {
+        audioFrameDurationUs = (1000000 * cfg.num_per_frame) / cfg.sample_rate;
+    }
+    int audioPollTimeoutMs = 20;
+    if (audioFrameDurationUs > 0) {
+        int frameMs = audioFrameDurationUs / 1000;
+        audioPollTimeoutMs = std::max(5, std::min(50, frameMs));
+    }
+    Logger::log(LogLevel::INFO,
+                "Audio pacing config: frame_duration_us=%d, poll_timeout_ms=%d",
+                audioFrameDurationUs, audioPollTimeoutMs);
+
+    auto audioSource = std::make_shared<AudioSource>(audioStream, audioPollTimeoutMs, audioFrameDurationUs);
     audioSession_ = std::make_shared<MediaSession>(audioSource, 80);
     return true;
 }

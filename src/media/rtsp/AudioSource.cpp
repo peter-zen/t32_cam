@@ -1,11 +1,19 @@
 #include "AudioSource.h"
 #include <cstring>
 #include <cstdlib>
+#include <algorithm>
 
 using namespace media;
 
-AudioSource::AudioSource(std::shared_ptr<hal::IAudioStream> stream)
-    : stream_(std::move(stream)), open_(false) {}
+AudioSource::AudioSource(std::shared_ptr<hal::IAudioStream> stream,
+                         int pollTimeoutMs,
+                         int frameDurationUs)
+    : stream_(std::move(stream))
+    , open_(false)
+    , pollTimeoutMs_(std::max(1, pollTimeoutMs))
+    , frameDurationUs_(std::max(0, frameDurationUs))
+{
+}
 
 bool AudioSource::open() {
     if (open_) return true;
@@ -28,7 +36,7 @@ bool AudioSource::isOpen() const {
 
 int AudioSource::pullData(void** data, size_t* size, uint64_t* timestamp) {
     if (!stream_) return -1;
-    if (!stream_->polling(50)) return -1;
+    if (!stream_->polling(pollTimeoutMs_)) return -1;
     hal::AudioEncodedFrame frame;
     if (!stream_->getFrame(frame)) return -1;
     size_t total = 0;
@@ -71,6 +79,7 @@ MediaType AudioSource::getMediaType() const {
 MediaParams AudioSource::getParams() const {
     MediaParams p;
     p.type = MediaType::AUDIO;
+    p.audioFrameDurationUs = frameDurationUs_;
     if (stream_) {
         hal::AudioStreamInfo info;
         if (stream_->getInfo(info)) {
