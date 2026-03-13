@@ -1,5 +1,6 @@
 #include <fstream>
 #include <algorithm>
+#include <cstdlib>
 #include "EnvManager.h"
 
 EnvManager::EnvManager()
@@ -83,6 +84,10 @@ std::string EnvManager::getEnv(const std::string &key,
 	auto it = this->envMap.find(key);
 	if (it != this->envMap.end()) {
 		return it->second;
+	}
+	const char* envValue = std::getenv(key.c_str());
+	if (envValue != nullptr) {
+		return envValue;
 	}
 	return defaultValue;
 }

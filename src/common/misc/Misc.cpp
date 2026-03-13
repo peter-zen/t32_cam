@@ -2,8 +2,11 @@
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <net/if.h>
 #include <sys/socket.h>
-//#include <unistd.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -206,6 +209,70 @@ std::string Misc::getGatewayAddress(const std::string &interface_name)
     }
 
     return "";
+}
+
+std::string Misc::getMACAddress(const std::string &interface_name)
+{
+    if (interface_name.empty()) {
+        return "";
+    }
+
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        Logger::log(LogLevel::ERROR, "Failed to create socket for MAC lookup");
+        return "";
+    }
+
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, interface_name.c_str(), IFNAMSIZ - 1);
+
+    if (ioctl(fd, SIOCGIFHWADDR, &ifr) < 0) {
+        close(fd);
+        Logger::log(LogLevel::ERROR, "Failed to get MAC address for %s", interface_name.c_str());
+        return "";
+    }
+
+    close(fd);
+
+    const unsigned char* mac = reinterpret_cast<unsigned char*>(ifr.ifr_hwaddr.sa_data);
+    char mac_string[18] = {0};
+    snprintf(mac_string, sizeof(mac_string),
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return std::string(mac_string);
+}
+
+std::string Misc::findUsableNetworkInterface(const std::string &preferred_name)
+{
+    if (!preferred_name.empty() && !getIPAddress(preferred_name).empty()) {
+        return preferred_name;
+    }
+
+    struct ifaddrs *ifaddr = nullptr;
+    if (getifaddrs(&ifaddr) == -1) {
+        Logger::log(LogLevel::ERROR, "Error getting network interfaces");
+        return "";
+    }
+
+    std::string fallback;
+    for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET) {
+            continue;
+        }
+        if ((ifa->ifa_flags & IFF_LOOPBACK) != 0) {
+            continue;
+        }
+
+        std::string candidate = ifa->ifa_name;
+        if (!candidate.empty() && !getIPAddress(candidate).empty()) {
+            fallback = candidate;
+            break;
+        }
+    }
+
+    freeifaddrs(ifaddr);
+    return fallback;
 }
 
 std::string Misc::getNetworkInterfaceName()

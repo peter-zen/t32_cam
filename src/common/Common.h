@@ -60,6 +60,14 @@ extern "C" {
 #define INI_KEY_REMOTE_WAKEUP "RemoteWakeup"
 #define INI_KEY_RECORD "Record"
 
+#define INI_SECTION_MDNS "MDNS"
+#define INI_KEY_MDNS_ENABLE "Enable"
+#define INI_KEY_MDNS_SERVICE_TYPE "ServiceType"
+#define INI_KEY_MDNS_INSTANCE_NAME "InstanceName"
+#define INI_KEY_MDNS_HOST_NAME "HostName"
+#define INI_KEY_MDNS_CTRL_PORT "CtrlPort"
+#define INI_KEY_MDNS_RTSP_PORT "RtspPort"
+
 //program type
 #define PTYPE_NO_NET 0
 #define PTYPE_WIFI	1

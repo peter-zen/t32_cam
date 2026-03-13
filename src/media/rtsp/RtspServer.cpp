@@ -132,10 +132,18 @@ RtspServer::RtspServer()
     : pullFrameThread(nullptr)
 	, pullFrameThreadRun(false)
 	, alreadyGetSpsPps(false)
+    , port_(8554)
     , enableAudio_(true)
     , streamingEnabled_(false)
 {
     initialized = initialize();
+}
+
+void RtspServer::setPort(int port)
+{
+    if (port > 0 && port <= 65535) {
+        port_ = port;
+    }
 }
 
 RtspServer::~RtspServer()
@@ -281,7 +289,7 @@ bool RtspServer::start_internal()
     MediaParams vParams = videoSession_->getParams();
     int fps = vParams.videoFrameRate;
     struct rtsp_server_param rtsp_server_param = {0};
-    rtsp_server_param.port = 8554;
+    rtsp_server_param.port = port_;
     Logger::log(LogLevel::DEBUG, "rtsp_server_param.port = %d", rtsp_server_param.port);
     rtsp_server_param.video_enable = 1;
     rtsp_server_param.video_fps = fps;

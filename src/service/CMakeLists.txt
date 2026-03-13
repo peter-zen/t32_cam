@@ -3,3 +3,4 @@
 add_subdirectory(http_server)
 add_subdirectory(daemon)
 add_subdirectory(camera)
+add_subdirectory(discovery)

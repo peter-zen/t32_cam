@@ -28,6 +28,7 @@ class RtspServer {
         static int pullAudioFrame(void **data, size_t *size, uint64_t *timestamp);
         static int releaseAudioFrame(void **data, size_t *size, uint64_t *timestamp);
         static void registerOnsessionClosedCallback(std::function<void(void)> callback);
+        void setPort(int port);
         bool start();
         bool stop();
         bool isRunning();
@@ -64,6 +65,7 @@ class RtspServer {
         std::shared_ptr<MediaSession> audioSession_;
         int audioSampleRate_;
         int audioNumPerFrame_;
+        int port_;
         bool enableAudio_;
         bool streamingEnabled_;
 };

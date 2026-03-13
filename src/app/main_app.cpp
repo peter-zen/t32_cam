@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <cstdlib>
 #include <ctime>
+#include <cctype>
 #include <cstring>
 #include <sys/stat.h>
 #include <iomanip>
@@ -44,6 +45,7 @@
 #include "daemon_api.h"
 #include "DatabaseManager.h"
 #include "MediaScanner.h"
+#include "MdnsService.h"
 #include "Timezone.h"
 #include "UsbDongle.h"
 
@@ -103,6 +105,109 @@ static bool getFileCreationTime(const std::string& filename, std::string& time_s
     }
 
     return true;
+}
+
+static std::string trimConfigString(const std::string& value)
+{
+    size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+        ++start;
+    }
+
+    size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+        --end;
+    }
+
+    std::string trimmed = value.substr(start, end - start);
+    if (trimmed.size() >= 2 && trimmed.front() == '"' && trimmed.back() == '"') {
+        return trimmed.substr(1, trimmed.size() - 2);
+    }
+    return trimmed;
+}
+
+static void setEnvIfEmpty(const std::shared_ptr<EnvManager>& env_manager,
+                          const std::string& key,
+                          const std::string& value)
+{
+    if (env_manager->getEnv(key, "").empty()) {
+        env_manager->setEnv(key, value);
+    }
+}
+
+static uint16_t getConfiguredPort(const std::shared_ptr<DeviceConfig>& config,
+                                  const std::string& section,
+                                  const std::string& key,
+                                  uint16_t default_port)
+{
+    int configured_port = config->get(section, key, static_cast<int>(default_port));
+    if (configured_port <= 0 || configured_port > 65535) {
+        return default_port;
+    }
+    return static_cast<uint16_t>(configured_port);
+}
+
+static std::string getDefaultMdnsInstanceName(const std::shared_ptr<DeviceConfig>& config)
+{
+    std::string instance_name = trimConfigString(config->get(INI_SECTION_MDNS, INI_KEY_MDNS_INSTANCE_NAME, ""));
+    if (!instance_name.empty()) {
+        return instance_name;
+    }
+
+    instance_name = trimConfigString(config->get(INI_SECTION_BOOT, INI_KEY_PNAME, ""));
+    if (!instance_name.empty()) {
+        return instance_name;
+    }
+
+    instance_name = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
+    if (!instance_name.empty()) {
+        return instance_name;
+    }
+
+    return "T32Camera";
+}
+
+static std::string getDefaultMdnsHostName(const std::shared_ptr<DeviceConfig>& config)
+{
+    std::string host_name = trimConfigString(config->get(INI_SECTION_MDNS, INI_KEY_MDNS_HOST_NAME, ""));
+    if (!host_name.empty()) {
+        return host_name;
+    }
+
+    host_name = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
+    if (!host_name.empty()) {
+        return host_name;
+    }
+
+    return "t32cam";
+}
+
+static service::MdnsServiceParams buildMdnsParams(const std::shared_ptr<DeviceConfig>& config,
+                                                  const std::string& interface_name,
+                                                  const std::string& ip_address,
+                                                  uint16_t ctrl_port,
+                                                  uint16_t rtsp_port)
+{
+    service::MdnsServiceParams params;
+    params.interfaceName = interface_name;
+    params.ipAddress = ip_address;
+    params.serviceType = trimConfigString(
+        config->get(INI_SECTION_MDNS, INI_KEY_MDNS_SERVICE_TYPE, "_t32cam._tcp"));
+    params.instanceName = getDefaultMdnsInstanceName(config);
+    params.hostName = getDefaultMdnsHostName(config);
+    params.txt.model = trimConfigString(config->get(INI_SECTION_BOOT, INI_KEY_PMODEL, "T32"));
+    params.txt.serialNumber = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
+    params.txt.firmwareVersion = CAMERA_VERSION;
+    params.txt.rtspPort = rtsp_port;
+    params.txt.ctrlPort = ctrl_port;
+    params.txt.macAddress = Misc::getMACAddress(interface_name);
+    params.txt.status = "ready";
+    return params;
+}
+
+static bool isMdnsEnabled(const std::shared_ptr<DeviceConfig>& config)
+{
+    return config->get(INI_SECTION_MDNS, INI_KEY_MDNS_ENABLE, 1) != 0;
 }
 
 static int generateDescInfo(std::vector<std::string>& files, std::string& desc_info)
@@ -659,15 +764,24 @@ int main(int argc, char* argv[])
     bool update_config_exists = false;
     bool is_rtc_work_well = true;
     enum workingMode working_mode = workingMode::WORKING_MODE_MAX;
-    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
-    
-    // Initialize Database
 #ifdef BUILD_FOR_SIMULATION
     // 动态计算路径，确保文件生成在 build 目录下
     std::string exePath = Misc::getExecutablePath();
     std::string simRootPath = exePath + "/../sdcard";  // build_sim/bin/../sdcard -> build_sim/sdcard
     std::string projectRootPath = exePath + "/../..";  // build_sim/bin/../.. -> project_root
 
+    auto env_manager = EnvManager::getInstance();
+    setEnvIfEmpty(env_manager, "CONFIG_FILE", projectRootPath + "/res/config.ini");
+    setEnvIfEmpty(env_manager, "SETTING_FILE_PATH", projectRootPath + "/res/setting.json");
+    setEnvIfEmpty(env_manager, "BROADCAST_FILELIST_PATHNAME", simRootPath + "/media/audio/AUDIO_PLAY_LIST.txt");
+    setEnvIfEmpty(env_manager, "BROADCAST_FILE_PATH", simRootPath + "/media/audio/");
+    setEnvIfEmpty(env_manager, "ISP_FILE_PATH", simRootPath + "/media/audio/");
+#else
+    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
+#endif
+
+    // Initialize Database
+#ifdef BUILD_FOR_SIMULATION
     std::string db_path = simRootPath + "/data/db";
     std::string media_root = simRootPath + "/DCIM";
     const char* envLogDir = std::getenv("SIM_LOG_DIR");
@@ -865,6 +979,14 @@ int main(int argc, char* argv[])
     if (!Misc::mountSDCard(simRootPath)) {
         Logger::log(LogLevel::ERROR, "mount sdcard error");
         goto main_exit;
+    }
+    {
+        std::string interface_name = Misc::findUsableNetworkInterface(NETIF_NAME);
+        if (interface_name.empty()) {
+            interface_name = NETIF_NAME;
+        }
+        Misc::setNetworkInterfaceName(interface_name);
+        elog_i("MDNS", "[SIM] Selected network interface: %s", interface_name.c_str());
     }
 #else
     if (!Misc::mountSDCard(SD_CARD_PATH)) {
@@ -1162,17 +1284,42 @@ int main(int argc, char* argv[])
     }
 
     if (command & CMD_MOBILE) {
+        uint16_t http_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_CTRL_PORT, 8080);
+        uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, 8554);
         auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
         auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
+#ifndef BUILD_FOR_SIMULATION
         if (wifi_ssid.empty() || wifi_pwd.empty()) {
             Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");
             goto main_exit;
         }
-        Misc::connectWifi(wifi_ssid, wifi_pwd);
-        Misc::startDHCP();
+        if (!Misc::connectWifi(wifi_ssid, wifi_pwd)) {
+            Logger::log(LogLevel::ERROR, "connect wifi error");
+            goto main_exit;
+        }
+        if (!Misc::startDHCP()) {
+            Logger::log(LogLevel::ERROR, "start dhcp error");
+            goto main_exit;
+        }
+#endif
+
+        std::string interface_name = Misc::getNetworkInterfaceName();
+#ifdef BUILD_FOR_SIMULATION
+        std::string detected_interface = Misc::findUsableNetworkInterface(interface_name);
+        if (!detected_interface.empty() && detected_interface != interface_name) {
+            interface_name = detected_interface;
+            Misc::setNetworkInterfaceName(interface_name);
+        }
+#endif
+
+        std::string ip_address = Misc::getIPAddress(interface_name);
+        if (ip_address.empty()) {
+            Logger::log(LogLevel::ERROR, "No IP address found on interface %s", interface_name.c_str());
+            goto main_exit;
+        }
         
         // 启动 HTTP Server 替代 RemoteCtrlClient
-        HttpServerConfig httpConfig = {8080, nullptr, 2};
+        HttpServerConfig httpConfig = {static_cast<int>(http_port), nullptr, 2};
         if (http_server_init(&httpConfig) != 0) {
             Logger::log(LogLevel::ERROR, "Failed to init HTTP server");
             goto main_exit;
@@ -1182,16 +1329,43 @@ int main(int argc, char* argv[])
             http_server_deinit();
             goto main_exit;
         }
-        Logger::log(LogLevel::INFO, "HTTP Server started on port 8080");
+        elog_i("MDNS", "HTTP server started on port %u for interface %s (%s)",
+               http_port, interface_name.c_str(), ip_address.c_str());
         
         bool sessionClosed = false;
         RtspServer::getInstance()->registerOnsessionClosedCallback([&sessionClosed](void) {
             sessionClosed = true;
         });
-        RtspServer::getInstance()->start();
+        RtspServer::getInstance()->setPort(static_cast<int>(rtsp_port));
+        if (!RtspServer::getInstance()->start()) {
+            Logger::log(LogLevel::ERROR, "Failed to start RTSP server");
+            if (http_server_is_running()) {
+                http_server_stop();
+                http_server_deinit();
+            }
+            goto main_exit;
+        }
+
+        if (isMdnsEnabled(config)) {
+            auto mdns_params = buildMdnsParams(config, interface_name, ip_address, http_port, rtsp_port);
+            if (!service::MdnsService::getInstance()->start(mdns_params)) {
+                Logger::log(LogLevel::ERROR, "Failed to start mDNS service");
+                RtspServer::getInstance()->stop();
+                if (http_server_is_running()) {
+                    http_server_stop();
+                    http_server_deinit();
+                }
+                goto main_exit;
+            }
+        } else {
+            elog_i("MDNS", "mDNS disabled by config");
+        }
+
         while (!sessionClosed && !already_in_exit_flow) {
             sleep(1);
         }
+
+        service::MdnsService::getInstance()->stop();
         
         // 停止 RTSP Server
         RtspServer::getInstance()->stop();
@@ -1208,11 +1382,15 @@ int main(int argc, char* argv[])
         //auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
         //Misc::connectWifi(wifi_ssid, wifi_pwd);
         //Misc::startDHCP();
+        uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, 8554);
         RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
             Logger::log(LogLevel::INFO, "RTSP session closed, waiting for new connection...");
         });
-        
-        RtspServer::getInstance()->start();
+        RtspServer::getInstance()->setPort(static_cast<int>(rtsp_port));
+        if (!RtspServer::getInstance()->start()) {
+            Logger::log(LogLevel::ERROR, "Failed to start RTSP server");
+            goto main_exit;
+        }
         /* RTSP 服务器持续运行，等待退出信号 */
         while (!already_in_exit_flow) {
             sleep(1);
@@ -1371,6 +1549,7 @@ int main(int argc, char* argv[])
     }
 
 main_exit:
+    service::MdnsService::getInstance()->stop();
     // 停止信号处理工作线程
     if (signalHandlerThread.joinable()) {
         Logger::log(LogLevel::INFO, "Stopping signal handler thread...");

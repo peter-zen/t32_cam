@@ -24,6 +24,8 @@ public:
     //network
     static std::string getIPAddress(const std::string &interface_name);
     static std::string getGatewayAddress(const std::string &interface_name);
+    static std::string getMACAddress(const std::string &interface_name);
+    static std::string findUsableNetworkInterface(const std::string &preferred_name = "");
     static std::string getNetworkInterfaceName();
 	static void setNetworkInterfaceName(std::string name);
     static bool connectWifi(const std::string &ssid, const std::string &password);
