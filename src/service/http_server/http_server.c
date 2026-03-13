@@ -13,7 +13,7 @@
 #include <string.h>
 
 /* 默认配置 */
-#define DEFAULT_PORT        8080
+#define DEFAULT_PORT        80
 #define DEFAULT_NUM_THREADS 2
 
 /* 服务器状态 */
@@ -22,6 +22,16 @@ static int g_running = 0;
 static HttpServerConfig g_config;
 
 /* 默认请求处理器 */
+static int log_message_handler(const struct mg_connection* conn, const char* message) {
+    (void)conn;
+
+    if (message != NULL) {
+        printf("[HTTP][CIVETWEB] %s\n", message);
+    }
+
+    return 0;
+}
+
 static int default_handler(struct mg_connection* conn, void* cbdata) {
     (void)cbdata;
     
@@ -96,10 +106,29 @@ int http_server_start(void) {
     /* 启动服务器 */
     struct mg_callbacks callbacks;
     memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.log_message = log_message_handler;
     
-    g_ctx = mg_start(&callbacks, NULL, options);
+    struct mg_init_data init_data;
+    struct mg_error_data error_data;
+    char error_text[256];
+
+    memset(&init_data, 0, sizeof(init_data));
+    memset(&error_data, 0, sizeof(error_data));
+    memset(error_text, 0, sizeof(error_text));
+
+    error_data.text = error_text;
+    error_data.text_buffer_size = sizeof(error_text);
+
+    init_data.callbacks = &callbacks;
+    init_data.user_data = NULL;
+    init_data.configuration_options = options;
+
+    g_ctx = mg_start2(&init_data, &error_data);
     if (g_ctx == NULL) {
-        printf("[HTTP] Failed to start server\n");
+        printf("[HTTP] Failed to start server: code=%u sub=%u text=%s\n",
+               error_data.code,
+               error_data.code_sub,
+               error_data.text != NULL ? error_data.text : "(none)");
         mg_exit_library();
         return -1;
     }
@@ -121,6 +150,8 @@ int http_server_stop(void) {
         printf("[HTTP] Not running\n");
         return -1;
     }
+
+    http_api_v1_shutdown();
     
     mg_stop(g_ctx);
     mg_exit_library();

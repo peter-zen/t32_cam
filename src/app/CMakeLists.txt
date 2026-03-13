@@ -32,6 +32,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/rtsp
         ${CMAKE_CURRENT_SOURCE_DIR}/../service/http_server
         ${CMAKE_CURRENT_SOURCE_DIR}/../service/discovery
+        ${CMAKE_CURRENT_SOURCE_DIR}/../service/event
         ${CMAKE_CURRENT_SOURCE_DIR}/../storage
         ${CMAKE_CURRENT_SOURCE_DIR}/../hal/include
         ${THIRD_PARTY_PATH}/jsoncpp/include
@@ -108,6 +109,7 @@ if(BUILD_FOR_SIMULATION)
         #service libs
         http_server
         discovery_service
+        event_service
         civetweb
         #common libs
         daemon
@@ -236,6 +238,7 @@ target_link_libraries(htc_main_app
     #service libs
     http_server
     discovery_service
+    event_service
     civetweb
 
     #storage libs

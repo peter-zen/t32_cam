@@ -30,7 +30,7 @@ int main(int argc, char* argv[]) {
     
     /* 配置服务器 */
     HttpServerConfig config = {
-        .port = 8080,
+        .port = 80,
         .document_root = NULL,
         .num_threads = 2
     };
@@ -48,11 +48,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    printf("\nHTTP Server running on http://localhost:8080\n");
+    printf("\nHTTP Server running on http://localhost:80\n");
     printf("Try these endpoints:\n");
-    printf("  curl http://localhost:8080/api/health\n");
-    printf("  curl http://localhost:8080/api/device/info\n");
-    printf("  curl http://localhost:8080/api/sensor/data\n");
+    printf("  curl http://localhost:80/api/health\n");
+    printf("  curl http://localhost:80/api/device/info\n");
+    printf("  curl http://localhost:80/api/sensor/data\n");
     printf("\nPress Ctrl+C to stop...\n\n");
     
     /* 主循环 */

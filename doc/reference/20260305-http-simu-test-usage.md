@@ -56,6 +56,5 @@ cmake --build build_sim -j
 
 ```bash
 ./build_sim/src/service/http_server/test_http_server
-curl http://127.0.0.1:8080/api/health
+curl http://127.0.0.1:80/api/health
 ```
-

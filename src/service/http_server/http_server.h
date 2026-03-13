@@ -17,7 +17,7 @@ extern "C" {
  * @brief HTTP Server 配置
  */
 typedef struct {
-    int port;                   /**< 监听端口 (默认 8080) */
+    int port;                   /**< 监听端口 (默认 80) */
     const char* document_root;  /**< 静态文件根目录 (可选) */
     int num_threads;            /**< 工作线程数 (默认 2) */
 } HttpServerConfig;

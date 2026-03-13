@@ -12,7 +12,7 @@ struct MdnsTxtPayload {
     std::string serialNumber;
     std::string firmwareVersion;
     uint16_t rtspPort = 8554;
-    uint16_t ctrlPort = 8080;
+    uint16_t ctrlPort = 80;
     std::string macAddress;
     std::string status = "ready";
 };

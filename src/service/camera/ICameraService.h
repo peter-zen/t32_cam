@@ -26,6 +26,15 @@ struct PhotoStatus {
     int progress; // 0-100
 };
 
+struct TimerPhotoStatus {
+    bool running = false;
+    std::string jobId;
+    int intervalMs = 0;
+    int totalCount = 0;
+    int completedCount = 0;
+    int channel = 0;
+};
+
 enum class RecordState {
     IDLE,
     RECORDING,
@@ -48,6 +57,10 @@ public:
     virtual int takePhoto(int channel, bool save, const std::string& format, int quality, PhotoResult& result) = 0;
     virtual int startBurstPhoto(int count, int interval, const std::string& jobId) = 0;
     virtual PhotoStatus getPhotoStatus() = 0;
+    virtual int startTimerPhoto(int channel, int intervalMs, int totalCount, const std::string& jobId) = 0;
+    virtual int stopTimerPhoto(TimerPhotoStatus* status) = 0;
+    virtual TimerPhotoStatus getTimerPhotoStatus() = 0;
+    virtual int capturePreviewFrame(int channel, int width, int height, std::vector<uint8_t>& data) = 0;
 
     // --- 录像业务 ---
     virtual int startRecord(int channel, int duration, bool audio, const std::string& recordId) = 0;
@@ -62,6 +75,8 @@ public:
     // --- 文件/数据库 ---
     virtual std::string getMediaDatabasePath() = 0;
     virtual std::string getThumbnailDatabasePath() = 0;
+    virtual std::string getMediaList(int offset, int limit) = 0;
+    virtual int deleteFile(const std::string& filePath) = 0;
     
     // --- 系统 ---
     virtual int factoryReset() = 0;

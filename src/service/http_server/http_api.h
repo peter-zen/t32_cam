@@ -21,6 +21,18 @@ extern "C" {
  */
 void http_api_register(struct mg_context* ctx);
 
+/**
+ * @brief 注册 /api/v1/camera 系列路由
+ *
+ * @param ctx CivetWeb 上下文
+ */
+void http_api_register_v1(struct mg_context* ctx);
+
+/**
+ * @brief 停止 /api/v1/camera 相关后台任务
+ */
+void http_api_v1_shutdown(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -11,12 +11,38 @@
 - 使用JSON格式进行数据交换
 - 统一的响应格式
 - 良好的错误处理
+- 耗时操作支持同步/异步两种调用语义
+- HTTP负责命令下发与状态查询，主动通知通过独立event通道承载
 
 ### 1.3 基础URL
 ```
 http://<device_ip>:<port>/api/v1
 ```
-- 默认端口：8080
+- 默认端口：80
+
+### 1.4 控制与通知通道
+
+- HTTP API是主控制面，负责参数下发、任务受理、状态查询和结果拉取
+- TCP event通道是可选通知面，用于相机主动向APP推送任务完成、失败等事件
+- 当APP已建立TCP event连接时，推荐对耗时操作使用异步HTTP API，并通过event接收结果
+- 当TCP event连接不存在或不可用时，APP仍可通过HTTP状态查询接口轮询任务结果
+- 本文档只定义HTTP API对event通道的依赖点，不展开TCP event连接管理、报文封装和重连机制
+- TCP Event 机制的完整设计见 `doc/design/tcp_event_design.md`
+
+```mermaid
+flowchart LR
+    APP[APP]
+    HTTP[HTTP API]
+    CAM[Camera Service]
+    EVT[TCP Event Channel]
+
+    APP -->|HTTP Request| HTTP
+    HTTP --> CAM
+    CAM --> HTTP
+    HTTP -->|HTTP Response| APP
+    CAM -. optional push .-> EVT
+    EVT -. event notify .-> APP
+```
 
 ---
 
@@ -55,16 +81,18 @@ http://<device_ip>:<port>/api/v1
 | 1004 | 参数配置失败 |
 | 1005 | 录像已启动 |
 | 1006 | 录像未启动 |
+| 1007 | 任务不存在 |
+| 1008 | 任务执行失败 |
 
 ---
 
 ## 3. 拍照管理API
 
-### 3.1 拍照（立即拍照）
+### 3.1 拍照（单次拍照，支持同步/异步）
 
 **接口**：`POST /api/v1/camera/photo`
 
-**描述**：立即拍照一次
+**描述**：立即拍照一次。支持同步返回文件信息，也支持异步受理后通过状态查询或event获取结果。
 
 **请求参数**：
 ```json
@@ -72,16 +100,30 @@ http://<device_ip>:<port>/api/v1
   "channel": 0,        // 通道号（可选，默认0）
   "save": true,        // 是否保存到存储（可选，默认true）
   "format": "jpg",     // 图片格式（可选，默认jpg）
-  "quality": 85        // 图片质量（可选，默认85）
+  "quality": 85,       // 图片质量（可选，默认85）
+  "response_mode": "sync",      // 返回模式（可选，sync/async，默认sync）
+  "client_request_id": "req_123456"  // 客户端请求ID（可选，用于HTTP与event结果关联）
 }
 ```
 
-**响应示例**（成功）：
+**行为说明**：
+
+- `response_mode=sync`
+  服务端等待拍照、文件落盘和元数据准备完成后再返回
+- `response_mode=async`
+  服务端在任务受理后立即返回 `job_id`
+- 若APP已建立TCP event连接，相机在异步任务完成后主动推送 `camera.photo.completed` 或 `camera.photo.failed`
+- 若没有TCP event连接，APP通过 `GET /api/v1/camera/photo/status?job_id=...` 轮询结果
+- 为兼容现有客户端，`response_mode` 默认值保持为 `sync`
+
+**响应示例**（同步成功）：
 ```json
 {
   "code": 0,
   "message": "success",
   "data": {
+    "response_mode": "sync",
+    "status": "completed",
     "photo_id": "photo_20250119_143520_001",
     "filename": "IMG_20250119_143520_001.jpg",
     "filepath": "/sdcard/media/photo/2025/01/19/IMG_20250119_143520_001.jpg",
@@ -95,6 +137,27 @@ http://<device_ip>:<port>/api/v1
 }
 ```
 
+**响应示例**（异步受理成功）：
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "response_mode": "async",
+    "status": "accepted",
+    "job_id": "photo_job_20250119_143520_001",
+    "client_request_id": "req_123456",
+    "submitted_at": 1737276320,
+    "result_query": "/api/v1/camera/photo/status?job_id=photo_job_20250119_143520_001",
+    "event": {
+      "enabled": true,
+      "success_event": "camera.photo.completed",
+      "failed_event": "camera.photo.failed"
+    }
+  }
+}
+```
+
 **响应示例**（设备忙碌）：
 ```json
 {
@@ -103,6 +166,38 @@ http://<device_ip>:<port>/api/v1
   "data": null
 }
 ```
+
+**推荐用法**：
+
+- 设备本地调试、命令行工具、对时延不敏感的调用使用同步模式
+- APP前台交互、弱网场景、拍照耗时不可预测场景使用异步模式
+
+```mermaid
+sequenceDiagram
+    participant APP
+    participant HTTP as HTTP API
+    participant CAM as Camera Service
+
+    APP->>HTTP: POST /camera/photo {"response_mode":"async"}
+    HTTP->>CAM: submit photo job
+    CAM-->>HTTP: accepted(job_id)
+    HTTP-->>APP: job_id + status=accepted
+    CAM->>CAM: capture and save file
+    alt TCP event connected
+        CAM-->>APP: camera.photo.completed / camera.photo.failed
+    else TCP event not connected
+        APP->>HTTP: GET /camera/photo/status?job_id=...
+        HTTP-->>APP: processing / completed / failed
+    end
+```
+
+**异步通知约定（预留）**：
+
+- 成功事件名：`camera.photo.completed`
+- 失败事件名：`camera.photo.failed`
+- event消息至少应包含 `job_id`、`client_request_id`、`status`
+- 成功事件应附带完整文件信息，字段集合与同步HTTP成功响应保持一致
+- TCP event报文格式、鉴权、重连与订阅机制另行设计
 
 ---
 
@@ -143,12 +238,16 @@ http://<device_ip>:<port>/api/v1
 
 **接口**：`GET /api/v1/camera/photo/status`
 
-**描述**：获取当前拍照状态
+**描述**：获取拍照任务状态。适用于单次异步拍照、连续拍照、定时拍照等任务。
 
 **请求参数**（Query String）：
 ```
-?job_id=burst_job_20250119_143520_001  // 可选，连续拍照任务ID
+?job_id=photo_job_20250119_143520_001  // 可选，任务ID；可用于单次异步拍照、连拍、定时拍照
 ```
+
+- 不带 `job_id` 时，返回当前全局拍照状态或最近一次拍照结果
+- 带 `job_id` 时，返回指定任务状态
+- 当异步单拍任务完成后，结果中的 `photo` 字段应与同步拍照成功响应中的文件信息保持一致
 
 **响应示例**（空闲状态）：
 ```json
@@ -166,7 +265,48 @@ http://<device_ip>:<port>/api/v1
 }
 ```
 
-**响应示例**（处理中）：
+**响应示例**（单次异步拍照处理中）：
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "job_id": "photo_job_20250119_143520_001",
+    "task_type": "single",
+    "status": "processing",
+    "progress": 60,
+    "client_request_id": "req_123456",
+    "submitted_at": 1737276320
+  }
+}
+```
+
+**响应示例**（单次异步拍照完成）：
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "job_id": "photo_job_20250119_143520_001",
+    "task_type": "single",
+    "status": "completed",
+    "client_request_id": "req_123456",
+    "photo": {
+      "photo_id": "photo_20250119_143520_001",
+      "filename": "IMG_20250119_143520_001.jpg",
+      "filepath": "/sdcard/media/photo/2025/01/19/IMG_20250119_143520_001.jpg",
+      "url": "/media/photo/2025/01/19/IMG_20250119_143520_001.jpg",
+      "thumbnail_url": "/media/photo/thumb/2025/01/19/IMG_20250119_143520_001_thumb.jpg",
+      "size": 1024000,
+      "width": 1920,
+      "height": 1080,
+      "timestamp": 1737276320
+    }
+  }
+}
+```
+
+**响应示例**（连拍处理中）：
 ```json
 {
   "code": 0,
@@ -1032,15 +1172,15 @@ http://<device_ip>:<port>/api/v1
 
 ```bash
 # 1. 拍照
-curl -X POST http://192.168.1.100:8080/api/v1/camera/photo \
+curl -X POST http://192.168.1.100:80/api/v1/camera/photo \
   -H "Content-Type: application/json" \
   -d '{"channel":0,"save":true,"format":"jpg","quality":85}'
 
 # 2. 获取拍照状态
-curl http://192.168.1.100:8080/api/v1/camera/photo/status
+curl http://192.168.1.100:80/api/v1/camera/photo/status
 
 # 3. 获取照片列表
-curl http://192.168.1.100:8080/api/v1/camera/photos?limit=10
+curl http://192.168.1.100:80/api/v1/camera/photos?limit=10
 ```
 
 ---
@@ -1049,18 +1189,18 @@ curl http://192.168.1.100:8080/api/v1/camera/photos?limit=10
 
 ```bash
 # 1. 开始录像
-curl -X POST http://192.168.1.100:8080/api/v1/camera/video/start \
+curl -X POST http://192.168.1.100:80/api/v1/camera/video/start \
   -H "Content-Type: application/json" \
   -d '{"channel":0,"duration":0,"audio":true}'
 
 # 2. 获取录像状态
-curl http://192.168.1.100:8080/api/v1/camera/video/status
+curl http://192.168.1.100:80/api/v1/camera/video/status
 
 # 3. 停止录像
-curl -X POST http://192.168.1.100:8080/api/v1/camera/video/stop
+curl -X POST http://192.168.1.100:80/api/v1/camera/video/stop
 
 # 4. 获取录像列表
-curl http://192.168.1.100:8080/api/v1/camera/video/list?limit=10
+curl http://192.168.1.100:80/api/v1/camera/video/list?limit=10
 ```
 
 ---
@@ -1069,26 +1209,26 @@ curl http://192.168.1.100:8080/api/v1/camera/video/list?limit=10
 
 ```bash
 # 1. 获取所有属性
-curl http://192.168.1.100:8080/api/v1/camera/properties
+curl http://192.168.1.100:80/api/v1/camera/properties
 
 # 2. 获取单个属性
-curl http://192.168.1.100:8080/api/v1/camera/properties/resolution
+curl http://192.168.1.100:80/api/v1/camera/properties/resolution
 
 # 3. 设置单个属性
-curl -X POST http://192.168.1.100:8080/api/v1/camera/properties/resolution \
+curl -X POST http://192.168.1.100:80/api/v1/camera/properties/resolution \
   -H "Content-Type: application/json" \
   -d '{"value":"2560x1440"}'
 
 # 4. 批量设置属性
-curl -X POST http://192.168.1.100:8080/api/v1/camera/properties \
+curl -X POST http://192.168.1.100:80/api/v1/camera/properties \
   -H "Content-Type: application/json" \
   -d '{"resolution":"2560x1440","fps":30,"bitrate":8192}'
 
 # 5. 应用预设
-curl -X POST http://192.168.1.100:8080/api/v1/camera/presets/high_quality
+curl -X POST http://192.168.1.100:80/api/v1/camera/presets/high_quality
 
 # 6. 重置属性
-curl -X POST http://192.168.1.100:8080/api/v1/camera/properties/reset
+curl -X POST http://192.168.1.100:80/api/v1/camera/properties/reset
 ```
 
 ---

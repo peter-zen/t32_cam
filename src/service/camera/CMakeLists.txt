@@ -14,8 +14,12 @@ target_include_directories(camera_service PUBLIC
     ${CMAKE_SOURCE_DIR}/src/media/common
     ${CMAKE_SOURCE_DIR}/src/hal/include
     ${CMAKE_SOURCE_DIR}/src/media/audio
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
 )
 
-if(NOT BUILD_FOR_SIMULATION)
-    target_link_libraries(camera_service PRIVATE media_snap media_video)
-endif()
+target_link_libraries(camera_service PRIVATE
+    media_snap
+    media_recorder
+    daynight
+    jsoncpp
+)

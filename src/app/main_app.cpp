@@ -46,6 +46,7 @@
 #include "DatabaseManager.h"
 #include "MediaScanner.h"
 #include "MdnsService.h"
+#include "TcpEventService.h"
 #include "Timezone.h"
 #include "UsbDongle.h"
 
@@ -610,6 +611,7 @@ static void signalHandlerThreadFunc() {
                     http_server_stop();
                     http_server_deinit();
                 }
+                service::TcpEventService::getInstance()->stop();
                 mgmtServClient = nullptr;
                 storageServClient = nullptr;
 
@@ -644,6 +646,7 @@ static void signalHandlerThreadFunc() {
                     http_server_stop();
                     http_server_deinit();
                 }
+                service::TcpEventService::getInstance()->stop();
                 mgmtServClient = nullptr;
                 storageServClient = nullptr;
             
@@ -1284,7 +1287,7 @@ int main(int argc, char* argv[])
     }
 
     if (command & CMD_MOBILE) {
-        uint16_t http_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_CTRL_PORT, 8080);
+        uint16_t http_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_CTRL_PORT, 80);
         uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, 8554);
         auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
         auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
@@ -1341,6 +1344,10 @@ int main(int argc, char* argv[])
             service::MdnsService::getInstance()->stop();
             goto main_exit;
         }
+        if (!service::TcpEventService::getInstance()->start(service::kDefaultTcpEventPort)) {
+            Logger::log(LogLevel::WARNING, "Failed to start TCP event server on port %u",
+                        service::kDefaultTcpEventPort);
+        }
         elog_i("MDNS", "HTTP server started on port %u for interface %s (%s)",
                http_port, interface_name.c_str(), ip_address.c_str());
         
@@ -1355,6 +1362,7 @@ int main(int argc, char* argv[])
                 http_server_stop();
                 http_server_deinit();
             }
+            service::TcpEventService::getInstance()->stop();
             service::MdnsService::getInstance()->stop();
             goto main_exit;
         }
@@ -1373,6 +1381,7 @@ int main(int argc, char* argv[])
             http_server_stop();
             http_server_deinit();
         }
+        service::TcpEventService::getInstance()->stop();
     }
 
     if (command & CMD_RTSP_SERVER) {
@@ -1547,6 +1556,7 @@ int main(int argc, char* argv[])
     }
 
 main_exit:
+    service::TcpEventService::getInstance()->stop();
     service::MdnsService::getInstance()->stop();
     // 停止信号处理工作线程
     if (signalHandlerThread.joinable()) {

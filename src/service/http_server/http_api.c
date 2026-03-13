@@ -414,4 +414,7 @@ void http_api_register(struct mg_context* ctx) {
     printf("  POST /api/record/start     - Start recording\n");
     printf("  POST /api/record/stop      - Stop recording\n");
     printf("  GET  /api/snapshot         - Get snapshot\n");
+
+    /* 新版 v1 camera API */
+    http_api_register_v1(ctx);
 }

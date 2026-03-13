@@ -80,7 +80,7 @@ graph TB
 | `sn` | `ABC123456` | 设备序列号 |
 | `fw_ver` | `1.2.3` | 固件版本 |
 | `rtsp_port` | `554` | RTSP 流端口 |
-| `ctrl_port` | `8080` | HTTP 控制接口端口 |
+| `ctrl_port` | `80` | HTTP 控制接口端口 |
 | `mac` | `AA:BB:CC:DD:EE:FF` | MAC 地址 |
 | `status` | `ready` | 设备状态（ready / streaming / updating） |
 
@@ -104,7 +104,7 @@ graph LR
 ```
 
 - **PTR 记录：** `_t32cam._tcp.local.` → `T32Camera-Living-Room._t32cam._tcp.local.`
-- **SRV 记录：** `T32Camera-Living-Room._t32cam._tcp.local.` → `mycamera.local:8080`
+- **SRV 记录：** `T32Camera-Living-Room._t32cam._tcp.local.` → `mycamera.local:80`
 - **TXT 记录：** 携带上述 KV 信息
 - **A 记录：** `mycamera.local.` → `192.168.x.x`
 
@@ -587,14 +587,14 @@ sequenceDiagram
 
     NET->>T32: 收到查询请求
 
-    T32->>APP: mDNS Response (单播)<br/>PTR: _t32cam._tcp.local → T32Camera._t32cam._tcp.local<br/>SRV: T32Camera → mycamera.local:8080<br/>TXT: model=T32CamPro, sn=ABC123, ...<br/>A: mycamera.local → 192.168.1.100
+    T32->>APP: mDNS Response (单播)<br/>PTR: _t32cam._tcp.local → T32Camera._t32cam._tcp.local<br/>SRV: T32Camera → mycamera.local:80<br/>TXT: model=T32CamPro, sn=ABC123, ...<br/>A: mycamera.local → 192.168.1.100
 
     APP->>APP: 解析响应<br/>提取设备信息
 
     Note over APP: 设备列表中显示 "T32Camera"
     APP->>APP: 用户选择设备
 
-    APP->>T32: HTTP GET /device/info (192.168.1.100:8080)
+    APP->>T32: HTTP GET /device/info (192.168.1.100:80)
     T32->>APP: 200 OK { 设备详细信息 }
 
     APP->>T32: RTSP DESCRIBE rtsp://192.168.1.100:554/live
