@@ -38,9 +38,9 @@ Simu 运行 `CMD_MOBILE` 后，日志确认以下链路成立：
 
 1. 选择本机可用网卡，例如 `enp2s0`
 2. 获取本机 IPv4，例如 `192.168.0.210`
-3. HTTP Server 成功启动在 `18080`
-4. RTSP Server 成功启动在 `18554`
-5. mDNS 成功启动，服务类型为 `_t32cam._tcp.local`
+3. mDNS 成功启动，服务类型为 `_t32cam._tcp.local`
+4. HTTP Server 成功启动在 `18080`
+5. RTSP Server 成功启动在 `18554`
 6. 退出时 HTTP、RTSP、mDNS 均按预期停止
 
 ### 3. 端口旁证

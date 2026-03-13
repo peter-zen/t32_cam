@@ -1317,16 +1317,28 @@ int main(int argc, char* argv[])
             Logger::log(LogLevel::ERROR, "No IP address found on interface %s", interface_name.c_str());
             goto main_exit;
         }
-        
+
+        if (isMdnsEnabled(config)) {
+            auto mdns_params = buildMdnsParams(config, interface_name, ip_address, http_port, rtsp_port);
+            if (!service::MdnsService::getInstance()->start(mdns_params)) {
+                Logger::log(LogLevel::ERROR, "Failed to start mDNS service");
+                goto main_exit;
+            }
+        } else {
+            elog_i("MDNS", "mDNS disabled by config");
+        }
+
         // 启动 HTTP Server 替代 RemoteCtrlClient
         HttpServerConfig httpConfig = {static_cast<int>(http_port), nullptr, 2};
         if (http_server_init(&httpConfig) != 0) {
             Logger::log(LogLevel::ERROR, "Failed to init HTTP server");
+            service::MdnsService::getInstance()->stop();
             goto main_exit;
         }
         if (http_server_start() != 0) {
             Logger::log(LogLevel::ERROR, "Failed to start HTTP server");
             http_server_deinit();
+            service::MdnsService::getInstance()->stop();
             goto main_exit;
         }
         elog_i("MDNS", "HTTP server started on port %u for interface %s (%s)",
@@ -1343,22 +1355,8 @@ int main(int argc, char* argv[])
                 http_server_stop();
                 http_server_deinit();
             }
+            service::MdnsService::getInstance()->stop();
             goto main_exit;
-        }
-
-        if (isMdnsEnabled(config)) {
-            auto mdns_params = buildMdnsParams(config, interface_name, ip_address, http_port, rtsp_port);
-            if (!service::MdnsService::getInstance()->start(mdns_params)) {
-                Logger::log(LogLevel::ERROR, "Failed to start mDNS service");
-                RtspServer::getInstance()->stop();
-                if (http_server_is_running()) {
-                    http_server_stop();
-                    http_server_deinit();
-                }
-                goto main_exit;
-            }
-        } else {
-            elog_i("MDNS", "mDNS disabled by config");
         }
 
         while (!sessionClosed && !already_in_exit_flow) {

@@ -1,12 +1,13 @@
-# T32 端 mDNS 引入方案与目录落点
+# T32 端 mDNS 接入与 CMD_MOBILE 控制方案
 
 ## 1. 背景与目标
 
 - 输入文档：`t32_yb/doc/spec/mdns-device-discovery-spec.md`
-- 目标：评估在 `t32_yb` 端引入 mDNS/DNS-SD 的可行方案，并明确：
+- 目标：在 `t32_yb` 端建立可落地的 mDNS/DNS-SD 方案，并明确：
   - 第三方 source code 放哪里
   - 我们自己的实现放哪些目录
   - 启动链路和配置从哪里接入
+  - `CMD_MOBILE` 模式下 mDNS/HTTP/RTSP 的职责边界与控制方式
 
 ---
 
@@ -44,8 +45,10 @@
 
 - 第三方库与业务封装分离
 - mDNS 作为 **in-process service** 集成到 `htc_main_app`
-- 在网络接口和 IP 已就绪后启动
-- 与 HTTP/RTSP 服务共享生命周期
+- `CMD_MOBILE` 定义为“手机添加/配对模式”
+- mDNS 不是全局常驻服务，只在 `CMD_MOBILE` 生命周期内运行
+- 在网络接口和 IP 已就绪后优先启动 mDNS，再启动 HTTP/RTSP
+- 退出 `CMD_MOBILE` 时统一停止 mDNS
 - 由我们自己的封装屏蔽第三方库细节，避免上层直接依赖 tinysvcmdns API
 
 ### 3.2 推荐架构
@@ -53,20 +56,22 @@
 ```mermaid
 graph TD
     APP[src/app/main_app.cpp]
+    MOBILE[CMD_MOBILE]
     CFG[src/config/devconf + res/config.ini]
     MISC[src/common/misc]
-    SVC[src/service/discovery]
+    MDNS[src/service/discovery]
     TP[third_party/tinysvcmdns]
     HTTP[src/service/http_server]
     RTSP[src/media/rtsp]
 
     APP --> CFG
     APP --> MISC
-    APP --> HTTP
-    APP --> RTSP
-    APP --> SVC
-    SVC --> TP
-    SVC --> MISC
+    APP --> MOBILE
+    MOBILE --> MDNS
+    MOBILE --> HTTP
+    MOBILE --> RTSP
+    MDNS --> TP
+    MDNS --> MISC
 ```
 
 ---
@@ -166,24 +171,29 @@ t32_yb/src/service/discovery/
 sequenceDiagram
     participant APP as main_app
     participant NET as Misc/DHCP
+    participant MDNS as MdnsService
     participant HTTP as http_server
     participant RTSP as RtspServer
-    participant MDNS as MdnsService
+    participant PHONE as Mobile App
 
     APP->>NET: connectWifi()/startDHCP()
-    APP->>NET: 获取 interface name / IP
+    APP->>NET: 获取 interface name / IP / MAC
+    APP->>MDNS: start(interface, ip, ports, txt)
     APP->>HTTP: init + start
     APP->>RTSP: start
-    APP->>MDNS: start(interface, ip, ports, txt)
-    RTSP-->>MDNS: updateStatus(streaming)
-    APP->>MDNS: stop() on exit / IP change
+    PHONE->>MDNS: 浏览并发现设备
+    PHONE->>HTTP: 添加设备/下发控制
+    PHONE->>RTSP: 预览视频
+    PHONE->>HTTP: 请求进入 working mode
+    APP->>MDNS: stop() on CMD_MOBILE exit
 ```
 
 ### 6.2 实际挂载点
 
 优先挂在 `CMD_MOBILE` 路径：
 
-- 该路径已经启动 WiFi、DHCP、HTTP Server、RTSP Server
+- 该路径就是“手机添加/配对模式”
+- 模式下需要同时提供 `mDNS + HTTP + RTSP`
 - 与“手机发现设备并添加”的目标最匹配
 
 可选扩展：
@@ -198,24 +208,39 @@ Simu 环境建议：
 - Simu 下应视本地网卡为“已就绪”，直接读取本机接口/IP，然后启动 HTTP / RTSP / mDNS
 - `CMD_RTSP_SERVER` 可作为补充测试路径，但它不包含 HTTP Server，不适合作为完整发现链路的主验证入口
 
-### 6.3 V1 接入建议
+### 6.3 控制策略建议
+
+V1 推荐使用“模式切换”控制 mDNS，而不是单独增加 runtime 开关：
+
+1. 进入 `CMD_MOBILE` 即启动 mDNS
+2. 退出 `CMD_MOBILE` 即停止 mDNS
+3. 设备添加完成后，应切换到目标 `working mode`
+4. 切到非 `CMD_MOBILE` 模式后，默认不再发布 mDNS
+
+说明：
+
+- 这与当前代码结构最一致，避免出现“仍在 mobile 模式，但只单独停了 mDNS”的中间状态
+- `/api/system/workmode` 是后续最合适的控制入口，但当前 HTTP API 仍待补真实模式切换逻辑
+
+### 6.4 V1 接入建议
 
 V1 先做静态注册：
 
 1. 网络连接完成
 2. DHCP 成功
 3. `Misc::getIPAddress(Misc::getNetworkInterfaceName())` 获取 IP
-4. 启动 HTTP / RTSP
-5. 调用 `MdnsService::start(...)`
+4. 调用 `MdnsService::start(...)`
+5. 启动 HTTP / RTSP
 6. 退出时 `MdnsService::stop()`
 
-### 6.4 V2 增强建议
+### 6.5 V2 增强建议
 
 后续再补：
 
 - IP 变化自动重注册
 - WiFi 断开自动下线
 - RTSP session 状态驱动 `status=ready/streaming`
+- `/api/system/workmode` 完整接入模式切换，作为“添加完成后退出 `CMD_MOBILE`”的控制入口
 
 ---
 
@@ -290,8 +315,8 @@ RtspPort=8554
 
 - 选定网络接口
 - 连网 / DHCP
-- 启动 HTTP / RTSP
 - 调用 `MdnsService`
+- 启动 HTTP / RTSP
 - 退出时统一 stop/deinit
 
 ---
@@ -354,9 +379,11 @@ RtspPort=8554
 ### 10.4 本轮已确认决策
 
 1. V1 真机功能路径以 `CMD_MOBILE` 为主。
-2. V1 Simu 测试也复用 `CMD_MOBILE`，但需在 `BUILD_FOR_SIMULATION` 下跳过真实 WiFi / DHCP 动作。
-3. `sn` 字段 V1 使用 `PID`。
-4. `mac` 字段单独上报当前工作网卡 MAC。
-5. `status` 字段 V1 固定为 `ready`。
+2. `CMD_MOBILE` 语义上定义为手机添加/配对模式。
+3. V1 中 mDNS 在网络和 IP 就绪后优先于 HTTP / RTSP 启动。
+4. V1 Simu 测试也复用 `CMD_MOBILE`，但需在 `BUILD_FOR_SIMULATION` 下跳过真实 WiFi / DHCP 动作。
+5. `sn` 字段 V1 使用 `PID`。
+6. `mac` 字段单独上报当前工作网卡 MAC。
+7. `status` 字段 V1 固定为 `ready`。
 
 这个方案和当前 `t32_yb` 的工程结构最一致，后续也便于继续扩展成 SSDP / 多发现协议共存。
