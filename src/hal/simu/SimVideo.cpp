@@ -70,6 +70,15 @@ bool SimVideoStream::start() {
             }
         }
     }
+    if (file_path_.empty()) {
+        if (cfg_.payload == VideoPayloadType::H264) {
+            file_path_ = "src/hal/simu/res/sample_video.h264";
+        } else if (cfg_.payload == VideoPayloadType::H265) {
+            file_path_ = "src/hal/simu/res/sample_video.h265";
+        } else if (cfg_.payload == VideoPayloadType::JPEG) {
+            file_path_ = "src/hal/simu/res/sample_image.jpeg";
+        }
+    }
     if (!file_path_.empty()) {
         std::ifstream vf(file_path_, std::ios::binary);
         if (vf.good()) {
@@ -89,10 +98,12 @@ bool SimVideoStream::start() {
         } else {
             src_ = nullptr;
             src_len_ = 0;
+            last_buffer_.clear();
         }
     } else {
         src_ = nullptr;
         src_len_ = 0;
+        last_buffer_.clear();
     }
     read_offset_ = 0;
     next_frame_time_ = std::chrono::steady_clock::now();

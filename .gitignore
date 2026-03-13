@@ -4,5 +4,7 @@ ref
 debug
 sim_sdcard/video
 sim_sdcard/log
+sim_sdcard/DCIM
+sim_sdcard/data
 *.log
 CMakeFiles

@@ -20,7 +20,7 @@ include_directories(
 add_library(daynight SHARED ${SOURCE_FILES})
 
 # link libraries
-target_link_libraries(daynight PUBLIC devconf hal_video logger)
+target_link_libraries(daynight PUBLIC devconf gpio hal_video logger)
 
 # Set the output directory for the library
 set_target_properties(daynight PROPERTIES
