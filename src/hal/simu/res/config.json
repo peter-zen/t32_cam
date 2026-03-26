@@ -1,12 +1,12 @@
 {
-    "base_dir": "res",
+    "base": ".",
     "audio": {
         "aac": "sample_audio.aac",
         "g711a": "full_frame_camera_g711a.alaw",
         "g711u": "sample_audio.g711u"
     },
     "video": {
-        "h264": "full_frame_camera.h264",
+        "h264": "full_frame_camera_no_b_30s.h264",
         "h265": "sample_video.h265"
     },
     "image": {

@@ -1,13 +1,44 @@
 #include "SimVideo.h"
+#include "SimResourceResolver.h"
+#include <cerrno>
 #include <cstring>
 #include <thread>
 #include <fstream>
 #include <string>
-#include <sstream>
 #include <elog.h>
 namespace hal {
 
 #define SIMVID_LOG_TAG "SIMVID"
+
+namespace {
+
+const char* videoConfigKey(VideoPayloadType payload) {
+    switch (payload) {
+        case VideoPayloadType::H264:
+            return "h264";
+        case VideoPayloadType::H265:
+            return "h265";
+        case VideoPayloadType::JPEG:
+            return "jpg";
+        default:
+            return nullptr;
+    }
+}
+
+const char* videoPayloadName(VideoPayloadType payload) {
+    switch (payload) {
+        case VideoPayloadType::H264:
+            return "H264";
+        case VideoPayloadType::H265:
+            return "H265";
+        case VideoPayloadType::JPEG:
+            return "JPEG";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+} // namespace
 
 SimVideoStream::SimVideoStream()
     : configured_(false),
@@ -33,85 +64,78 @@ bool SimVideoStream::configure(const VideoStreamConfig& cfg) {
 
 bool SimVideoStream::start() {
     std::lock_guard<std::mutex> lock(mtx_);
-    if (!configured_) return false;
-    started_ = true;
-    std::string config_path = "res/config.json";
-    std::string base;
-    {
-        std::ifstream ifs(config_path);
-        if (ifs.good()) {
-            std::ostringstream ss;
-            ss << ifs.rdbuf();
-            std::string cfg = ss.str();
-            auto pick = [&](const std::string& key) -> std::string {
-                std::string pat = "\"" + key + "\"";
-                size_t p = cfg.find(pat);
-                if (p == std::string::npos) return "";
-                size_t q = cfg.find(':', p);
-                if (q == std::string::npos) return "";
-                size_t s = cfg.find('"', q);
-                if (s == std::string::npos) return "";
-                size_t e = cfg.find('"', s + 1);
-                if (e == std::string::npos) return "";
-                return cfg.substr(s + 1, e - s - 1);
-            };
-            size_t pos = config_path.find_last_of("/\\");
-            std::string dir = (pos == std::string::npos) ? "." : config_path.substr(0, pos);
-            std::string b = pick("base");
-            if (b.empty()) base = dir; else base = (b[0] == '/') ? b : (dir + "/" + b);
-            if (cfg_.payload == VideoPayloadType::H264) {
-                std::string name = pick("h264");
-                if (!name.empty()) file_path_ = base + "/" + name;
-            } else if (cfg_.payload == VideoPayloadType::H265) {
-                std::string name = pick("h265");
-                if (!name.empty()) file_path_ = base + "/" + name;
-            } else if (cfg_.payload == VideoPayloadType::JPEG) {
-                std::string name = pick("jpg");
-                if (!name.empty()) file_path_ = base + "/" + name;
-            } else {
-                file_path_.clear();
-            }
-        }
+    if (!configured_) {
+        return false;
     }
+
+    started_ = false;
+    file_path_.clear();
+    file_buf_.clear();
+    last_buffer_.clear();
+    last_pieces_.clear();
+    src_ = nullptr;
+    src_len_ = 0;
+
+    std::string config_path;
+    std::string cfg;
+    if (!sim_resource::loadConfig(config_path, cfg)) {
+        elog_e(SIMVID_LOG_TAG, "Failed to locate simulation config.json (checked SIM_RESOURCE_CONFIG, SIM_RESOURCE_DIR, exe_dir/res)");
+        return false;
+    }
+
+    const char* key = videoConfigKey(cfg_.payload);
+    if (!key) {
+        elog_e(SIMVID_LOG_TAG, "Unsupported video payload: %d", static_cast<int>(cfg_.payload));
+        return false;
+    }
+
+    file_path_ = sim_resource::resolveAssetPath(config_path, cfg, key);
     if (file_path_.empty()) {
-        if (cfg_.payload == VideoPayloadType::H264) {
-            file_path_ = "src/hal/simu/res/sample_video.h264";
-        } else if (cfg_.payload == VideoPayloadType::H265) {
-            file_path_ = "src/hal/simu/res/sample_video.h265";
-        } else if (cfg_.payload == VideoPayloadType::JPEG) {
-            file_path_ = "src/hal/simu/res/sample_image.jpeg";
-        }
+        elog_e(SIMVID_LOG_TAG, "Missing '%s' in config: %s", key, config_path.c_str());
+        return false;
     }
-    if (!file_path_.empty()) {
-        std::ifstream vf(file_path_, std::ios::binary);
-        if (vf.good()) {
-            vf.seekg(0, std::ios::end);
-            std::streampos sz = vf.tellg();
-            vf.seekg(0, std::ios::beg);
-            file_buf_.resize((size_t)sz);
-            if (sz > 0) vf.read((char*)file_buf_.data(), sz);
-            if (cfg_.payload == VideoPayloadType::JPEG) {
-                last_buffer_.assign(file_buf_.begin(), file_buf_.end());
-                src_ = nullptr;
-                src_len_ = 0;
-            } else {
-                src_ = file_buf_.data();
-                src_len_ = file_buf_.size();
-            }
-        } else {
-            src_ = nullptr;
-            src_len_ = 0;
-            last_buffer_.clear();
-        }
-    } else {
+
+    errno = 0;
+    std::ifstream vf(file_path_, std::ios::binary);
+    if (!vf.is_open()) {
+        elog_e(SIMVID_LOG_TAG, "Failed to open %s source: config=%s file=%s err=%s",
+               videoPayloadName(cfg_.payload), config_path.c_str(), file_path_.c_str(), std::strerror(errno));
+        return false;
+    }
+
+    vf.seekg(0, std::ios::end);
+    std::streampos sz = vf.tellg();
+    vf.seekg(0, std::ios::beg);
+    if (sz <= 0) {
+        elog_e(SIMVID_LOG_TAG, "Empty %s source: file=%s", videoPayloadName(cfg_.payload), file_path_.c_str());
+        return false;
+    }
+
+    file_buf_.resize(static_cast<size_t>(sz));
+    vf.read(reinterpret_cast<char*>(file_buf_.data()), sz);
+    if (!vf) {
+        elog_e(SIMVID_LOG_TAG, "Failed to read %s source: file=%s", videoPayloadName(cfg_.payload), file_path_.c_str());
+        file_buf_.clear();
+        return false;
+    }
+
+    if (cfg_.payload == VideoPayloadType::JPEG) {
+        last_buffer_.assign(file_buf_.begin(), file_buf_.end());
         src_ = nullptr;
         src_len_ = 0;
-        last_buffer_.clear();
+    } else {
+        src_ = file_buf_.data();
+        src_len_ = file_buf_.size();
     }
+
     frame_index_ = 0;
     last_pts_ = 0;
     read_offset_ = 0;
     next_frame_time_ = std::chrono::steady_clock::now();
+    started_ = true;
+
+    elog_i(SIMVID_LOG_TAG, "Opened %s source: config=%s file=%s size=%zu",
+           videoPayloadName(cfg_.payload), config_path.c_str(), file_path_.c_str(), file_buf_.size());
     return true;
 }
 

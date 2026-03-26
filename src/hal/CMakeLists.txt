@@ -31,11 +31,16 @@ if(BUILD_FOR_SIMULATION)
     target_link_libraries(hal_audio sdk_stub logger)
     target_link_libraries(hal_gpio  sdk_stub logger)
     target_link_libraries(hal_video PUBLIC hal_audio hal_gpio sdk_stub logger)
+    set(SIM_LOCAL_ASSET_DIR "${PROJECT_ROOT}/local_assets/rtsp")
     add_custom_command(TARGET hal_video POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/bin
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 ${CMAKE_CURRENT_SOURCE_DIR}/simu/res
                 ${CMAKE_BINARY_DIR}/bin/res
+        COMMAND ${CMAKE_COMMAND}
+                -DSIM_LOCAL_ASSET_DIR=${SIM_LOCAL_ASSET_DIR}
+                -DBIN_RES_DIR=${CMAKE_BINARY_DIR}/bin/res
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/PrepareSimLocalAssets.cmake
     )
 else()
     target_link_libraries(hal_audio imp alog sysutils faac logger)

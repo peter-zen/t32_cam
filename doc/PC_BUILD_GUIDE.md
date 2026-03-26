@@ -83,6 +83,40 @@ sudo pkill -9 htc_main_app
 ./build_sim/bin/test_http_server
 ```
 
+## 使用 No-B RTSP 测试源
+
+如果要对比 Android RTSP 客户端在 `B-frame` / `no-B-frame` 下的表现，建议使用仓库内辅助脚本切换 simulation 视频源：
+
+```bash
+# 先准备本地大资源目录（不纳入 Git）
+mkdir -p local_assets/rtsp/video local_assets/rtsp/audio
+
+# 放入原始视频源
+# local_assets/rtsp/video/full_frame_camera.h264
+
+# 可选：放入外部音频源
+# local_assets/rtsp/audio/full_frame_camera_g711a.alaw
+
+# 生成 30 秒 no-B H.264 片段，并切换 build_sim/bin/res/config.json 到该源
+./script/use_rtsp_no_b_source.sh
+
+# 从 build_sim/bin 启动，确保 simulation 资源路径正确
+cd build_sim/bin
+./htc_main_app -rs
+```
+
+恢复默认测试源：
+
+```bash
+./script/use_rtsp_no_b_source.sh --restore-default
+```
+
+说明：
+
+- 大体积音视频资源统一放在 [local_assets/README.md](/home/zengping/project/huntcam/code/t32_yb/local_assets/README.md) 约定的本地目录
+- 该目录默认被 `.gitignore` 忽略，不纳入版本控制
+- 当前脚本采用 fail-fast 策略：缺失原始 H.264 源时直接失败，不再静默回退到仓库内 sample 视频
+
 ## PC 模拟特性
 
 | 功能 | PC 模拟行为 |

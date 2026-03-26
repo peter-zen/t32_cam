@@ -8,3 +8,5 @@ sim_sdcard/DCIM
 sim_sdcard/data
 *.log
 CMakeFiles
+local_assets/*
+!local_assets/README.md

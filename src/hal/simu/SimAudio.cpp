@@ -1,11 +1,34 @@
 #include "SimAudio.h"
+#include "SimResourceResolver.h"
+#include <cerrno>
 #include <cmath>
 #include <cstring>
 #include <thread>
 #include <fstream>
 #include <string>
-#include <sstream>
+#include <elog.h>
 namespace hal {
+
+#define SIMAUD_LOG_TAG "SIMAUD"
+
+namespace {
+
+const char* audioPayloadName(AudioPayloadType payload) {
+    switch (payload) {
+        case AudioPayloadType::AAC:
+            return "AAC";
+        case AudioPayloadType::G711A:
+            return "G711A";
+        case AudioPayloadType::G711U:
+            return "G711U";
+        case AudioPayloadType::PCM16:
+            return "PCM16";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+} // namespace
 
 SimAudioStream::SimAudioStream()
     : configured_(false),
@@ -31,70 +54,78 @@ bool SimAudioStream::configure(const AudioStreamConfig& cfg) {
 
 bool SimAudioStream::start() {
     std::lock_guard<std::mutex> lock(mtx_);
-    if (!configured_) return false;
-    started_ = true;
-    std::string config_path = "res/config.json";
-    std::string base;
-    {
-        std::ifstream ifs(config_path);
-        if (ifs.good()) {
-            std::ostringstream ss;
-            ss << ifs.rdbuf();
-            std::string cfg = ss.str();
-            auto pick = [&](const std::string& key) -> std::string {
-                std::string pat = "\"" + key + "\"";
-                size_t p = cfg.find(pat);
-                if (p == std::string::npos) return "";
-                size_t q = cfg.find(':', p);
-                if (q == std::string::npos) return "";
-                size_t s = cfg.find('"', q);
-                if (s == std::string::npos) return "";
-                size_t e = cfg.find('"', s + 1);
-                if (e == std::string::npos) return "";
-                return cfg.substr(s + 1, e - s - 1);
-            };
-            size_t pos = config_path.find_last_of("/\\");
-            std::string dir = (pos == std::string::npos) ? "." : config_path.substr(0, pos);
-            std::string b = pick("base");
-            if (b.empty()) base = dir; else base = (b[0] == '/') ? b : (dir + "/" + b);
-            if (cfg_.payload == AudioPayloadType::AAC) {
-                std::string name = pick("aac");
-                if (!name.empty()) file_path_ = base + "/" + name;
-            } else if (cfg_.payload == AudioPayloadType::G711A) {
-                std::string name = pick("g711a");
-                if (!name.empty()) file_path_ = base + "/" + name;
-            } else if (cfg_.payload == AudioPayloadType::G711U) {
-                std::string name = pick("g711u");
-                if (!name.empty()) file_path_ = base + "/" + name;
-            } else if (cfg_.payload == AudioPayloadType::PCM16) {
-                // PCM16 fallback to G711U file if no pcm file is configured
-                std::string name = pick("pcm");
-                if (name.empty()) name = pick("g711u");
-                if (!name.empty()) file_path_ = base + "/" + name;
-            } else {
-                file_path_.clear();
-            }
+    if (!configured_) {
+        return false;
+    }
+
+    started_ = false;
+    file_path_.clear();
+    file_buf_.clear();
+    last_buffer_.clear();
+    last_pieces_.clear();
+    src_ = nullptr;
+    src_len_ = 0;
+    last_pts_ = 0;
+    i_ = 0;
+
+    std::string config_path;
+    std::string cfg;
+    if (!sim_resource::loadConfig(config_path, cfg)) {
+        elog_w(SIMAUD_LOG_TAG, "Failed to locate simulation config.json, using synthetic %s audio",
+               audioPayloadName(cfg_.payload));
+        read_offset_ = 0;
+        started_ = true;
+        return true;
+    }
+
+    if (cfg_.payload == AudioPayloadType::AAC) {
+        file_path_ = sim_resource::resolveAssetPath(config_path, cfg, "aac");
+    } else if (cfg_.payload == AudioPayloadType::G711A) {
+        file_path_ = sim_resource::resolveAssetPath(config_path, cfg, "g711a");
+    } else if (cfg_.payload == AudioPayloadType::G711U) {
+        file_path_ = sim_resource::resolveAssetPath(config_path, cfg, "g711u");
+    } else if (cfg_.payload == AudioPayloadType::PCM16) {
+        file_path_ = sim_resource::resolveAssetPath(config_path, cfg, "pcm");
+        if (file_path_.empty()) {
+            file_path_ = sim_resource::resolveAssetPath(config_path, cfg, "g711u");
         }
     }
+
     if (!file_path_.empty()) {
+        errno = 0;
         std::ifstream af(file_path_, std::ios::binary);
-        if (af.good()) {
+        if (af.is_open()) {
             af.seekg(0, std::ios::end);
             std::streampos sz = af.tellg();
             af.seekg(0, std::ios::beg);
-            file_buf_.resize((size_t)sz);
-            if (sz > 0) af.read((char*)file_buf_.data(), sz);
-            src_ = file_buf_.data();
-            src_len_ = file_buf_.size();
+            if (sz > 0) {
+                file_buf_.resize(static_cast<size_t>(sz));
+                af.read(reinterpret_cast<char*>(file_buf_.data()), sz);
+                if (af) {
+                    src_ = file_buf_.data();
+                    src_len_ = file_buf_.size();
+                    elog_i(SIMAUD_LOG_TAG, "Opened %s source: config=%s file=%s size=%zu",
+                           audioPayloadName(cfg_.payload), config_path.c_str(), file_path_.c_str(), file_buf_.size());
+                } else {
+                    file_buf_.clear();
+                    elog_w(SIMAUD_LOG_TAG, "Failed to read %s source: file=%s, using synthetic audio",
+                           audioPayloadName(cfg_.payload), file_path_.c_str());
+                }
+            } else {
+                elog_w(SIMAUD_LOG_TAG, "Empty %s source: file=%s, using synthetic audio",
+                       audioPayloadName(cfg_.payload), file_path_.c_str());
+            }
         } else {
-            src_ = nullptr;
-            src_len_ = 0;
+            elog_w(SIMAUD_LOG_TAG, "Failed to open %s source: config=%s file=%s err=%s, using synthetic audio",
+                   audioPayloadName(cfg_.payload), config_path.c_str(), file_path_.c_str(), std::strerror(errno));
         }
     } else {
-        src_ = nullptr;
-        src_len_ = 0;
+        elog_w(SIMAUD_LOG_TAG, "Missing configured %s source in %s, using synthetic audio",
+               audioPayloadName(cfg_.payload), config_path.c_str());
     }
+
     read_offset_ = 0;
+    started_ = true;
     return true;
 }
 
@@ -172,8 +203,6 @@ bool SimAudioStream::adts_find_frame(const uint8_t* src, size_t len, size_t star
         if (i + 7 > len) return false;
     }
     frame_off = i;
-    int protection_absent = (src[i + 1] & 0x01);
-    size_t header_len = protection_absent ? 7 : 9;
     int aac_frame_length = ((src[i + 3] & 0x03) << 11) | (src[i + 4] << 3) | ((src[i + 5] & 0xE0) >> 5);
     frame_len = (size_t)aac_frame_length;
     samples = 1024;
