@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <json/json.h>
 
+#include "../../common/Common.h"
+
 
 class Settings {
 public:
@@ -32,7 +34,7 @@ public:
 	uint8_t stillDriverMode;
 	uint8_t stillStamp;
 
-	uint8_t videoSize;
+	uint8_t videoSize = VIDEO_SIZE_FHD_30FPS;
 	uint8_t videoQuality;
 	uint8_t videoSeamless;
 	uint8_t videoStamp;
@@ -56,10 +58,10 @@ public:
 	uint8_t burstNumber=1;
 	uint8_t shootingLimits;
 	uint8_t videoLength_h;
-	uint8_t videoLength_l;
+	uint8_t videoLength_l = 30;
 
-	uint8_t pirEn;
-	uint8_t ckPirSensitivity;
+	uint8_t pirEn = 1;
+	uint8_t ckPirSensitivity = 2;
 	uint8_t trigInterval_h;
 	uint8_t trigInterval_m;
 	uint8_t trigInterval_s;
@@ -85,8 +87,8 @@ public:
 	uint8_t timer3e_m;
 
 	uint8_t weekRepeats;
-	uint8_t stampEn;
-	uint8_t autoCover;
+	uint8_t stampEn = 1;
+	uint8_t autoCover = 1;
 
 	uint8_t showDevNameEn;
 	uint8_t pwdEn;
@@ -128,9 +130,9 @@ public:
 	char devName[16];
 	char devPwd[4];
 
-	uint8_t bitRate_4k;
-	uint8_t bitRate_1080p;
-	uint8_t bitRate_720p;
+	uint8_t bitRate_4k = 32;
+	uint8_t bitRate_1080p = 16;
+	uint8_t bitRate_720p = 8;
 	uint8_t isWLed;
 	uint8_t continuous_record;
 	uint8_t remote_wakeup;

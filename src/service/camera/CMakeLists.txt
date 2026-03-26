@@ -17,9 +17,13 @@ target_include_directories(camera_service PUBLIC
     ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
 )
 
-target_link_libraries(camera_service PRIVATE
+target_link_libraries(camera_service PUBLIC
     media_snap
     media_recorder
     daynight
     jsoncpp
+    setting
+    devconf
+    env
+    logger
 )

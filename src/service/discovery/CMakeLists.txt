@@ -11,5 +11,6 @@ target_include_directories(discovery_service PUBLIC
 )
 
 target_link_libraries(discovery_service PUBLIC
+    easylogger
     tinysvcmdns
 )

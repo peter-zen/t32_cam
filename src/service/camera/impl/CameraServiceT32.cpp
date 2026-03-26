@@ -1,4 +1,5 @@
 #include "CameraServiceT32.h"
+#include "../CameraPropertyService.h"
 
 #ifndef SIMULATION_MODE
 
@@ -45,6 +46,18 @@ bool read_binary_file(const std::string& path, std::vector<uint8_t>& data) {
     file.seekg(0, std::ios::beg);
     data.resize(static_cast<size_t>(size));
     return file.read(reinterpret_cast<char*>(data.data()), size).good();
+}
+
+void applyConfiguredVideoParams(const std::shared_ptr<media::VideoParams>& videoParams) {
+    int width = 1920;
+    int height = 1080;
+    int fps = 30;
+    int bitrateKbps = 4096;
+    CameraPropertyService::getInstance().getVideoRecordConfig(width, height, fps, bitrateKbps);
+
+    videoParams->setResolution(width, height);
+    videoParams->setFrameRate(fps);
+    videoParams->setBitrate(bitrateKbps * 1024);
 }
 
 } // namespace
@@ -221,6 +234,8 @@ int CameraServiceT32::capturePreviewFrame(int channel, int width, int height, st
 }
 
 int CameraServiceT32::startRecord(int channel, int duration, bool audio, const std::string& recordId) {
+    (void)channel;
+    (void)recordId;
     std::lock_guard<std::mutex> lock(op_mutex_);
     elog_i(TAG, "Start record: duration=%d", duration);
 
@@ -232,18 +247,19 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     std::string filename = oss.str();
 
     auto vidParam = std::make_shared<media::VideoParams>();
-    vidParam->setResolution(1920, 1080);
-    vidParam->setFrameRate(30);
-    vidParam->setBitrate(4000000);
-    auto audParam = std::make_shared<media::AudioParams>();
-    audParam->setDeviceType(media::AudioDeviceType::AUDIO_IN);
-    audParam->setDeviceId(1);
-    audParam->setChannelId(0);
-    audParam->setVolume(80);
-    audParam->setGain(28);
-    audParam->setCodecFormat(media::AudioCodecFormat::AAC);
-    audParam->setSampleRate(media::AudioSampleRate::SR_16000);
-    audParam->setChannelCount(1);
+    applyConfiguredVideoParams(vidParam);
+    std::shared_ptr<media::AudioParams> audParam = nullptr;
+    if (audio) {
+        audParam = std::make_shared<media::AudioParams>();
+        audParam->setDeviceType(media::AudioDeviceType::AUDIO_IN);
+        audParam->setDeviceId(1);
+        audParam->setChannelId(0);
+        audParam->setVolume(80);
+        audParam->setGain(28);
+        audParam->setCodecFormat(media::AudioCodecFormat::AAC);
+        audParam->setSampleRate(media::AudioSampleRate::SR_16000);
+        audParam->setChannelCount(1);
+    }
     video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam);
 
     if (video_recorder_->record(filename, duration)) {
@@ -269,17 +285,32 @@ RecordStatus CameraServiceT32::getRecordStatus() {
 }
 
 int CameraServiceT32::setProperty(const std::string& key, const std::string& value) {
+    Json::Value propertyJson;
+    std::string error;
+    int ret = CameraPropertyService::getInstance().setPropertyValue(key, Json::Value(value), &propertyJson, &error);
+    if (ret != 0) {
+        elog_e(TAG, "Set property failed: %s=%s, error=%s", key.c_str(), value.c_str(), error.c_str());
+        return ret;
+    }
+
     elog_i(TAG, "Set property: %s=%s", key.c_str(), value.c_str());
-    // TODO: Map to IMP ISP settings
     return 0;
 }
 
 std::string CameraServiceT32::getProperty(const std::string& key) {
-    return "";
+    std::string value;
+    std::string error;
+    if (CameraPropertyService::getInstance().getPropertyValueString(key, value, &error) != 0) {
+        elog_w(TAG, "Get property failed: %s, error=%s", key.c_str(), error.c_str());
+        return "";
+    }
+    return value;
 }
 
 std::string CameraServiceT32::getAllPropertiesJson() {
-    return "{}";
+    Json::StreamWriterBuilder writer;
+    writer["indentation"] = "";
+    return Json::writeString(writer, CameraPropertyService::getInstance().getAllPropertiesJson());
 }
 
 std::string CameraServiceT32::getMediaDatabasePath() {

@@ -11,6 +11,8 @@ struct mdnsd;
 
 namespace service {
 
+std::string normalizeMdnsModelValue(const std::string& model);
+
 struct MdnsServiceParams {
     std::string interfaceName;
     std::string ipAddress;

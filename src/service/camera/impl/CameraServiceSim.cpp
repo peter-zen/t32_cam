@@ -1,4 +1,5 @@
 #include "CameraServiceSim.h"
+#include "../CameraPropertyService.h"
 #include <elog.h>
 #include <fstream>
 #include <thread>
@@ -44,6 +45,18 @@ bool read_binary_file(const std::string& path, std::vector<uint8_t>& data) {
     file.seekg(0, std::ios::beg);
     data.resize(static_cast<size_t>(size));
     return file.read(reinterpret_cast<char*>(data.data()), size).good();
+}
+
+void applyConfiguredVideoParams(const std::shared_ptr<media::VideoParams>& videoParams) {
+    int width = 1920;
+    int height = 1080;
+    int fps = 30;
+    int bitrateKbps = 4096;
+    CameraPropertyService::getInstance().getVideoRecordConfig(width, height, fps, bitrateKbps);
+
+    videoParams->setResolution(width, height);
+    videoParams->setFrameRate(fps);
+    videoParams->setBitrate(bitrateKbps * 1024);
 }
 
 } // namespace
@@ -243,6 +256,8 @@ int CameraServiceSim::capturePreviewFrame(int channel, int width, int height, st
 }
 
 int CameraServiceSim::startRecord(int channel, int duration, bool audio, const std::string& recordId) {
+    (void)channel;
+    (void)recordId;
     std::lock_guard<std::mutex> lock(op_mutex_);
     if (is_recording_) {
         elog_w(TAG, "Already recording");
@@ -259,9 +274,7 @@ int CameraServiceSim::startRecord(int channel, int duration, bool audio, const s
     Misc::createDirectory(base);
 
     auto vidParam = std::make_shared<media::VideoParams>();
-    vidParam->setResolution(1920, 1080);
-    vidParam->setFrameRate(15);
-    vidParam->setBitrate(4000000);
+    applyConfiguredVideoParams(vidParam);
     vidParam->setCodecFormat(media::VideoCodecFormat::H264);
     vidParam->setRcMode(media::VideoRcMode::CBR);
 
@@ -313,16 +326,32 @@ RecordStatus CameraServiceSim::getRecordStatus() {
 }
 
 int CameraServiceSim::setProperty(const std::string& key, const std::string& value) {
+    Json::Value propertyJson;
+    std::string error;
+    int ret = CameraPropertyService::getInstance().setPropertyValue(key, Json::Value(value), &propertyJson, &error);
+    if (ret != 0) {
+        elog_e(TAG, "Set property failed (Sim): %s = %s, error=%s", key.c_str(), value.c_str(), error.c_str());
+        return ret;
+    }
+
     elog_i(TAG, "Set property (Sim): %s = %s", key.c_str(), value.c_str());
     return 0;
 }
 
 std::string CameraServiceSim::getProperty(const std::string& key) {
-    return "sim_value";
+    std::string value;
+    std::string error;
+    if (CameraPropertyService::getInstance().getPropertyValueString(key, value, &error) != 0) {
+        elog_w(TAG, "Get property failed (Sim): %s, error=%s", key.c_str(), error.c_str());
+        return "";
+    }
+    return value;
 }
 
 std::string CameraServiceSim::getAllPropertiesJson() {
-    return "{\"sim\": true}";
+    Json::StreamWriterBuilder writer;
+    writer["indentation"] = "";
+    return Json::writeString(writer, CameraPropertyService::getInstance().getAllPropertiesJson());
 }
 
 std::string CameraServiceSim::getMediaDatabasePath() {

@@ -114,6 +114,27 @@ bool isValidIpv4Address(const std::string& ipAddress) {
 
 } // namespace
 
+std::string normalizeMdnsModelValue(const std::string& model) {
+    std::string normalized = trimQuotes(model);
+    if (normalized.empty()) {
+        elog_w(kTag, "mDNS model is empty, fallback to T32");
+        return "T32";
+    }
+
+    std::string upperModel;
+    upperModel.reserve(normalized.size());
+    for (char c : normalized) {
+        upperModel.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    }
+
+    if (upperModel == "CXXX") {
+        elog_w(kTag, "mDNS model %s is invalid, fallback to T32", normalized.c_str());
+        return "T32";
+    }
+
+    return normalized;
+}
+
 std::shared_ptr<MdnsService> MdnsService::getInstance() {
     static std::shared_ptr<MdnsService> instance(new MdnsService());
     return instance;
@@ -197,7 +218,11 @@ MdnsServiceParams MdnsService::normalizeParams(const MdnsServiceParams& params) 
     normalized.hostName = normalizeHostName(params.hostName);
     normalized.ipAddress = trimQuotes(params.ipAddress);
     normalized.interfaceName = trimQuotes(params.interfaceName);
-    normalized.txt.model = trimQuotes(params.txt.model);
+    normalized.txt.deviceFamily = trimQuotes(params.txt.deviceFamily);
+    if (normalized.txt.deviceFamily.empty()) {
+        normalized.txt.deviceFamily = kDefaultMdnsDeviceFamily;
+    }
+    normalized.txt.model = normalizeMdnsModelValue(params.txt.model);
     normalized.txt.serialNumber = trimQuotes(params.txt.serialNumber);
     normalized.txt.firmwareVersion = trimQuotes(params.txt.firmwareVersion);
     normalized.txt.macAddress = trimQuotes(params.txt.macAddress);
