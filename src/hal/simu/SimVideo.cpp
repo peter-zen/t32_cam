@@ -4,7 +4,10 @@
 #include <fstream>
 #include <string>
 #include <sstream>
+#include <elog.h>
 namespace hal {
+
+#define SIMVID_LOG_TAG "SIMVID"
 
 SimVideoStream::SimVideoStream()
     : configured_(false),
@@ -105,6 +108,8 @@ bool SimVideoStream::start() {
         src_len_ = 0;
         last_buffer_.clear();
     }
+    frame_index_ = 0;
+    last_pts_ = 0;
     read_offset_ = 0;
     next_frame_time_ = std::chrono::steady_clock::now();
     return true;
@@ -317,7 +322,10 @@ bool SimVideoStream::getInfo(VideoStreamInfo& info) {
     info.ae_converged = true;
     return true;
 }
-bool SimVideoStream::requestIDR() { return true; }
+bool SimVideoStream::requestIDR() {
+    elog_i(SIMVID_LOG_TAG, "requestIDR ignored for simulation file source");
+    return true;
+}
 
 SimVideo::SimVideo() {}
 SimVideo::~SimVideo() {}

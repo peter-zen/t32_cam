@@ -72,6 +72,8 @@ typedef struct {
     size_t addr_len;
     Stream streams[MAX_STREAMS];
     int streams_playing;
+    struct event *deferred_play_ev;
+    uint64_t deferred_play_session_id;
     struct rtsp_server *peer;
 } Client;
 
@@ -82,6 +84,9 @@ static void listener_cb(
     int socklen, void *ctx);
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx);
 static void on_sigint_cb(evutil_socket_t sig, short events, void *ctx);
+static void client_deferred_play_cb(evutil_socket_t fd, short events, void *arg);
+static void client_cancel_deferred_play(Client *self);
+static void client_start_playback(Client *self, uint64_t session_id);
 
 static int setup_transport(
     Client *self, SmolRTSP_Context *ctx, const SmolRTSP_Request *req,
@@ -206,6 +211,8 @@ static SmolRTSP_Droppable play_video(
     struct event **ev, int *streams_playing);
 static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg);
 static bool send_nalu(VideoCtx *ctx);
+static size_t detect_nal_start_code_len(U8Slice99 data, SmolRTSP_NalStartCodeTester preferred_tester);
+static bool h264_buffer_contains_idr(U8Slice99 video, SmolRTSP_NalStartCodeTester start_code_tester);
 
 static uint64_t monotonic_time_us(void) {
     struct timespec ts;
@@ -257,6 +264,58 @@ static void schedule_next_deadline(struct event *ev, uint64_t *next_deadline_us,
 
 static void schedule_retry_us(struct event *ev, uint64_t retry_us) {
     event_add_after_us(ev, retry_us > 0 ? retry_us : 1000);
+}
+
+static size_t detect_nal_start_code_len(U8Slice99 data, SmolRTSP_NalStartCodeTester preferred_tester) {
+    size_t start_code_len = 0;
+    if (preferred_tester != NULL) {
+        start_code_len = preferred_tester(data);
+        if (start_code_len > 0) {
+            return start_code_len;
+        }
+    }
+
+    if (preferred_tester != smolrtsp_test_start_code_4b) {
+        start_code_len = smolrtsp_test_start_code_4b(data);
+        if (start_code_len > 0) {
+            return start_code_len;
+        }
+    }
+
+    if (preferred_tester != smolrtsp_test_start_code_3b) {
+        start_code_len = smolrtsp_test_start_code_3b(data);
+        if (start_code_len > 0) {
+            return start_code_len;
+        }
+    }
+
+    return 0;
+}
+
+static bool h264_buffer_contains_idr(U8Slice99 video, SmolRTSP_NalStartCodeTester start_code_tester) {
+    if (U8Slice99_is_empty(video) || start_code_tester == NULL) {
+        return false;
+    }
+
+    U8Slice99 cursor = video;
+    while (!U8Slice99_is_empty(cursor)) {
+        const size_t sc_len = detect_nal_start_code_len(cursor, start_code_tester);
+        if (sc_len == 0) {
+            cursor = U8Slice99_advance(cursor, 1);
+            continue;
+        }
+
+        cursor = U8Slice99_advance(cursor, sc_len);
+        if (U8Slice99_is_empty(cursor)) {
+            break;
+        }
+
+        if ((cursor.ptr[0] & 0x1F) == SMOLRTSP_H264_NAL_UNIT_CODED_SLICE_IDR) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static uint64_t parse_u64_env_or_default(const char *key, uint64_t default_value) {
@@ -365,6 +424,109 @@ static void listener_cb(
     bufferevent_enable(bev, EV_READ | EV_WRITE);
 }
 
+static void client_cancel_deferred_play(Client *self) {
+    if (!self) {
+        return;
+    }
+
+    if (self->deferred_play_ev != NULL) {
+        event_del(self->deferred_play_ev);
+        event_free(self->deferred_play_ev);
+        self->deferred_play_ev = NULL;
+    }
+    self->deferred_play_session_id = 0;
+}
+
+static void client_start_playback(Client *self, uint64_t session_id) {
+    if (!self || !self->peer) {
+        return;
+    }
+
+    struct rtsp_server_param rtsp_param = self->peer->param;
+    bool has_stream = false;
+    bool already_active = false;
+
+    for (size_t i = 0; i < MAX_STREAMS; i++) {
+        if (self->streams[i].session_id != session_id) {
+            continue;
+        }
+        has_stream = true;
+        if (self->streams[i].ctx.vptr != NULL || self->streams[i].ev != NULL) {
+            already_active = true;
+        }
+    }
+
+    if (!has_stream) {
+        elog_w(RTSP_LOG_TAG, "PLAY: deferred start skipped, session not found %" PRIu64, session_id);
+        return;
+    }
+
+    if (already_active) {
+        elog_w(RTSP_LOG_TAG, "PLAY: deferred start skipped, session already active %" PRIu64, session_id);
+        return;
+    }
+
+    elog_i(RTSP_LOG_TAG, "PLAY: deferred start fired for session=%" PRIu64, session_id);
+
+    if (self->peer->funcs[FUNC_ID_ON_SESSION_PLAY]) {
+        self->peer->funcs[FUNC_ID_ON_SESSION_PLAY](NULL, NULL, NULL);
+    }
+
+    for (size_t i = 0; i < MAX_STREAMS; i++) {
+        if (self->streams[i].session_id != session_id) {
+            continue;
+        }
+
+        if (rtsp_param.audio_stream_id == i) {
+            elog_i(RTSP_LOG_TAG, "PLAY: deferred select audio stream_id=%zu", i);
+            self->streams[i].ctx = play_audio(
+                rtsp_param.audio_sample_rate, rtsp_param.audio_samples_per_packet,
+                rtsp_param.audio_codec, rtsp_param.audio_channels,
+                self->peer->funcs[FUNC_ID_PULL_AUDIO_FRAME],
+                self->peer->funcs[FUNC_ID_RELEASE_AUDIO_FRAME],
+                self->base, self->bev, self->streams[i].transport,
+                &self->streams[i].ev, &self->streams_playing);
+        } else {
+            elog_i(RTSP_LOG_TAG, "PLAY: deferred select video stream_id=%zu", i);
+            self->streams[i].ctx = play_video(
+                self->peer->param.video_fps,
+                self->peer->param.video_sample_rate,
+                self->peer->param.video_codec,
+                self->peer->funcs[FUNC_ID_PULL_VIDEO_FRAME],
+                self->peer->funcs[FUNC_ID_RELEASE_VIDEO_FRAME],
+                (self->peer->param.video_sps_len && self->peer->param.video_pps_len),
+                self->base, self->bev, self->streams[i].transport,
+                &self->streams[i].ev, &self->streams_playing);
+        }
+    }
+}
+
+static void client_deferred_play_cb(evutil_socket_t fd, short events, void *arg) {
+    (void)fd;
+    (void)events;
+
+    Client *self = arg;
+    if (!self) {
+        return;
+    }
+
+    struct event *ev = self->deferred_play_ev;
+    uint64_t session_id = self->deferred_play_session_id;
+
+    self->deferred_play_ev = NULL;
+    self->deferred_play_session_id = 0;
+
+    if (ev != NULL) {
+        event_free(ev);
+    }
+
+    if (session_id == 0) {
+        return;
+    }
+
+    client_start_playback(self, session_id);
+}
+
 static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
     // Get Client from context
     SmolRTSP_Controller controller = smolrtsp_libevent_ctx_controller(ctx);
@@ -405,9 +567,13 @@ static void on_sigint_cb(evutil_socket_t sig, short events, void *ctx) {
 static void Client_drop(VSelf) {
     VSELF(Client);
 
+    client_cancel_deferred_play(self);
+
     for (size_t i = 0; i < MAX_STREAMS; i++) {
         if (self->streams[i].ctx.vptr != NULL) {
             VCALL(self->streams[i].ctx, drop);
+        } else if (self->streams[i].transport != NULL) {
+            VTABLE(SmolRTSP_RtpTransport, SmolRTSP_Droppable).drop(self->streams[i].transport);
         }
     }
 
@@ -602,38 +768,11 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
             ctx, SMOLRTSP_STATUS_BAD_REQUEST, "Malformed `Session'");
         return;
     }
-    struct rtsp_server_param rtsp_param = self->peer->param;
     elog_i(RTSP_LOG_TAG, "PLAY: session=%" PRIu64, session_id);
-
-    if (self->peer && self->peer->funcs[FUNC_ID_ON_SESSION_PLAY]) {
-        self->peer->funcs[FUNC_ID_ON_SESSION_PLAY](NULL, NULL, NULL);
-    }
 
     bool played = false;
     for (size_t i = 0; i < MAX_STREAMS; i++) {
         if (self->streams[i].session_id == session_id) {
-            if (rtsp_param.audio_stream_id == i) {
-                elog_i(RTSP_LOG_TAG, "PLAY: select audio stream_id=%zu", i);
-                self->streams[i].ctx = play_audio(
-                    rtsp_param.audio_sample_rate, rtsp_param.audio_samples_per_packet,
-                    rtsp_param.audio_codec, rtsp_param.audio_channels,
-                    self->peer->funcs[FUNC_ID_PULL_AUDIO_FRAME],
-                    self->peer->funcs[FUNC_ID_RELEASE_AUDIO_FRAME],
-                    self->base, self->bev, self->streams[i].transport,
-                    &self->streams[i].ev, &self->streams_playing);
-            } else {
-                elog_i(RTSP_LOG_TAG, "PLAY: select video stream_id=%zu", i);
-                self->streams[i].ctx = play_video(
-                    self->peer->param.video_fps,
-                    self->peer->param.video_sample_rate,
-                    self->peer->param.video_codec,
-                    self->peer->funcs[FUNC_ID_PULL_VIDEO_FRAME],
-                    self->peer->funcs[FUNC_ID_RELEASE_VIDEO_FRAME],
-                    (self->peer->param.video_sps_len && self->peer->param.video_pps_len),
-                    self->base, self->bev, self->streams[i].transport,
-                    &self->streams[i].ev, &self->streams_playing);
-            }
-
             played = true;
         }
     }
@@ -648,7 +787,48 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     //smolrtsp_header(ctx, SMOLRTSP_HEADER_RANGE, "npt=now-");
     smolrtsp_header(ctx, SMOLRTSP_HEADER_RANGE, "npt=0.000-");
     smolrtsp_header(ctx, SMOLRTSP_HEADER_RTP_INFO, "seq=0;rtptime=0");
-    smolrtsp_respond_ok(ctx);
+    if (smolrtsp_respond_ok(ctx) < 0) {
+        elog_e(RTSP_LOG_TAG, "PLAY: failed to respond OK for session=%" PRIu64, session_id);
+        return;
+    }
+    elog_i(
+        RTSP_LOG_TAG,
+        "PLAY: 200 OK queued for session=%" PRIu64 ", output_pending=%zu",
+        session_id,
+        evbuffer_get_length(bufferevent_get_output(self->bev)));
+
+    if (self->deferred_play_ev != NULL) {
+        if (self->deferred_play_session_id == session_id) {
+            elog_i(RTSP_LOG_TAG, "PLAY: deferred start already scheduled for session=%" PRIu64, session_id);
+            return;
+        }
+
+        elog_w(
+            RTSP_LOG_TAG,
+            "PLAY: replacing deferred start session=%" PRIu64 " -> %" PRIu64,
+            self->deferred_play_session_id,
+            session_id);
+        client_cancel_deferred_play(self);
+    }
+
+    bool already_active = false;
+    for (size_t i = 0; i < MAX_STREAMS; i++) {
+        if (self->streams[i].session_id == session_id &&
+            (self->streams[i].ctx.vptr != NULL || self->streams[i].ev != NULL)) {
+            already_active = true;
+            break;
+        }
+    }
+    if (already_active) {
+        elog_i(RTSP_LOG_TAG, "PLAY: session already active %" PRIu64, session_id);
+        return;
+    }
+
+    self->deferred_play_session_id = session_id;
+    self->deferred_play_ev = event_new(self->base, -1, EV_TIMEOUT, client_deferred_play_cb, self);
+    assert(self->deferred_play_ev);
+    event_add_after_us(self->deferred_play_ev, 1);
+    elog_i(RTSP_LOG_TAG, "PLAY: deferred start scheduled for session=%" PRIu64, session_id);
 }
 
 static void
@@ -667,9 +847,17 @@ Client_teardown(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     bool teardowned = false;
     for (size_t i = 0; i < MAX_STREAMS; i++) {
         if (self->streams[i].session_id == session_id) {
-            event_del(self->streams[i].ev);
+            if (self->streams[i].ev != NULL) {
+                event_del(self->streams[i].ev);
+            }
             teardowned = true;
         }
+    }
+
+    if (self->deferred_play_session_id == session_id) {
+        elog_i(RTSP_LOG_TAG, "TEARDOWN: cancel deferred start for session=%" PRIu64, session_id);
+        client_cancel_deferred_play(self);
+        teardowned = true;
     }
 
     if (!teardowned) {
@@ -1225,6 +1413,11 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
         ctx->has_extension = false;
         ctx->extension.frameIndex++;
         ctx->extension.frameSize = video_size;
+
+        if (ctx->need_idr && ctx->codec == CODEC_H264 &&
+            h264_buffer_contains_idr(video, start_code_tester)) {
+            ctx->need_idr = false;
+        }
         
         // 每秒输出一次统计
         uint64_t now_us = monotonic_time_us();
@@ -1340,7 +1533,7 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
         return;
     }
 
-    const size_t start_code_len = ctx->start_code_tester(ctx->video);
+    const size_t start_code_len = detect_nal_start_code_len(ctx->video, ctx->start_code_tester);
     if (0 == start_code_len) {
         ctx->video = U8Slice99_advance(ctx->video, 1);
         goto again;
@@ -1376,6 +1569,9 @@ static bool send_h264_nalu(VideoCtx *ctx) {
     bool au_found = false;
 
     int unit_type = SmolRTSP_NalHeader_unit_type(nalu.header);
+    const bool is_vcl =
+        (unit_type >= SMOLRTSP_H264_NAL_UNIT_CODED_SLICE_NON_IDR &&
+         unit_type <= SMOLRTSP_H264_NAL_UNIT_CODED_SLICE_IDR);
     //printf("%s-%d, unit_type=%d\n", __func__, __LINE__, unit_type);
     if (ctx->sps_pps_bypass && (unit_type == SMOLRTSP_H264_NAL_UNIT_SPS || unit_type == SMOLRTSP_H264_NAL_UNIT_PPS)) {
         return au_found;
@@ -1384,8 +1580,8 @@ static bool send_h264_nalu(VideoCtx *ctx) {
     if (ctx->need_idr) {
         if (unit_type == SMOLRTSP_H264_NAL_UNIT_CODED_SLICE_IDR) {
             ctx->need_idr = false;
-        } else if (unit_type == SMOLRTSP_H264_NAL_UNIT_AUD || unit_type == SMOLRTSP_H264_NAL_UNIT_SPS || unit_type == SMOLRTSP_H264_NAL_UNIT_PPS) {
-            // allow AUD/SPS/PPS before IDR
+        } else if (!is_vcl) {
+            // allow non-VCL prefix units such as AUD/SEI/SPS/PPS before IDR
         } else {
             // drop non-IDR slices until first IDR
             return au_found;
@@ -1509,7 +1705,13 @@ static bool send_nalu(VideoCtx *ctx) {
         LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE, -1,
         (struct sockaddr *)&sin, sizeof sin);
     if (!server->listener) {
-        elog_e(RTSP_LOG_TAG, "evconnlistener_new_bind failed");
+        elog_e(RTSP_LOG_TAG, "evconnlistener_new_bind failed on port %d: errno=%d (%s)",
+               server->param.port, errno, strerror(errno));
+        if (errno == EACCES && server->param.port < 1024) {
+            elog_w(RTSP_LOG_TAG,
+                   "Binding RTSP port %d requires root or CAP_NET_BIND_SERVICE on this host",
+                   server->param.port);
+        }
         event_base_free(server->base);
         free(server);
         return NULL;
