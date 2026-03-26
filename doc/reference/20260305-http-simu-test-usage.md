@@ -9,7 +9,10 @@
 
 使用独立 HTTP 测试程序 `test_http_server`，并通过脚本自动验证 API。
 
-- 脚本路径：`script/test_http_api_simu.sh`
+- 新版 V1 脚本：`script/test_http_api_v1_simu.sh`
+- Legacy 退役检查脚本：`script/test_http_api_simu.sh`
+- 完整接口手册：`doc/reference/20260324-http-api-reference.md`
+- 客户端精简版：`doc/reference/20260324-http-api-client-quick-reference.md`
 - 服务二进制：`build_sim/src/service/http_server/test_http_server`
 
 ## 使用方式
@@ -19,42 +22,67 @@
 ```bash
 cd /home/zengping/project/huntcam/code/t32_yb
 cmake --build build_sim -j
-./script/test_http_api_simu.sh
+./script/test_http_api_v1_simu.sh
 ```
 
 测试通过时会输出：
 
 ```text
-[SUMMARY] pass=16 fail=0
+[SUMMARY] pass=43 fail=0
 [SUMMARY] ALL PASS
 ```
 
 ## 脚本验证内容
 
+- V1 主验证脚本 `script/test_http_api_v1_simu.sh`
 - `GET /api/health`
+- `GET /healthz`
+- `GET /api/v1/device/info`
+- `GET /api/v1/device/sensors`
+- `GET /api/v1/storage/info`
+- `POST /api/v1/system/datetime`
+- `POST /api/v1/system/workmode`
+- `POST /api/v1/storage/format`
+- `GET /api/v1/camera/properties`
+- `GET /api/v1/camera/properties/resolution`
+- `POST /api/v1/camera/properties`
+- `POST /api/v1/camera/properties/reset`
+- `POST /api/v1/camera/photo`
+- `GET /api/v1/camera/photo/status`
+- `POST /api/v1/camera/video/start`
+- `GET /api/v1/camera/video/status`
+- `POST /api/v1/camera/video/stop`
+- `GET /api/v1/camera/photos`
+- `GET /api/v1/camera/video/list`
+- `GET /api/v1/camera/preview`
+- `GET /api/v1/camera/thumbnail`
+
+- Legacy 退役检查脚本 `script/test_http_api_simu.sh`
+- 当前验证 legacy 业务路由均已返回 `404`
 - `GET /api/device/info`
 - `GET /api/sensor/data`
-- `GET /api/params`
-- `GET /api/storage/info`
-- `GET /api/record/status`
-- `GET /api/snapshot`
-- `POST /api/params/set`
-- `POST /api/params/reset`
 - `POST /api/system/datetime`
 - `POST /api/system/workmode`
+- `GET /api/storage/info`
 - `POST /api/storage/format`
+- `GET /api/params`
+- `POST /api/params/set`
+- `POST /api/params/reset`
+- `GET /api/record/status`
 - `POST /api/record/start`
 - `POST /api/record/stop`
+- `GET /api/snapshot`
 
 ## 日志与可选参数
 
 - 默认 server 日志：`build_sim/sdcard/logs/http_test_server.log`
-- 可改端口：`HTTP_TEST_PORT=8081 ./script/test_http_api_simu.sh`
-- 可改日志路径：`HTTP_TEST_LOG=/tmp/http_test.log ./script/test_http_api_simu.sh`
+- 可改端口：`HTTP_TEST_PORT=8081 ./script/test_http_api_v1_simu.sh`
+- 可改日志路径：`HTTP_TEST_LOG=/tmp/http_test.log ./script/test_http_api_v1_simu.sh`
 
 ## 如果你仍想手动验证
 
 ```bash
 ./build_sim/src/service/http_server/test_http_server
 curl http://127.0.0.1:80/api/health
+curl http://127.0.0.1:80/healthz
 ```

@@ -1340,7 +1340,7 @@ curl -X POST http://192.168.1.100:80/api/v1/camera/properties/reset
 ```
 src/service/http_server/
 ├── http_server.c/h          # HTTP服务器核心
-├── http_api.c/h             # API路由注册
+├── http_api_v1.cpp + http_api.h  # 版本化 API 路由注册
 ├── api/                     # API实现（新增）
 │   ├── camera_api.c/h       # 相机操作API
 │   ├── property_api.c/h     # 属性管理API
