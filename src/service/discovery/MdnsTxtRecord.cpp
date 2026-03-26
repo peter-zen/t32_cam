@@ -22,8 +22,9 @@ std::string portToString(uint16_t port) {
 
 std::vector<std::string> MdnsTxtRecord::build(const MdnsTxtPayload& payload) {
     std::vector<std::string> records;
-    records.reserve(7);
+    records.reserve(8);
 
+    appendIfNotEmpty(records, "device_family", payload.deviceFamily);
     appendIfNotEmpty(records, "model", payload.model);
     appendIfNotEmpty(records, "sn", payload.serialNumber);
     appendIfNotEmpty(records, "fw_ver", payload.firmwareVersion);

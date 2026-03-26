@@ -196,6 +196,7 @@ static service::MdnsServiceParams buildMdnsParams(const std::shared_ptr<DeviceCo
         config->get(INI_SECTION_MDNS, INI_KEY_MDNS_SERVICE_TYPE, "_t32cam._tcp"));
     params.instanceName = getDefaultMdnsInstanceName(config);
     params.hostName = getDefaultMdnsHostName(config);
+    params.txt.deviceFamily = service::kDefaultMdnsDeviceFamily;
     params.txt.model = trimConfigString(config->get(INI_SECTION_BOOT, INI_KEY_PMODEL, "T32"));
     params.txt.serialNumber = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
     params.txt.firmwareVersion = CAMERA_VERSION;
@@ -774,7 +775,7 @@ int main(int argc, char* argv[])
     std::string projectRootPath = exePath + "/../..";  // build_sim/bin/../.. -> project_root
 
     auto env_manager = EnvManager::getInstance();
-    setEnvIfEmpty(env_manager, "CONFIG_FILE", projectRootPath + "/res/config.ini");
+    setEnvIfEmpty(env_manager, "CONFIG_FILE", projectRootPath + "/res/config.sim.ini");
     setEnvIfEmpty(env_manager, "SETTING_FILE_PATH", projectRootPath + "/res/setting.json");
     setEnvIfEmpty(env_manager, "BROADCAST_FILELIST_PATHNAME", simRootPath + "/media/audio/AUDIO_PLAY_LIST.txt");
     setEnvIfEmpty(env_manager, "BROADCAST_FILE_PATH", simRootPath + "/media/audio/");
@@ -1288,7 +1289,7 @@ int main(int argc, char* argv[])
 
     if (command & CMD_MOBILE) {
         uint16_t http_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_CTRL_PORT, 80);
-        uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, 8554);
+        uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
         auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
         auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
 #ifndef BUILD_FOR_SIMULATION
@@ -1389,7 +1390,7 @@ int main(int argc, char* argv[])
         //auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
         //Misc::connectWifi(wifi_ssid, wifi_pwd);
         //Misc::startDHCP();
-        uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, 8554);
+        uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
         RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
             Logger::log(LogLevel::INFO, "RTSP session closed, waiting for new connection...");
         });

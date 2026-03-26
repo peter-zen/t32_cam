@@ -26,7 +26,7 @@ make -j$(nproc)
 
 # Test with RTSP client
 ./build_sim/bin/htc_main_app -rs  # Start RTSP server
-ffplay rtsp://localhost:8554/live   # Play stream
+ffplay rtsp://localhost:554/live   # Play stream
 ```
 
 ### Quick Rebuild
@@ -199,7 +199,7 @@ cd build_sim && make -j$(nproc)
 ### Project-Specific Notes
 - Dual-platform project: code must compile for both T32 and PC
 - File source mode: for PC simulation testing without hardware
-- RTSP server port: 8554
+- RTSP server port: 554 by default
 - Audio default: 16kHz, 16-bit, mono, L16 codec
 - Video default: H.264, 25fps
 

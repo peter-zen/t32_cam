@@ -43,8 +43,8 @@ mkdir -p build_sim/sdcard/media/video
 mkdir -p build_sim/sdcard/data/db
 
 # 复制默认配置
-if [ -f res/config.ini ]; then
-    cp res/config.ini build_sim/sdcard/configs/
+if [ -f res/config.sim.ini ]; then
+    cp res/config.sim.ini build_sim/sdcard/configs/
 fi
 if [ -f res/setting.json ]; then
     cp res/setting.json build_sim/sdcard/configs/
@@ -92,7 +92,7 @@ echo "  Step 2: Analyzing Streams with ffprobe"
 echo "========================================="
 echo "Running ffprobe analysis..."
 
-ffprobe -v info -show_streams -show_format rtsp://localhost:8554/live 2>&1 > ffprobe_output.log &
+ffprobe -v info -show_streams -show_format rtsp://localhost:554/live 2>&1 > ffprobe_output.log &
 FFPROBE_PID=$!
 
 # 等待 ffprobe 收集数据
@@ -165,7 +165,7 @@ echo "Running ffplay in headless mode (10 seconds)..."
 # -autoexit: 播放完成后自动退出
 # -t 10: 最多播放10秒
 # -loglevel info: 显示日志信息
-timeout 12s ffplay -nodisp -autoexit -t 10 -loglevel info rtsp://localhost:8554/live > ffplay_output.log 2>&1 &
+timeout 12s ffplay -nodisp -autoexit -t 10 -loglevel info rtsp://localhost:554/live > ffplay_output.log 2>&1 &
 FFPLAY_PID=$!
 
 echo "ffplay started (PID: $FFPLAY_PID)"

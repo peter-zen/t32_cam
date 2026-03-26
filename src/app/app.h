@@ -13,7 +13,7 @@ extern "C" {
 // PC模拟模式: 使用相对路径
 #define SD_CARD_PATH   "./sim_sdcard/"
 #define ENV_FILE_PATHNAME "./res/env.ini"
-#define CONFIG_FILE_PATHNAME "./res/config.ini"
+#define CONFIG_FILE_PATHNAME "./res/config.sim.ini"
 #define NETIF_NAME "eth0"
 #else
 // 真机模式: 使用绝对路径

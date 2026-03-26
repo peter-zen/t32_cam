@@ -132,7 +132,7 @@ RtspServer::RtspServer()
     : pullFrameThread(nullptr)
 	, pullFrameThreadRun(false)
 	, alreadyGetSpsPps(false)
-    , port_(8554)
+    , port_(DEFAULT_RTSP_PORT)
     , enableAudio_(true)
     , streamingEnabled_(false)
 {

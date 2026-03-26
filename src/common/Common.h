@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+#define DEFAULT_RTSP_PORT 554
+
 //device config
 #define INI_SECTION_DEVICE "DEVICE"
 #define INI_KEY_PID "PID"

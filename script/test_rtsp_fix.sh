@@ -110,4 +110,4 @@ echo "6. ✓ Added frame drop mechanism to prevent blocking"
 
 echo ""
 echo "To test with a client:"
-echo "ffplay rtsp://localhost:8554/live"
+echo "ffplay rtsp://localhost:554/live"
