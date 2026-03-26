@@ -234,8 +234,14 @@ int RtspServer::onSessionClosed(void **data, size_t *size, uint64_t *timestamp)
 	Logger::log(LogLevel::INFO, "onSessionClosed");
     RtspServer *server = RtspServer::getInstance().get();
     if (server) {
-        server->uninitVideo();
-        server->uninitAudio();
+        // Keep media sessions alive across client reconnects. We only stop
+        // streaming here so the next PLAY can restart the existing sessions.
+        if (server->videoSession_) {
+            server->videoSession_->stop();
+        }
+        if (server->audioSession_) {
+            server->audioSession_->stop();
+        }
         server->streamingEnabled_ = false;
     }
 	if (onSessionClosedCallback) {
@@ -367,15 +373,35 @@ int RtspServer::onSessionPlay(void **data, size_t *size, uint64_t *timestamp)
     RtspServer *server = RtspServer::getInstance().get();
     if (server) {
         server->streamingEnabled_ = true;
+        if (!server->videoSession_) {
+            Logger::log(LogLevel::WARNING, "onSessionPlay: video session missing, reinitializing");
+            if (!server->initVideo()) {
+                Logger::log(LogLevel::ERROR, "onSessionPlay: failed to reinitialize video session");
+                return -1;
+            }
+        }
+        if (server->enableAudio_ && !server->audioSession_) {
+            Logger::log(LogLevel::WARNING, "onSessionPlay: audio session missing, reinitializing");
+            if (!server->initAudio()) {
+                Logger::log(LogLevel::ERROR, "onSessionPlay: failed to reinitialize audio session");
+            }
+        }
         if (server->videoSession_ && !server->videoSession_->isRunning()) {
-            server->videoSession_->start();
-            Logger::log(LogLevel::INFO, "onSessionPlay: video session started");
-            server->videoSession_->requestIDR();
-            Logger::log(LogLevel::INFO, "onSessionPlay: requested IDR");
+            if (server->videoSession_->start()) {
+                Logger::log(LogLevel::INFO, "onSessionPlay: video session started");
+                server->videoSession_->requestIDR();
+                Logger::log(LogLevel::INFO, "onSessionPlay: requested IDR");
+            } else {
+                Logger::log(LogLevel::ERROR, "onSessionPlay: failed to start video session");
+                return -1;
+            }
         }
         if (server->audioSession_ && !server->audioSession_->isRunning()) {
-            server->audioSession_->start();
-            Logger::log(LogLevel::INFO, "onSessionPlay: audio session started");
+            if (server->audioSession_->start()) {
+                Logger::log(LogLevel::INFO, "onSessionPlay: audio session started");
+            } else {
+                Logger::log(LogLevel::ERROR, "onSessionPlay: failed to start audio session");
+            }
         }
     }
     return 0;
