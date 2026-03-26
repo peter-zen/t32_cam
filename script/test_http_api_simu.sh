@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# t32_yb SIMU HTTP API quick test
-# Start standalone HTTP test server and verify core endpoints.
+# t32_yb SIMU legacy HTTP API removal check
+# Verify all retired legacy business endpoints now return 404.
 
 set -euo pipefail
 
@@ -40,33 +40,6 @@ fail() {
     echo "[FAIL] $1"
 }
 
-expect_contains() {
-    local name="$1"
-    local body="$2"
-    local needle="$3"
-    if [[ "$body" == *"$needle"* ]]; then
-        pass "$name"
-    else
-        fail "$name"
-        echo "  expected contains: $needle"
-        echo "  actual: $body"
-    fi
-}
-
-call_get() {
-    local path="$1"
-    curl -sS --max-time 3 "$BASE_URL$path"
-}
-
-call_post() {
-    local path="$1"
-    local payload="$2"
-    curl -sS --max-time 3 -X POST \
-        -H "Content-Type: application/json" \
-        -d "$payload" \
-        "$BASE_URL$path"
-}
-
 wait_server_ready() {
     for _ in $(seq 1 30); do
         if curl -sS --max-time 1 "$BASE_URL/api/health" >/dev/null 2>&1; then
@@ -78,6 +51,7 @@ wait_server_ready() {
 }
 
 require_cmd curl
+require_cmd mktemp
 
 if [[ ! -x "$SERVER_BIN" ]]; then
     echo "[FAIL] server not found: $SERVER_BIN"
@@ -103,51 +77,51 @@ if ! wait_server_ready; then
     exit 1
 fi
 
-# GET endpoints
-resp="$(call_get "/api/health")"
-expect_contains "GET /api/health" "$resp" '"status":"ok"'
+expect_404() {
+    local method="$1"
+    local path="$2"
+    local payload="${3:-}"
+    local tmp_body
+    tmp_body="$(mktemp)"
 
-resp="$(call_get "/api/device/info")"
-expect_contains "GET /api/device/info status" "$resp" '"status":0'
-expect_contains "GET /api/device/info model" "$resp" '"camera_model"'
+    local http_code
+    if [[ "$method" == "POST" ]]; then
+        http_code="$(curl -sS --max-time 3 -o "$tmp_body" -w '%{http_code}' -X POST \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "$BASE_URL$path")"
+    else
+        http_code="$(curl -sS --max-time 3 -o "$tmp_body" -w '%{http_code}' "$BASE_URL$path")"
+    fi
 
-resp="$(call_get "/api/sensor/data")"
-expect_contains "GET /api/sensor/data status" "$resp" '"status":0'
-expect_contains "GET /api/sensor/data battery" "$resp" '"battery"'
+    local body
+    body="$(cat "$tmp_body")"
+    rm -f "$tmp_body"
 
-resp="$(call_get "/api/params")"
-expect_contains "GET /api/params" "$resp" '"param"'
+    if [[ "$http_code" == "404" && "$body" == *'"error":"Not Found"'* && "$body" == *"\"path\":\"$path\""* ]]; then
+        pass "$method $path returns 404"
+    else
+        fail "$method $path returns 404"
+        echo "  expected: 404 with not-found payload"
+        echo "  actual code: $http_code"
+        echo "  actual body: $body"
+    fi
+}
 
-resp="$(call_get "/api/storage/info")"
-expect_contains "GET /api/storage/info" "$resp" '"used"'
+expect_404 "GET" "/api/device/info"
+expect_404 "GET" "/api/sensor/data"
+expect_404 "POST" "/api/system/datetime" '{"datetime":"2026-03-05T09:30:00"}'
+expect_404 "POST" "/api/system/workmode" '{"mode":1}'
+expect_404 "GET" "/api/storage/info"
+expect_404 "POST" "/api/storage/format" '{}'
 
-resp="$(call_get "/api/record/status")"
-expect_contains "GET /api/record/status" "$resp" '"recording"'
-
-resp="$(call_get "/api/snapshot")"
-expect_contains "GET /api/snapshot" "$resp" '"status":0'
-
-# POST endpoints
-resp="$(call_post "/api/params/set" '{"param":{"CAM_Mode":1}}')"
-expect_contains "POST /api/params/set" "$resp" '"status":0'
-
-resp="$(call_post "/api/params/reset" '{}')"
-expect_contains "POST /api/params/reset" "$resp" '"status":0'
-
-resp="$(call_post "/api/system/datetime" '{"datetime":"2026-03-05T09:30:00"}')"
-expect_contains "POST /api/system/datetime" "$resp" '"status":0'
-
-resp="$(call_post "/api/system/workmode" '{"mode":1}')"
-expect_contains "POST /api/system/workmode" "$resp" '"status":0'
-
-resp="$(call_post "/api/storage/format" '{}')"
-expect_contains "POST /api/storage/format" "$resp" '"status":0'
-
-resp="$(call_post "/api/record/start" '{}')"
-expect_contains "POST /api/record/start" "$resp" '"Recording started"'
-
-resp="$(call_post "/api/record/stop" '{}')"
-expect_contains "POST /api/record/stop" "$resp" '"Recording stopped"'
+expect_404 "GET" "/api/params"
+expect_404 "POST" "/api/params/set" '{"param":{"CAM_Mode":1}}'
+expect_404 "POST" "/api/params/reset" '{}'
+expect_404 "GET" "/api/record/status"
+expect_404 "POST" "/api/record/start" '{}'
+expect_404 "POST" "/api/record/stop" '{}'
+expect_404 "GET" "/api/snapshot"
 
 echo ""
 echo "[SUMMARY] pass=$pass_count fail=$fail_count"

@@ -1,11 +1,12 @@
 /**
  * @file http_api_v1.cpp
- * @brief /api/v1/camera HTTP API implementation
+ * @brief /api/v1 HTTP API implementation
  */
 
 #include "http_api.h"
 #include "PhotoJobManager.h"
 #include "TcpEventService.h"
+#include "CameraPropertyService.h"
 #include "CameraServiceFactory.h"
 #include "../../storage/MetadataDao.h"
 
@@ -19,6 +20,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <thread>
 #include <time.h>
@@ -28,7 +30,7 @@
 
 namespace {
 
-using PropertyMap = std::map<std::string, std::string>;
+using PropertyMap = std::map<std::string, Json::Value>;
 
 static int api_v1_camera_photo_timer(struct mg_connection* conn, void* cbdata);
 
@@ -165,6 +167,10 @@ static std::shared_ptr<service::ICameraService> get_camera_service() {
     return instance;
 }
 
+static service::CameraPropertyService& get_property_service() {
+    return service::CameraPropertyService::getInstance();
+}
+
 static std::string get_filename(const std::string& path) {
     const size_t pos = path.find_last_of("/\\");
     return pos == std::string::npos ? path : path.substr(pos + 1);
@@ -220,17 +226,55 @@ static Json::Value build_async_event_json() {
     return event;
 }
 
-static const std::map<std::string, PropertyMap>& get_preset_definitions() {
-    static const std::map<std::string, PropertyMap> presets = {
-        {"default", {{"resolution", "1920x1080"}, {"fps", "25"}, {"bitrate", "4096"}}},
-        {"high_quality", {{"resolution", "2560x1440"}, {"fps", "30"}, {"bitrate", "8192"}}},
-        {"low_power", {{"resolution", "1280x720"}, {"fps", "15"}, {"bitrate", "1024"}}},
-    };
-    return presets;
+static std::string build_iso_datetime_string() {
+    char datetime_buf[32];
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    strftime(datetime_buf, sizeof(datetime_buf), "%Y-%m-%dT%H:%M:%S.000", tm_info);
+    return datetime_buf;
 }
 
-static const PropertyMap& get_default_properties() {
-    return get_preset_definitions().at("default");
+static Json::Value build_device_info_json() {
+    Json::Value data(Json::objectValue);
+    data["pid"] = "T32-CAM-001";
+    data["camera_ver"] = "1.0.0";
+    data["camera_model"] = "T32";
+    data["camera_build"] = "2025-01-06";
+    data["mcu_ver"] = "MCU-1.0.0";
+    return data;
+}
+
+static Json::Value build_sensor_data_json() {
+    Json::Value data(Json::objectValue);
+    data["battery"] = 3700;
+    data["battery_type"] = 1;
+    data["battery_level"] = 85;
+    data["ext_power"] = 12000;
+    data["sdcard_capacity"] = 32000;
+    data["sdcard_used"] = 8000;
+    data["cds"] = 500;
+    data["temp"] = "25";
+    data["press"] = "1013";
+    data["rh"] = "60";
+    data["datetime"] = build_iso_datetime_string();
+    return data;
+}
+
+static Json::Value build_storage_info_json() {
+    Json::Value data(Json::objectValue);
+    data["total"] = 32000;
+    data["free"] = 24000;
+    data["used"] = 8000;
+    return data;
+}
+
+static const std::map<std::string, PropertyMap>& get_preset_definitions() {
+    static const std::map<std::string, PropertyMap> presets = {
+        {"default", {{"resolution", Json::Value("1920x1080")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(16384)}}},
+        {"high_quality", {{"resolution", Json::Value("2560x1440")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(16384)}}},
+        {"low_power", {{"resolution", Json::Value("1280x720")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(8192)}}},
+    };
+    return presets;
 }
 
 static Json::Value build_presets_json() {
@@ -302,15 +346,49 @@ static int send_media_list(struct mg_connection* conn, int media_type, const cha
     return 200;
 }
 
-static int apply_properties(const PropertyMap& properties, Json::Value& applied) {
-    int reset_count = 0;
+static void append_property_constraints(const Json::Value& property, Json::Value& result) {
+    if (property.isMember("options")) {
+        result["valid_options"] = property["options"];
+    }
+    if (property.isMember("min")) {
+        result["min"] = property["min"];
+    }
+    if (property.isMember("max")) {
+        result["max"] = property["max"];
+    }
+    if (property.isMember("step")) {
+        result["step"] = property["step"];
+    }
+}
+
+static int apply_properties(const PropertyMap& properties, Json::Value& applied, Json::Value* results = nullptr) {
+    int success_count = 0;
     for (const auto& prop_entry : properties) {
-        if (get_camera_service()->setProperty(prop_entry.first, prop_entry.second) == 0) {
-            applied[prop_entry.first] = prop_entry.second;
-            reset_count++;
+        Json::Value propertyJson;
+        std::string error;
+        int ret = get_property_service().setPropertyValue(prop_entry.first, prop_entry.second, &propertyJson, &error);
+
+        if (ret == 0) {
+            applied[prop_entry.first] = propertyJson["value"];
+            success_count++;
+        }
+
+        if (results) {
+            Json::Value result(Json::objectValue);
+            result["name"] = prop_entry.first;
+            result["value"] = prop_entry.second;
+            result["status"] = (ret == 0) ? "success" : "failed";
+            if (ret != 0) {
+                result["error"] = error.empty() ? "Failed to set property" : error;
+                Json::Value detail;
+                if (get_property_service().getPropertyJson(prop_entry.first, detail, nullptr)) {
+                    append_property_constraints(detail, result);
+                }
+            }
+            results->append(result);
         }
     }
-    return reset_count;
+    return success_count;
 }
 
 static int api_v1_camera_photo(struct mg_connection* conn, void* cbdata) {
@@ -381,6 +459,130 @@ static int api_v1_camera_photo(struct mg_connection* conn, void* cbdata) {
     } else {
         send_error_response(conn, 1001, result.message.empty() ? "Capture failed" : result.message);
     }
+    return 200;
+}
+
+static int api_v1_device_info(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/device/info")) {
+        return reject_unmatched_subpath(conn, "/api/v1/device/info");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "GET") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    send_success_response(conn, build_device_info_json());
+    return 200;
+}
+
+static int api_v1_device_sensors(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/device/sensors")) {
+        return reject_unmatched_subpath(conn, "/api/v1/device/sensors");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "GET") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    send_success_response(conn, build_sensor_data_json());
+    return 200;
+}
+
+static int api_v1_system_datetime(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/system/datetime")) {
+        return reject_unmatched_subpath(conn, "/api/v1/system/datetime");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "POST") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    Json::Value req_json;
+    if (!parse_json_body(conn, req_json)) {
+        return 400;
+    }
+    if (!req_json.isMember("datetime") || !req_json["datetime"].isString()) {
+        send_http_error(conn, 400, "Missing datetime field");
+        return 400;
+    }
+
+    elog_i(TAG, "Requested datetime update: %s", req_json["datetime"].asCString());
+
+    Json::Value data(Json::objectValue);
+    data["datetime"] = req_json["datetime"].asString();
+    data["accepted"] = true;
+    send_success_response(conn, data);
+    return 200;
+}
+
+static int api_v1_system_workmode(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/system/workmode")) {
+        return reject_unmatched_subpath(conn, "/api/v1/system/workmode");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "POST") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    Json::Value req_json;
+    if (!parse_json_body(conn, req_json)) {
+        return 400;
+    }
+    if (!req_json.isMember("mode") || !req_json["mode"].isInt()) {
+        send_http_error(conn, 400, "Missing mode field");
+        return 400;
+    }
+
+    const int mode = req_json["mode"].asInt();
+    elog_i(TAG, "Requested work mode switch: %d", mode);
+
+    Json::Value data(Json::objectValue);
+    data["mode"] = mode;
+    data["accepted"] = true;
+    send_success_response(conn, data);
+    return 200;
+}
+
+static int api_v1_storage_info(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/storage/info")) {
+        return reject_unmatched_subpath(conn, "/api/v1/storage/info");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "GET") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    send_success_response(conn, build_storage_info_json());
+    return 200;
+}
+
+static int api_v1_storage_format(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/storage/format")) {
+        return reject_unmatched_subpath(conn, "/api/v1/storage/format");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "POST") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    Json::Value req_json;
+    if (!parse_json_body(conn, req_json)) {
+        return 400;
+    }
+
+    (void)req_json;
+    elog_i(TAG, "Requested storage format");
+
+    Json::Value data(Json::objectValue);
+    data["accepted"] = true;
+    data["status"] = "scheduled";
+    send_success_response(conn, data);
     return 200;
 }
 
@@ -606,14 +808,7 @@ static int api_v1_camera_video_list(struct mg_connection* conn, void* cbdata) {
 
 static int api_v1_camera_properties_get(struct mg_connection* conn, void* cbdata) {
     (void)cbdata;
-    std::string json_str = get_camera_service()->getAllPropertiesJson();
-    Json::Value root;
-    Json::Reader reader;
-    if (reader.parse(json_str, root)) {
-        send_success_response(conn, root);
-    } else {
-        send_success_response(conn, Json::Value(Json::objectValue));
-    }
+    send_success_response(conn, get_property_service().getAllPropertiesJson());
     return 200;
 }
 
@@ -626,24 +821,45 @@ static int api_v1_camera_properties_set(struct mg_connection* conn, void* cbdata
 
     Json::Value results(Json::arrayValue);
     int success_count = 0;
-    int total_count = 0;
+    std::vector<std::string> orderedKeys;
+    std::set<std::string> seenKeys;
+
+    for (const auto& name : get_property_service().getPropertyNames()) {
+        if (req_json.isMember(name)) {
+            orderedKeys.push_back(name);
+            seenKeys.insert(name);
+        }
+    }
 
     for (const auto& key : req_json.getMemberNames()) {
-        total_count++;
-        std::string value;
-        if (req_json[key].isString()) value = req_json[key].asString();
-        else if (req_json[key].isInt()) value = std::to_string(req_json[key].asInt());
-        else if (req_json[key].isBool()) value = req_json[key].asBool() ? "true" : "false";
-        else value = req_json[key].asString();
-
-        int ret = get_camera_service()->setProperty(key, value);
-        Json::Value result;
-        result["name"] = key;
-        result["value"] = value;
-        result["status"] = (ret == 0) ? "success" : "failed";
-        results.append(result);
-        if (ret == 0) success_count++;
+        if (seenKeys.find(key) == seenKeys.end()) {
+            orderedKeys.push_back(key);
+        }
     }
+
+    for (const auto& key : orderedKeys) {
+        Json::Value propertyJson;
+        std::string error;
+        int ret = get_property_service().setPropertyValue(key, req_json[key], &propertyJson, &error);
+
+        Json::Value result(Json::objectValue);
+        result["name"] = key;
+        result["value"] = req_json[key];
+        result["status"] = (ret == 0) ? "success" : "failed";
+        if (ret == 0) {
+            result["applied_value"] = propertyJson["value"];
+            success_count++;
+        } else {
+            result["error"] = error.empty() ? "Failed to set property" : error;
+            Json::Value detail;
+            if (get_property_service().getPropertyJson(key, detail, nullptr)) {
+                append_property_constraints(detail, result);
+            }
+        }
+        results.append(result);
+    }
+
+    int total_count = static_cast<int>(orderedKeys.size());
 
     Json::Value data;
     data["total"] = total_count;
@@ -684,27 +900,20 @@ static int api_v1_camera_properties_reset(struct mg_connection* conn, void* cbda
         return 400;
     }
 
-    PropertyMap to_reset;
+    std::vector<std::string> names;
     if (req_json.isMember("properties") && req_json["properties"].isArray()) {
         for (const auto& item : req_json["properties"]) {
-            std::string key = item.asString();
-            const auto& defaults = get_default_properties();
-            auto it = defaults.find(key);
-            if (it != defaults.end()) {
-                to_reset[key] = it->second;
-            }
+            names.push_back(item.asString());
         }
-    } else {
-        to_reset = get_default_properties();
-    }
-
-    if (to_reset.empty()) {
-        send_http_error(conn, 400, "No resettable properties specified");
-        return 400;
     }
 
     Json::Value applied(Json::objectValue);
-    int reset_count = apply_properties(to_reset, applied);
+    std::string error;
+    int reset_count = get_property_service().resetProperties(names, applied, &error);
+    if (reset_count < 0) {
+        send_http_error(conn, 400, error.empty() ? "Failed to reset properties" : error);
+        return 400;
+    }
 
     Json::Value data;
     data["reset_count"] = reset_count;
@@ -736,8 +945,11 @@ static int api_v1_camera_properties_single(struct mg_connection* conn, void* cbd
 
     if (strcmp(req_info->request_method, "GET") == 0) {
         Json::Value data;
-        data["name"] = name;
-        data["value"] = get_camera_service()->getProperty(name);
+        std::string error;
+        if (!get_property_service().getPropertyJson(name, data, &error)) {
+            send_http_error(conn, 404, error.empty() ? "Property not found" : error);
+            return 404;
+        }
         send_success_response(conn, data);
         return 200;
     }
@@ -752,21 +964,28 @@ static int api_v1_camera_properties_single(struct mg_connection* conn, void* cbd
             return 400;
         }
 
-        std::string value;
-        if (req_json["value"].isString()) value = req_json["value"].asString();
-        else if (req_json["value"].isInt()) value = std::to_string(req_json["value"].asInt());
-        else if (req_json["value"].isBool()) value = req_json["value"].asBool() ? "true" : "false";
-        else value = req_json["value"].asString();
-
-        int ret = get_camera_service()->setProperty(name, value);
+        Json::Value propertyJson;
+        std::string error;
+        int ret = get_property_service().setPropertyValue(name, req_json["value"], &propertyJson, &error);
         if (ret == 0) {
-            Json::Value data;
+            Json::Value data(Json::objectValue);
             data["name"] = name;
-            data["value"] = value;
+            data["value"] = propertyJson["value"];
             data["updated"] = true;
             send_success_response(conn, data);
         } else {
-            send_error_response(conn, 400, "Failed to set property");
+            Json::Value root(Json::objectValue);
+            root["code"] = 400;
+            root["message"] = error.empty() ? "Failed to set property" : error;
+            Json::Value data(Json::objectValue);
+            data["name"] = name;
+            data["value"] = req_json["value"];
+            Json::Value detail;
+            if (get_property_service().getPropertyJson(name, detail, nullptr)) {
+                append_property_constraints(detail, data);
+            }
+            root["data"] = data;
+            send_json_response(conn, 200, root);
         }
         return 200;
     }
@@ -1004,7 +1223,16 @@ static int api_v1_camera_thumbnail(struct mg_connection* conn, void* cbdata) {
 } // namespace
 
 extern "C" void http_api_register_v1(struct mg_context* ctx) {
-    elog_i(TAG, "Registering V1 camera APIs");
+    elog_i(TAG, "Registering V1 APIs");
+
+    mg_set_request_handler(ctx, "/api/v1/device/info", api_v1_device_info, NULL);
+    mg_set_request_handler(ctx, "/api/v1/device/sensors", api_v1_device_sensors, NULL);
+
+    mg_set_request_handler(ctx, "/api/v1/system/datetime", api_v1_system_datetime, NULL);
+    mg_set_request_handler(ctx, "/api/v1/system/workmode", api_v1_system_workmode, NULL);
+
+    mg_set_request_handler(ctx, "/api/v1/storage/info", api_v1_storage_info, NULL);
+    mg_set_request_handler(ctx, "/api/v1/storage/format", api_v1_storage_format, NULL);
 
     mg_set_request_handler(ctx, "/api/v1/camera/photo/burst", api_v1_camera_photo_burst, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/photo/status", api_v1_camera_photo_status, NULL);

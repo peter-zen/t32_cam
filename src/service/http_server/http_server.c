@@ -47,6 +47,19 @@ static int default_handler(struct mg_connection* conn, void* cbdata) {
     return 404;
 }
 
+static int health_handler(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+
+    mg_printf(conn,
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: application/json\r\n"
+              "Access-Control-Allow-Origin: *\r\n"
+              "Connection: close\r\n\r\n"
+              "{\"status\":\"ok\"}");
+
+    return 200;
+}
+
 int http_server_init(const HttpServerConfig* config) {
     if (g_ctx != NULL) {
         printf("[HTTP] Already initialized\n");
@@ -133,8 +146,12 @@ int http_server_start(void) {
         return -1;
     }
     
-    /* 注册 API 路由 */
-    http_api_register(g_ctx);
+    /* 基础探针不参与版本化，独立于业务 API 注册。 */
+    mg_set_request_handler(g_ctx, "/api/health", health_handler, NULL);
+    mg_set_request_handler(g_ctx, "/healthz", health_handler, NULL);
+
+    /* 注册所有版本化业务 API。 */
+    http_api_register_v1(g_ctx);
     
     /* 注册默认处理器 */
     mg_set_request_handler(g_ctx, "/**", default_handler, NULL);

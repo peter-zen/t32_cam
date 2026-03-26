@@ -15,14 +15,7 @@ extern "C" {
 #endif
 
 /**
- * @brief 注册所有 API 路由
- *
- * @param ctx CivetWeb 上下文
- */
-void http_api_register(struct mg_context* ctx);
-
-/**
- * @brief 注册 /api/v1/camera 系列路由
+ * @brief 注册所有 /api/v1/ 前缀的版本化路由
  *
  * @param ctx CivetWeb 上下文
  */

@@ -7,6 +7,7 @@
  */
 
 #include "http_server.h"
+#include <stdlib.h>
 #include <stdio.h>
 #include <signal.h>
 #include <unistd.h>
@@ -21,6 +22,14 @@ static void signal_handler(int sig) {
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
+    const char* port_env = getenv("HTTP_TEST_PORT");
+    unsigned short port = 8080;
+    if (port_env && port_env[0] != '\0') {
+        int parsed = atoi(port_env);
+        if (parsed > 0 && parsed <= 65535) {
+            port = (unsigned short)parsed;
+        }
+    }
     
     printf("=== HTTP Server Test ===\n\n");
     
@@ -30,7 +39,7 @@ int main(int argc, char* argv[]) {
     
     /* 配置服务器 */
     HttpServerConfig config = {
-        .port = 80,
+        .port = port,
         .document_root = NULL,
         .num_threads = 2
     };
@@ -48,11 +57,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    printf("\nHTTP Server running on http://localhost:80\n");
+    printf("\nHTTP Server running on http://localhost:%u\n", port);
     printf("Try these endpoints:\n");
-    printf("  curl http://localhost:80/api/health\n");
-    printf("  curl http://localhost:80/api/device/info\n");
-    printf("  curl http://localhost:80/api/sensor/data\n");
+    printf("  curl http://localhost:%u/healthz\n", port);
+    printf("  curl http://localhost:%u/api/v1/device/info\n", port);
+    printf("  curl http://localhost:%u/api/v1/device/sensors\n", port);
     printf("\nPress Ctrl+C to stop...\n\n");
     
     /* 主循环 */

@@ -2,7 +2,6 @@
 
 set(HTTP_SERVER_SOURCES
     http_server.c
-    http_api.c
     http_api_v1.cpp
     PhotoJobManager.cpp
 )
