@@ -1352,9 +1352,8 @@ int main(int argc, char* argv[])
         elog_i("MDNS", "HTTP server started on port %u for interface %s (%s)",
                http_port, interface_name.c_str(), ip_address.c_str());
         
-        bool sessionClosed = false;
-        RtspServer::getInstance()->registerOnsessionClosedCallback([&sessionClosed](void) {
-            sessionClosed = true;
+        RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
+            Logger::log(LogLevel::INFO, "RTSP session closed in mobile mode, waiting for new connection...");
         });
         RtspServer::getInstance()->setPort(static_cast<int>(rtsp_port));
         if (!RtspServer::getInstance()->start()) {
@@ -1368,7 +1367,7 @@ int main(int argc, char* argv[])
             goto main_exit;
         }
 
-        while (!sessionClosed && !already_in_exit_flow) {
+        while (!already_in_exit_flow) {
             sleep(1);
         }
 
