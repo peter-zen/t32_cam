@@ -31,6 +31,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
@@ -52,6 +53,14 @@ typedef struct {
     SmolRTSP_RtpTransport *transport;
     struct event *ev;
     SmolRTSP_Droppable ctx;
+    char *control_uri;
+    uint8_t *primed_data;
+    size_t primed_size;
+    uint64_t primed_timestamp;
+    bool has_primed_frame;
+    uint16_t rtp_info_seq;
+    uint32_t rtp_info_rtptime;
+    bool has_rtp_info;
 } Stream;
 
 // RTSP Server structure to hold server resources
@@ -79,6 +88,17 @@ typedef struct {
 
 declImpl(SmolRTSP_Controller, Client);
 
+static char *dup_rtsp_uri(CharSlice99 uri);
+static void stream_release_primed_frame(Client *self, size_t stream_id);
+static void stream_reset(Client *self, size_t stream_id);
+static bool stream_take_primed_frame(
+    Stream *stream, uint8_t **data, size_t *size, uint64_t *timestamp);
+static int stream_prime_first_frame(
+    Client *self, size_t stream_id, uint64_t session_id, uint64_t timeout_us);
+static uint32_t stream_get_rtp_info_rtptime(Client *self, size_t stream_id);
+static int build_rtp_info_header(
+    Client *self, uint64_t session_id, char *buffer, size_t buffer_size);
+
 static void listener_cb(
     struct evconnlistener *listener, evutil_socket_t fd, struct sockaddr *sa,
     int socklen, void *ctx);
@@ -100,6 +120,7 @@ static int setup_udp(
 
 typedef struct {
     SmolRTSP_RtpTransport *transport;
+    Stream *stream;
     size_t i;
     int samples_per_packet;
     int audio_codec;
@@ -126,11 +147,13 @@ static SmolRTSP_Droppable play_audio(
     int sample_rate, int samples_per_packet, int audio_codec, int channels,
     func_t pull_frame, func_t release_frame,
     struct event_base *base, struct bufferevent *bev, SmolRTSP_RtpTransport *t,
+    Stream *stream,
     struct event **ev, int *streams_playing);
 static void send_audio_packet_cb(evutil_socket_t fd, short events, void *arg);
 
 typedef struct {
     SmolRTSP_NalTransport *transport;
+    Stream *stream;
     SmolRTSP_NalStartCodeTester start_code_tester;
     uint32_t timestamp;
     U8Slice99 video;
@@ -207,7 +230,8 @@ typedef struct {
 
 static SmolRTSP_Droppable play_video(
     int fps, int sample_rate, int codec, func_t pull_frame, func_t release_frame,
-    bool sps_pps_bypass, struct event_base *base, struct bufferevent *bev, SmolRTSP_RtpTransport *t,
+    bool sps_pps_bypass, struct event_base *base, struct bufferevent *bev,
+    SmolRTSP_RtpTransport *t, Stream *stream,
     struct event **ev, int *streams_playing);
 static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg);
 static bool send_nalu(VideoCtx *ctx);
@@ -224,6 +248,17 @@ static uint64_t monotonic_time_us(void) {
     return (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
 }
 
+static char *dup_rtsp_uri(CharSlice99 uri) {
+    char *buf = malloc(uri.len + 1);
+    if (!buf) {
+        return NULL;
+    }
+
+    memcpy(buf, uri.ptr, uri.len);
+    buf[uri.len] = '\0';
+    return buf;
+}
+
 static void event_add_after_us(struct event *ev, uint64_t delay_us) {
     if (!ev) {
         return;
@@ -236,6 +271,211 @@ static void event_add_after_us(struct event *ev, uint64_t delay_us) {
         .tv_usec = (suseconds_t)(delay_us % 1000000ULL),
     };
     event_add(ev, &tv);
+}
+
+static void stream_release_primed_frame(Client *self, size_t stream_id) {
+    if (!self || stream_id >= MAX_STREAMS) {
+        return;
+    }
+
+    Stream *stream = &self->streams[stream_id];
+    if (!stream->has_primed_frame) {
+        return;
+    }
+
+    if (self->peer) {
+        const bool is_audio = (self->peer->param.audio_stream_id == (int)stream_id);
+        func_t release_frame = is_audio
+            ? self->peer->funcs[FUNC_ID_RELEASE_AUDIO_FRAME]
+            : self->peer->funcs[FUNC_ID_RELEASE_VIDEO_FRAME];
+        if (release_frame && stream->primed_data != NULL) {
+            void *data = stream->primed_data;
+            size_t size = stream->primed_size;
+            uint64_t timestamp = stream->primed_timestamp;
+            release_frame(&data, &size, &timestamp);
+        }
+    }
+
+    stream->primed_data = NULL;
+    stream->primed_size = 0;
+    stream->primed_timestamp = 0;
+    stream->has_primed_frame = false;
+}
+
+static void stream_reset(Client *self, size_t stream_id) {
+    if (!self || stream_id >= MAX_STREAMS) {
+        return;
+    }
+
+    Stream *stream = &self->streams[stream_id];
+
+    stream_release_primed_frame(self, stream_id);
+
+    if (stream->ctx.vptr != NULL) {
+        VCALL(stream->ctx, drop);
+    } else if (stream->transport != NULL) {
+        VTABLE(SmolRTSP_RtpTransport, SmolRTSP_Droppable).drop(stream->transport);
+    } else if (stream->ev != NULL) {
+        event_free(stream->ev);
+    }
+
+    free(stream->control_uri);
+
+    *stream = (Stream){
+        .session_id = 0,
+        .transport = NULL,
+        .ev = NULL,
+        .ctx = {0},
+        .control_uri = NULL,
+        .primed_data = NULL,
+        .primed_size = 0,
+        .primed_timestamp = 0,
+        .has_primed_frame = false,
+    };
+}
+
+static bool stream_take_primed_frame(
+    Stream *stream, uint8_t **data, size_t *size, uint64_t *timestamp) {
+    if (!stream || !stream->has_primed_frame || !data || !size) {
+        return false;
+    }
+
+    *data = stream->primed_data;
+    *size = stream->primed_size;
+    if (timestamp) {
+        *timestamp = stream->primed_timestamp;
+    }
+
+    stream->primed_data = NULL;
+    stream->primed_size = 0;
+    stream->primed_timestamp = 0;
+    stream->has_primed_frame = false;
+    return true;
+}
+
+static int stream_prime_first_frame(
+    Client *self, size_t stream_id, uint64_t session_id, uint64_t timeout_us) {
+    if (!self || !self->peer || stream_id >= MAX_STREAMS) {
+        return -1;
+    }
+
+    Stream *stream = &self->streams[stream_id];
+    if (stream->session_id != session_id || stream->has_primed_frame ||
+        stream->ctx.vptr != NULL || stream->ev != NULL) {
+        return 0;
+    }
+
+    const bool is_audio = (self->peer->param.audio_stream_id == (int)stream_id);
+    func_t pull_frame = is_audio
+        ? self->peer->funcs[FUNC_ID_PULL_AUDIO_FRAME]
+        : self->peer->funcs[FUNC_ID_PULL_VIDEO_FRAME];
+    func_t release_frame = is_audio
+        ? self->peer->funcs[FUNC_ID_RELEASE_AUDIO_FRAME]
+        : self->peer->funcs[FUNC_ID_RELEASE_VIDEO_FRAME];
+    if (!pull_frame || !release_frame) {
+        return -1;
+    }
+
+    const uint64_t deadline_us = monotonic_time_us() + timeout_us;
+    while (monotonic_time_us() < deadline_us) {
+        uint8_t *data = NULL;
+        size_t size = 0;
+        uint64_t timestamp = 0;
+        const int ret = pull_frame((void **)&data, &size, &timestamp);
+        if (ret == 0 && data != NULL && size > 0) {
+            stream->primed_data = data;
+            stream->primed_size = size;
+            stream->primed_timestamp = timestamp;
+            stream->has_primed_frame = true;
+            elog_i(
+                RTSP_LOG_TAG,
+                "PLAY: primed %s stream_id=%zu size=%zu ts=%" PRIu64,
+                is_audio ? "audio" : "video",
+                stream_id,
+                size,
+                timestamp);
+            return 0;
+        }
+
+        if (ret == 0 && data != NULL) {
+            release_frame((void **)&data, &size, &timestamp);
+        }
+        if (ret == -2) {
+            break;
+        }
+
+        usleep(5000);
+    }
+
+    elog_w(
+        RTSP_LOG_TAG,
+        "PLAY: failed to prime %s stream_id=%zu within %" PRIu64 " us",
+        is_audio ? "audio" : "video",
+        stream_id,
+        timeout_us);
+    return -1;
+}
+
+static uint32_t stream_get_rtp_info_rtptime(Client *self, size_t stream_id) {
+    if (!self || !self->peer || stream_id >= MAX_STREAMS) {
+        return 0;
+    }
+
+    Stream *stream = &self->streams[stream_id];
+    if (stream->has_rtp_info) {
+        return stream->rtp_info_rtptime;
+    }
+
+    if (self->peer->param.audio_stream_id == (int)stream_id) {
+        return 0;
+    }
+
+    if (!stream->has_primed_frame) {
+        return 0;
+    }
+
+    const uint32_t sample_rate = self->peer->param.video_sample_rate > 0
+        ? (uint32_t)self->peer->param.video_sample_rate
+        : 90000U;
+    return (uint32_t)((stream->primed_timestamp * (uint64_t)sample_rate) / 1000000ULL);
+}
+
+static int build_rtp_info_header(
+    Client *self, uint64_t session_id, char *buffer, size_t buffer_size) {
+    if (!self || !buffer || buffer_size == 0) {
+        return -1;
+    }
+
+    size_t offset = 0;
+    bool has_entry = false;
+    buffer[0] = '\0';
+
+    for (size_t i = 0; i < MAX_STREAMS; i++) {
+        Stream *stream = &self->streams[i];
+        if (stream->session_id != session_id || stream->transport == NULL ||
+            stream->control_uri == NULL || stream->control_uri[0] == '\0') {
+            continue;
+        }
+
+        const uint16_t seq = stream->has_rtp_info ? stream->rtp_info_seq : 0;
+        const uint32_t rtptime = stream_get_rtp_info_rtptime(self, i);
+        const int written = snprintf(
+            buffer + offset,
+            buffer_size - offset,
+            "%surl=%s;seq=%" PRIu16 ";rtptime=%" PRIu32,
+            has_entry ? "," : "",
+            stream->control_uri,
+            seq,
+            rtptime);
+        if (written < 0 || (size_t)written >= buffer_size - offset) {
+            return -1;
+        }
+
+        offset += (size_t)written;
+        has_entry = true;
+    }
+
+    return has_entry ? 0 : -1;
 }
 
 static void schedule_next_deadline(struct event *ev, uint64_t *next_deadline_us, uint32_t interval_us) {
@@ -484,7 +724,7 @@ static void client_start_playback(Client *self, uint64_t session_id) {
                 rtsp_param.audio_codec, rtsp_param.audio_channels,
                 self->peer->funcs[FUNC_ID_PULL_AUDIO_FRAME],
                 self->peer->funcs[FUNC_ID_RELEASE_AUDIO_FRAME],
-                self->base, self->bev, self->streams[i].transport,
+                self->base, self->bev, self->streams[i].transport, &self->streams[i],
                 &self->streams[i].ev, &self->streams_playing);
         } else {
             elog_i(RTSP_LOG_TAG, "PLAY: deferred select video stream_id=%zu", i);
@@ -495,7 +735,7 @@ static void client_start_playback(Client *self, uint64_t session_id) {
                 self->peer->funcs[FUNC_ID_PULL_VIDEO_FRAME],
                 self->peer->funcs[FUNC_ID_RELEASE_VIDEO_FRAME],
                 (self->peer->param.video_sps_len && self->peer->param.video_pps_len),
-                self->base, self->bev, self->streams[i].transport,
+                self->base, self->bev, self->streams[i].transport, &self->streams[i],
                 &self->streams[i].ev, &self->streams_playing);
         }
     }
@@ -570,11 +810,7 @@ static void Client_drop(VSelf) {
     client_cancel_deferred_play(self);
 
     for (size_t i = 0; i < MAX_STREAMS; i++) {
-        if (self->streams[i].ctx.vptr != NULL) {
-            VCALL(self->streams[i].ctx, drop);
-        } else if (self->streams[i].transport != NULL) {
-            VTABLE(SmolRTSP_RtpTransport, SmolRTSP_Droppable).drop(self->streams[i].transport);
-        }
+        stream_reset(self, i);
     }
 
     free(self);
@@ -712,6 +948,7 @@ Client_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
             req->start_line.uri, CharSlice99_from_str("/audio"))
             ? rtsp_param.audio_stream_id
             : rtsp_param.video_stream_id;
+    stream_reset(self, stream_id);
     Stream *stream = &self->streams[stream_id];
 
     const bool aggregate_control_requested = SmolRTSP_HeaderMap_contains_key(
@@ -750,6 +987,17 @@ Client_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         elog_i(RTSP_LOG_TAG, "SETUP: video transport created pt=%d sr=%d", VIDEO_PAYLOAD_TYPE, rtsp_param.video_sample_rate);
     }
 
+    stream->control_uri = dup_rtsp_uri(req->start_line.uri);
+    if (stream->control_uri == NULL) {
+        elog_e(RTSP_LOG_TAG, "SETUP: failed to store control URI for stream_id=%zu", stream_id);
+        stream_reset(self, stream_id);
+        smolrtsp_respond(
+            ctx,
+            SMOLRTSP_STATUS_INTERNAL_SERVER_ERROR,
+            "Failed to allocate control URI");
+        return;
+    }
+
     smolrtsp_header(
         ctx, SMOLRTSP_HEADER_SESSION, "%" PRIu64, stream->session_id);
 
@@ -771,9 +1019,13 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     elog_i(RTSP_LOG_TAG, "PLAY: session=%" PRIu64, session_id);
 
     bool played = false;
+    bool already_active = false;
     for (size_t i = 0; i < MAX_STREAMS; i++) {
         if (self->streams[i].session_id == session_id) {
             played = true;
+            if (self->streams[i].ctx.vptr != NULL || self->streams[i].ev != NULL) {
+                already_active = true;
+            }
         }
     }
 
@@ -784,9 +1036,36 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         return;
     }
 
+    if (!already_active && self->peer->funcs[FUNC_ID_ON_SESSION_PLAY]) {
+        self->peer->funcs[FUNC_ID_ON_SESSION_PLAY](NULL, NULL, NULL);
+        for (size_t i = 0; i < MAX_STREAMS; i++) {
+            if (self->streams[i].session_id == session_id) {
+                stream_prime_first_frame(self, i, session_id, 150000);
+            }
+        }
+    }
+
+    for (size_t i = 0; i < MAX_STREAMS; i++) {
+        if (self->streams[i].session_id != session_id) {
+            continue;
+        }
+        self->streams[i].rtp_info_seq = 0;
+        self->streams[i].rtp_info_rtptime = stream_get_rtp_info_rtptime(self, i);
+        self->streams[i].has_rtp_info = true;
+    }
+
+    char rtp_info_buf[1024] = {0};
+    if (build_rtp_info_header(self, session_id, rtp_info_buf, sizeof(rtp_info_buf)) != 0) {
+        elog_w(
+            RTSP_LOG_TAG,
+            "PLAY: failed to build per-track RTP-Info for session=%" PRIu64 ", fallback to default",
+            session_id);
+        snprintf(rtp_info_buf, sizeof(rtp_info_buf), "seq=0;rtptime=0");
+    }
+
     //smolrtsp_header(ctx, SMOLRTSP_HEADER_RANGE, "npt=now-");
     smolrtsp_header(ctx, SMOLRTSP_HEADER_RANGE, "npt=0.000-");
-    smolrtsp_header(ctx, SMOLRTSP_HEADER_RTP_INFO, "seq=0;rtptime=0");
+    smolrtsp_header(ctx, SMOLRTSP_HEADER_RTP_INFO, "%s", rtp_info_buf);
     if (smolrtsp_respond_ok(ctx) < 0) {
         elog_e(RTSP_LOG_TAG, "PLAY: failed to respond OK for session=%" PRIu64, session_id);
         return;
@@ -811,14 +1090,6 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         client_cancel_deferred_play(self);
     }
 
-    bool already_active = false;
-    for (size_t i = 0; i < MAX_STREAMS; i++) {
-        if (self->streams[i].session_id == session_id &&
-            (self->streams[i].ctx.vptr != NULL || self->streams[i].ev != NULL)) {
-            already_active = true;
-            break;
-        }
-    }
     if (already_active) {
         elog_i(RTSP_LOG_TAG, "PLAY: session already active %" PRIu64, session_id);
         return;
@@ -847,9 +1118,7 @@ Client_teardown(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     bool teardowned = false;
     for (size_t i = 0; i < MAX_STREAMS; i++) {
         if (self->streams[i].session_id == session_id) {
-            if (self->streams[i].ev != NULL) {
-                event_del(self->streams[i].ev);
-            }
+            stream_reset(self, i);
             teardowned = true;
         }
     }
@@ -1018,6 +1287,7 @@ static SmolRTSP_Droppable play_audio(
     int sample_rate, int samples_per_packet, int audio_codec, int channels,
     func_t pull_frame, func_t release_frame,
     struct event_base *base, struct bufferevent *bev, SmolRTSP_RtpTransport *t,
+    Stream *stream,
     struct event **ev, int *streams_playing) {
     const int safe_sample_rate = sample_rate > 0 ? sample_rate : 8000;
     const int safe_samples_per_packet = samples_per_packet > 0 ? samples_per_packet : 320;
@@ -1034,6 +1304,7 @@ static SmolRTSP_Droppable play_audio(
     assert(ctx);
     *ctx = (AudioCtx){
         .transport = t,
+        .stream = stream,
         .i = 0,
         .ev = NULL,
         .streams_playing = streams_playing,
@@ -1089,8 +1360,11 @@ static void send_audio_packet_cb(evutil_socket_t fd, short events, void *arg) {
         uint8_t *audio_data = NULL;
         size_t audio_size = 0;
         uint64_t timestamp = 0;
-        
-        int pull_result = ctx->pull_frame((void **)&audio_data, &audio_size, &timestamp);
+
+        int pull_result = 0;
+        if (!stream_take_primed_frame(ctx->stream, &audio_data, &audio_size, &timestamp)) {
+            pull_result = ctx->pull_frame((void **)&audio_data, &audio_size, &timestamp);
+        }
         if (pull_result != 0) {
             ctx->pull_fail_count++;
 
@@ -1223,7 +1497,8 @@ impl(SmolRTSP_Droppable, VideoCtx);
 
 static SmolRTSP_Droppable play_video(
     int fps, int sample_rate, int codec, func_t pull_frame, func_t release_frame,
-    bool sps_pps_bypass, struct event_base *base, struct bufferevent *bev, SmolRTSP_RtpTransport *t,
+    bool sps_pps_bypass, struct event_base *base, struct bufferevent *bev,
+    SmolRTSP_RtpTransport *t, Stream *stream,
     struct event **ev, int *streams_playing) {
     const int safe_fps = fps > 0 ? fps : 15;
     const uint64_t au_retry_us = parse_u64_env_or_default("RTSP_VIDEO_AU_RETRY_US", 1000);
@@ -1238,6 +1513,7 @@ static SmolRTSP_Droppable play_video(
     {
         *ctx = (VideoCtx){
             .transport = SmolRTSP_NalTransport_new(t),
+            .stream = stream,
             .timestamp = 0,
             .codec = codec,
             .nalu_start = NULL,
@@ -1337,7 +1613,10 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
         size_t video_size;
         uint64_t timestamp = 0;
 
-        int pull_result = ctx->pull_frame((void **)&video_data, &video_size, &timestamp);
+        int pull_result = 0;
+        if (!stream_take_primed_frame(ctx->stream, &video_data, &video_size, &timestamp)) {
+            pull_result = ctx->pull_frame((void **)&video_data, &video_size, &timestamp);
+        }
 
         if (ctx->frame_count % 30 == 0) {
             elog_i(RTSP_LOG_TAG, "[VIDEO] Pull result: %d, capture_ts=%" PRIu64, pull_result, timestamp);
