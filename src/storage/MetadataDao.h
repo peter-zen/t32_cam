@@ -67,6 +67,15 @@ public:
     std::vector<MediaItem> getTimeline(int offset, int limit);
 
     /**
+     * @brief Get timeline list filtered by media type.
+     * @param mediaType 1 for photo, 2 for video.
+     * @param offset Offset.
+     * @param limit Limit.
+     * @return List of MediaItems.
+     */
+    std::vector<MediaItem> getTimelineByType(int mediaType, int offset, int limit);
+
+    /**
      * @brief Get thumbnail data.
      * @param filePath The file path.
      * @param[out] data The thumbnail binary data.
@@ -79,4 +88,11 @@ public:
      * @return count, or -1 on error.
      */
     int getCount();
+
+    /**
+     * @brief Get total count for a specific media type.
+     * @param mediaType 1 for photo, 2 for video.
+     * @return count, or -1 on error.
+     */
+    int getCountByType(int mediaType);
 };

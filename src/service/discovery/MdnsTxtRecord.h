@@ -8,7 +8,7 @@
 namespace service {
 
 constexpr const char* kDefaultMdnsDeviceFamily = "ckvison_t32cam";
-constexpr uint16_t kDefaultMdnsRtspPort = 554;
+constexpr uint16_t kDefaultMdnsRtspPort = 8554;
 
 struct MdnsTxtPayload {
     std::string deviceFamily = kDefaultMdnsDeviceFamily;

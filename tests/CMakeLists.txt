@@ -53,3 +53,18 @@ target_link_libraries(test_mdns_model_normalization
     PRIVATE
     discovery_service
 )
+
+add_executable(test_tcp_event_service test_tcp_event_service.cpp)
+
+target_link_libraries(test_tcp_event_service
+    PRIVATE
+    event_service
+    easylogger
+    pthread
+)
+
+target_include_directories(test_tcp_event_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/service/event
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
+)

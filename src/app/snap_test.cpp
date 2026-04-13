@@ -19,7 +19,7 @@ int main() {
     params.setImageSize(1920, 1080);
     media::ImageSnap snap(params);
 
-    std::string outDir = "./sim_sdcard/media";
+    std::string outDir = "./sim_sdcard_runtime/media";
     Misc::createDirectory(outDir);
     std::string outFile = outDir + "/IMG_" + nowString() + ".JPG";
 

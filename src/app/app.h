@@ -11,7 +11,7 @@ extern "C" {
 
 #ifdef BUILD_FOR_SIMULATION
 // PC模拟模式: 使用相对路径
-#define SD_CARD_PATH   "./sim_sdcard/"
+#define SD_CARD_PATH   "./sim_sdcard_runtime/"
 #define ENV_FILE_PATHNAME "./res/env.ini"
 #define CONFIG_FILE_PATHNAME "./res/config.sim.ini"
 #define NETIF_NAME "eth0"

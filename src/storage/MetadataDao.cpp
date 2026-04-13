@@ -5,13 +5,19 @@
 
 #define TAG "DAO"
 
-// Helper to check SQL result
-static bool checkRc(int rc, const char* msg) {
-    if (rc != SQLITE_OK && rc != SQLITE_ROW && rc != SQLITE_DONE) {
-        elog_e(TAG, "%s: error %d", msg, rc);
-        return false;
-    }
-    return true;
+static MediaItem buildMediaItemFromRow(sqlite3_stmt* stmt) {
+    MediaItem item;
+    item.filePath = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+    item.id = sqlite3_column_int(stmt, 1);
+    item.type = sqlite3_column_int(stmt, 2);
+    item.timestamp = sqlite3_column_int64(stmt, 3);
+    item.fileSize = sqlite3_column_int64(stmt, 4);
+    item.duration = sqlite3_column_int(stmt, 5);
+    item.width = sqlite3_column_int(stmt, 6);
+    item.height = sqlite3_column_int(stmt, 7);
+    item.isFavorite = sqlite3_column_int(stmt, 8) != 0;
+    item.isLocked = sqlite3_column_int(stmt, 9) != 0;
+    return item;
 }
 
 bool MetadataDao::addMedia(const MediaItem& item) {
@@ -153,18 +159,32 @@ std::vector<MediaItem> MetadataDao::getTimeline(int offset, int limit) {
     sqlite3_bind_int(stmt, 2, offset);
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        MediaItem item;
-        item.filePath = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        item.id = sqlite3_column_int(stmt, 1);
-        item.type = sqlite3_column_int(stmt, 2);
-        item.timestamp = sqlite3_column_int64(stmt, 3);
-        item.fileSize = sqlite3_column_int64(stmt, 4);
-        item.duration = sqlite3_column_int(stmt, 5);
-        item.width = sqlite3_column_int(stmt, 6);
-        item.height = sqlite3_column_int(stmt, 7);
-        item.isFavorite = sqlite3_column_int(stmt, 8) != 0;
-        item.isLocked = sqlite3_column_int(stmt, 9) != 0;
-        list.push_back(item);
+        list.push_back(buildMediaItemFromRow(stmt));
+    }
+    sqlite3_finalize(stmt);
+    return list;
+}
+
+std::vector<MediaItem> MetadataDao::getTimelineByType(int mediaType, int offset, int limit) {
+    std::vector<MediaItem> list;
+    sqlite3* db = DatabaseManager::getInstance().getMediaDb();
+    if (!db) return list;
+
+    const char* sql =
+        "SELECT file_path, id, type, timestamp, file_size, duration, width, height, is_favorite, is_locked "
+        "FROM media_files WHERE type = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?;";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return list;
+    }
+
+    sqlite3_bind_int(stmt, 1, mediaType);
+    sqlite3_bind_int(stmt, 2, limit);
+    sqlite3_bind_int(stmt, 3, offset);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        list.push_back(buildMediaItemFromRow(stmt));
     }
     sqlite3_finalize(stmt);
     return list;
@@ -205,6 +225,24 @@ int MetadataDao::getCount() {
     int count = 0;
     
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            count = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+    return count;
+}
+
+int MetadataDao::getCountByType(int mediaType) {
+    sqlite3* db = DatabaseManager::getInstance().getMediaDb();
+    if (!db) return -1;
+
+    const char* sql = "SELECT COUNT(*) FROM media_files WHERE type = ?;";
+    sqlite3_stmt* stmt;
+    int count = 0;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, mediaType);
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             count = sqlite3_column_int(stmt, 0);
         }

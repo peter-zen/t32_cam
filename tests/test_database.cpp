@@ -10,14 +10,13 @@
 
 void cleanup() {
     std::string cmd = "rm -rf " + std::string(TEST_DB_DIR);
-    system(cmd.c_str());
+    (void)system(cmd.c_str());
 }
 
 void test_init() {
     std::cout << "[Test] Database Init..." << std::endl;
     cleanup();
-    bool ret = DatabaseManager::getInstance().init(TEST_DB_DIR);
-    assert(ret == true);
+    assert(DatabaseManager::getInstance().init(TEST_DB_DIR) == true);
     assert(DatabaseManager::getInstance().getMediaDb() != nullptr);
     assert(DatabaseManager::getInstance().getThumbDb() != nullptr);
     std::cout << "[PASS]" << std::endl;
@@ -37,25 +36,20 @@ void test_crud() {
     item.width = 1920;
     item.height = 1080;
     
-    bool ret = dao.addMedia(item);
-    assert(ret == true);
+    assert(dao.addMedia(item) == true);
     
     // 2. Get
     MediaItem loaded;
-    ret = dao.getMedia(item.filePath, loaded);
-    assert(ret == true);
+    assert(dao.getMedia(item.filePath, loaded) == true);
     assert(loaded.fileSize == item.fileSize);
     assert(loaded.width == 1920);
     
     // 3. Count
-    int count = dao.getCount();
-    assert(count == 1);
+    assert(dao.getCount() == 1);
     
     // 4. Delete
-    ret = dao.deleteMedia(item.filePath);
-    assert(ret == true);
-    count = dao.getCount();
-    assert(count == 0);
+    assert(dao.deleteMedia(item.filePath) == true);
+    assert(dao.getCount() == 0);
     
     std::cout << "[PASS]" << std::endl;
 }
@@ -66,23 +60,19 @@ void test_thumbnail() {
     std::string path = "/sdcard/DCIM/thumb.jpg";
     
     std::vector<uint8_t> data = {0x1, 0x2, 0x3, 0x4};
-    bool ret = dao.saveThumbnail(path, data);
-    assert(ret == true);
+    assert(dao.saveThumbnail(path, data) == true);
     
     std::vector<uint8_t> loadedData;
-    ret = dao.getThumbnail(path, loadedData);
-    assert(ret == true);
+    assert(dao.getThumbnail(path, loadedData) == true);
     assert(loadedData.size() == 4);
     assert(loadedData[3] == 0x4);
     
     // Delete media should ideally delete thumbnail too (but our simple impl requires explicit delete or trigger)
     // In MetadataDao::deleteMedia implementation, it deletes both.
-    ret = dao.deleteMedia(path);
-    assert(ret == true);
+    assert(dao.deleteMedia(path) == true);
     
     std::vector<uint8_t> checkData;
-    ret = dao.getThumbnail(path, checkData);
-    assert(ret == false); // Should be gone
+    assert(dao.getThumbnail(path, checkData) == false); // Should be gone
     
     std::cout << "[PASS]" << std::endl;
 }
@@ -113,11 +103,42 @@ void test_timeline() {
     std::cout << "[PASS]" << std::endl;
 }
 
+void test_timeline_by_type() {
+    std::cout << "[Test] Timeline By Type..." << std::endl;
+    MetadataDao dao;
+
+    for (int i = 0; i < 6; i++) {
+        MediaItem item;
+        item.filePath = "/sdcard/video_" + std::to_string(i) + ".mp4";
+        item.type = 2;
+        item.timestamp = 2000 + i;
+        item.fileSize = 200;
+        item.duration = 10 + i;
+        dao.addMedia(item);
+    }
+
+    auto photos = dao.getTimelineByType(1, 0, 3);
+    assert(photos.size() == 3);
+    assert(photos[0].type == 1);
+    assert(photos[0].timestamp == 1019);
+
+    auto videos = dao.getTimelineByType(2, 0, 2);
+    assert(videos.size() == 2);
+    assert(videos[0].type == 2);
+    assert(videos[0].timestamp == 2005);
+
+    assert(dao.getCountByType(1) == 20);
+    assert(dao.getCountByType(2) == 6);
+
+    std::cout << "[PASS]" << std::endl;
+}
+
 int main() {
     test_init();
     test_crud();
     test_thumbnail();
     test_timeline();
+    test_timeline_by_type();
     
     cleanup();
     std::cout << "All Tests Passed!" << std::endl;

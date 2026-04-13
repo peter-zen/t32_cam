@@ -86,13 +86,13 @@ echo "========================================="
 echo ""
 
 echo "--- RTSP Server SDP Response ---"
-timeout 5s ffprobe -v quiet -show_format rtsp://localhost:554/live 2>&1 | \
+timeout 5s ffprobe -v quiet -show_format rtsp://localhost:8554/live 2>&1 | \
     grep -A 5 "format_name" | head -10
 echo ""
 
 echo "--- Stream Analysis ---"
 echo ""
-timeout 5s ffprobe -v quiet -show_streams rtsp://localhost:554/live 2>&1 > stream_analysis.log
+timeout 5s ffprobe -v quiet -show_streams rtsp://localhost:8554/live 2>&1 > stream_analysis.log
 
 # 分析视频流
 echo "📹 VIDEO STREAM:"
@@ -167,7 +167,7 @@ echo ""
 
 echo "Running 10-second playback test..."
 timeout 12s ffplay -nodisp -autoexit -t 10 -v quiet -loglevel warning \
-    rtsp://localhost:554/live > playback_test.log 2>&1 &
+    rtsp://localhost:8554/live > playback_test.log 2>&1 &
 FFPLAY_PID=$!
 
 sleep 8

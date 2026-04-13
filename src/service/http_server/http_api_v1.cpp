@@ -8,6 +8,8 @@
 #include "TcpEventService.h"
 #include "CameraPropertyService.h"
 #include "CameraServiceFactory.h"
+#include "../../storage/DatabaseManager.h"
+#include "../../storage/MediaScanner.h"
 #include "../../storage/MetadataDao.h"
 
 #include <elog.h>
@@ -162,8 +164,61 @@ static bool get_query_string_value(const struct mg_request_info* req_info,
     return false;
 }
 
+static std::string get_parent_path(const std::string& path) {
+    if (path.empty()) {
+        return "";
+    }
+
+    const std::string trimmed = (path.size() > 1 && path.back() == '/')
+                                    ? path.substr(0, path.size() - 1)
+                                    : path;
+    const size_t pos = trimmed.find_last_of('/');
+    if (pos == std::string::npos) {
+        return "";
+    }
+    if (pos == 0) {
+        return "/";
+    }
+    return trimmed.substr(0, pos);
+}
+
+static void ensure_sim_media_storage_ready(const std::shared_ptr<service::ICameraService>& camera_service) {
+#ifdef SIMULATION_MODE
+    static std::once_flag once;
+    std::call_once(once, [camera_service]() {
+        if (!camera_service) {
+            return;
+        }
+
+        const std::string media_db_path = camera_service->getMediaDatabasePath();
+        const std::string db_dir = get_parent_path(media_db_path);
+        if (db_dir.empty()) {
+            return;
+        }
+
+        if (!DatabaseManager::getInstance().init(db_dir)) {
+            elog_e(TAG, "Failed to initialize media database: %s", db_dir.c_str());
+            return;
+        }
+
+        const std::string sd_root = get_parent_path(get_parent_path(db_dir));
+        const std::string media_root = sd_root.empty() ? "" : (sd_root + "/DCIM");
+        struct stat st;
+        if (!media_root.empty() && stat(media_root.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            MediaScanner::getInstance().startScan(media_root);
+        }
+    });
+#else
+    (void)camera_service;
+#endif
+}
+
 static std::shared_ptr<service::ICameraService> get_camera_service() {
-    static std::shared_ptr<service::ICameraService> instance = service::CameraServiceFactory::create();
+    static std::shared_ptr<service::ICameraService> instance = []() {
+        std::shared_ptr<service::ICameraService> camera_service = service::CameraServiceFactory::create();
+        ensure_sim_media_storage_ready(camera_service);
+        return camera_service;
+    }();
     return instance;
 }
 
@@ -303,31 +358,17 @@ static Json::Value build_presets_json() {
     return data;
 }
 
-static Json::Value filter_media_list(const std::string& json_str,
-                                     int media_type,
-                                     int offset,
-                                     int limit,
-                                     const char* field_name) {
-    Json::Value root;
-    Json::Reader reader;
-    Json::Value data(Json::objectValue);
-    Json::Value items(Json::arrayValue);
-
-    if (!reader.parse(json_str, root) || !root.isArray()) {
-        return Json::nullValue;
-    }
-
-    for (const auto& item : root) {
-        if (media_type == 0 || item.get("type", 0).asInt() == media_type) {
-            items.append(item);
-        }
-    }
-
-    data[field_name] = items;
-    data["total"] = static_cast<int>(items.size());
-    data["offset"] = offset;
-    data["limit"] = limit;
-    return data;
+static Json::Value build_media_item_json(const MediaItem& item) {
+    Json::Value jItem(Json::objectValue);
+    jItem["id"] = item.id;
+    jItem["type"] = item.type;
+    jItem["path"] = item.filePath;
+    jItem["size"] = static_cast<Json::UInt64>(item.fileSize);
+    jItem["timestamp"] = static_cast<Json::UInt64>(item.timestamp);
+    jItem["duration"] = item.duration;
+    jItem["width"] = item.width;
+    jItem["height"] = item.height;
+    return jItem;
 }
 
 static int send_media_list(struct mg_connection* conn, int media_type, const char* field_name) {
@@ -335,13 +376,26 @@ static int send_media_list(struct mg_connection* conn, int media_type, const cha
     int offset = get_query_int(req_info, "offset", 0);
     int limit = get_query_int(req_info, "limit", 20);
 
-    std::string json_str = get_camera_service()->getMediaList(offset, limit);
-    Json::Value data = filter_media_list(json_str, media_type, offset, limit, field_name);
-    if (data.isNull()) {
+    get_camera_service();
+    MetadataDao dao;
+    const std::vector<MediaItem> items =
+        (media_type == 0) ? dao.getTimeline(offset, limit) : dao.getTimelineByType(media_type, offset, limit);
+    const int total = (media_type == 0) ? dao.getCount() : dao.getCountByType(media_type);
+    if (total < 0) {
         send_error_response(conn, 500, "Failed to get media list");
         return 200;
     }
 
+    Json::Value data(Json::objectValue);
+    Json::Value itemArray(Json::arrayValue);
+    for (const auto& item : items) {
+        itemArray.append(build_media_item_json(item));
+    }
+
+    data[field_name] = itemArray;
+    data["total"] = total;
+    data["offset"] = offset;
+    data["limit"] = limit;
     send_success_response(conn, data);
     return 200;
 }
@@ -1195,6 +1249,7 @@ static int api_v1_camera_thumbnail(struct mg_connection* conn, void* cbdata) {
 
     std::string file_path;
     if (get_query_string_value(mg_get_request_info(conn), "file_path", file_path)) {
+        get_camera_service();
         MetadataDao dao;
         std::vector<uint8_t> data;
         if (!dao.getThumbnail(file_path, data) || data.empty()) {
@@ -1259,4 +1314,7 @@ extern "C" void http_api_register_v1(struct mg_context* ctx) {
 
 extern "C" void http_api_v1_shutdown(void) {
     service::PhotoJobManager::getInstance().stop();
+#ifdef SIMULATION_MODE
+    MediaScanner::getInstance().stopScan();
+#endif
 }

@@ -6,6 +6,7 @@
 #include <ctime>
 #include <cctype>
 #include <cstring>
+#include <limits.h>
 #include <sys/stat.h>
 #include <iomanip>
 #include <sys/time.h>
@@ -134,6 +135,15 @@ static void setEnvIfEmpty(const std::shared_ptr<EnvManager>& env_manager,
     if (env_manager->getEnv(key, "").empty()) {
         env_manager->setEnv(key, value);
     }
+}
+
+static std::string normalizePath(const std::string& path)
+{
+    char resolved[PATH_MAX];
+    if (realpath(path.c_str(), resolved) != nullptr) {
+        return std::string(resolved);
+    }
+    return path;
 }
 
 static uint16_t getConfiguredPort(const std::shared_ptr<DeviceConfig>& config,
@@ -771,8 +781,13 @@ int main(int argc, char* argv[])
 #ifdef BUILD_FOR_SIMULATION
     // 动态计算路径，确保文件生成在 build 目录下
     std::string exePath = Misc::getExecutablePath();
-    std::string simRootPath = exePath + "/../sdcard";  // build_sim/bin/../sdcard -> build_sim/sdcard
-    std::string projectRootPath = exePath + "/../..";  // build_sim/bin/../.. -> project_root
+    std::string projectRootPath = normalizePath(exePath + "/../..");  // build_sim/bin/../.. -> project_root
+    std::string defaultSimRootPath = normalizePath(projectRootPath + "/sim_sdcard_runtime");
+    const char* envSimRoot = std::getenv("SIM_SD_ROOT");
+    std::string simRootPath = (envSimRoot && envSimRoot[0] != '\0')
+                                  ? normalizePath(envSimRoot)
+                                  : defaultSimRootPath;
+    setenv("SIM_SD_ROOT", simRootPath.c_str(), 0);
 
     auto env_manager = EnvManager::getInstance();
     setEnvIfEmpty(env_manager, "CONFIG_FILE", projectRootPath + "/res/config.sim.ini");
@@ -791,7 +806,7 @@ int main(int argc, char* argv[])
     const char* envLogDir = std::getenv("SIM_LOG_DIR");
     std::string log_root = (envLogDir && envLogDir[0] != '\0')
                            ? std::string(envLogDir)
-                           : (simRootPath + "/logs");  // default: build_sim/sdcard/logs
+                           : (simRootPath + "/logs");
     std::string log_file = log_root + "/app.log";
 #else
     std::string db_path = EnvManager::getInstance()->getEnv("DB_PATH", "/sdcard/data/db");
@@ -815,7 +830,7 @@ int main(int argc, char* argv[])
     // Ensure log directory exists
     Misc::createDirectory(log_root);
 
-    // PC 模拟环境：启用终端和文件日志，默认保存到 build_sim/sdcard/logs/
+    // PC 模拟环境：启用终端和文件日志，默认保存到 sim_sdcard_runtime/logs/
     ElogConfig elog_config;
     elog_config.enableTerminal = true;
     elog_config.enableFile = true;

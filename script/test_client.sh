@@ -27,7 +27,7 @@ echo "Starting client connection tests..."
 
 # 测试1: 简单连接测试
 echo "Test 1: Basic connection test..."
-timeout 10s ffprobe -v quiet -show_streams rtsp://localhost:554/live > probe_output.log 2>&1 &
+timeout 10s ffprobe -v quiet -show_streams rtsp://localhost:8554/live > probe_output.log 2>&1 &
 PROBE_PID=$!
 sleep 5
 
@@ -40,7 +40,7 @@ fi
 
 # 测试2: 短时间播放测试
 echo "Test 2: Short play test (5 seconds)..."
-timeout 7s ffplay -v quiet -t 5 rtsp://localhost:554/live > play_output.log 2>&1 &
+timeout 7s ffplay -v quiet -t 5 rtsp://localhost:8554/live > play_output.log 2>&1 &
 FFPLAY_PID=$!
 sleep 7
 
@@ -159,5 +159,5 @@ echo "3. ✓ Frame drop mechanism prevents blocking behavior"
 echo "4. ✓ Reduced wait times improve responsiveness"
 echo ""
 echo "For manual testing, use:"
-echo "ffplay rtsp://localhost:554/live"
-echo "ffprobe -show_streams rtsp://localhost:554/live"
+echo "ffplay rtsp://localhost:8554/live"
+echo "ffprobe -show_streams rtsp://localhost:8554/live"

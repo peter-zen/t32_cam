@@ -5,9 +5,13 @@
 #include <thread>
 #include <chrono>
 #include <ctime>
+#include <cstdlib>
 #include <sstream>
 #include <iomanip>
 #include <functional>
+#include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <json/json.h>
 #include "../../../storage/MetadataDao.h"
@@ -19,15 +23,93 @@ namespace service {
 
 namespace {
 
+bool directoryExists(const std::string& path) {
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+bool directoryWritable(const std::string& path) {
+    return directoryExists(path) && access(path.c_str(), W_OK) == 0;
+}
+
+std::string joinPath(const std::string& base, const std::string& name) {
+    if (base.empty()) {
+        return name;
+    }
+    if (!base.empty() && base.back() == '/') {
+        return base + name;
+    }
+    return base + "/" + name;
+}
+
+std::string parentPath(const std::string& path) {
+    if (path.empty()) {
+        return "";
+    }
+    const std::string trimmed = (path.size() > 1 && path.back() == '/')
+                                    ? path.substr(0, path.size() - 1)
+                                    : path;
+    const size_t pos = trimmed.find_last_of('/');
+    if (pos == std::string::npos) {
+        return "";
+    }
+    if (pos == 0) {
+        return "/";
+    }
+    return trimmed.substr(0, pos);
+}
+
+std::string normalizePath(const std::string& path) {
+    char resolved[PATH_MAX];
+    if (realpath(path.c_str(), resolved) != nullptr) {
+        return std::string(resolved);
+    }
+    return path;
+}
+
+std::string detectSimSdRoot() {
+    const char* envRoot = std::getenv("SIM_SD_ROOT");
+    if (envRoot && envRoot[0] != '\0' && directoryExists(envRoot)) {
+        return normalizePath(envRoot);
+    }
+
+    if (directoryWritable("./sim_sdcard_runtime")) {
+        return normalizePath("./sim_sdcard_runtime");
+    }
+
+    std::string current = Misc::getExecutablePath();
+    for (int depth = 0; depth < 8 && !current.empty(); ++depth) {
+        const std::string candidate = joinPath(current, "sim_sdcard_runtime");
+        if (directoryWritable(candidate)) {
+            return normalizePath(candidate);
+        }
+        current = parentPath(current);
+    }
+
+    return normalizePath("./sim_sdcard_runtime");
+}
+
+const std::string& simSdRoot() {
+    static const std::string root = detectSimSdRoot();
+    return root;
+}
+
+std::string simMediaDir() {
+    return joinPath(simSdRoot(), "DCIM");
+}
+
+std::string simDbDir() {
+    return joinPath(joinPath(simSdRoot(), "data"), "db");
+}
+
 std::string build_capture_path(const std::string& base_dir) {
     std::ostringstream oss;
-    oss << base_dir
-        << "preview_"
+    oss << "preview_"
         << std::chrono::steady_clock::now().time_since_epoch().count()
         << "_"
         << std::hash<std::thread::id>{}(std::this_thread::get_id())
         << ".jpg";
-    return oss.str();
+    return joinPath(base_dir, oss.str());
 }
 
 bool read_binary_file(const std::string& path, std::vector<uint8_t>& data) {
@@ -88,8 +170,8 @@ int CameraServiceSim::takePhoto(int channel, bool save, const std::string& forma
     std::ostringstream oss;
     oss << "IMG_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".jpg";
     std::string filename = oss.str();
-    std::string base = std::string("./sim_sdcard/DCIM/");
-    std::string path = base + filename;
+    const std::string base = simMediaDir();
+    const std::string path = joinPath(base, filename);
 
     if (save) {
         Misc::createDirectory(base);
@@ -233,7 +315,7 @@ int CameraServiceSim::capturePreviewFrame(int channel, int width, int height, st
 
     std::lock_guard<std::mutex> lock(op_mutex_);
 
-    const std::string base_dir = "./sim_sdcard/.preview/";
+    const std::string base_dir = joinPath(simSdRoot(), ".preview");
     if (!Misc::createDirectory(base_dir)) {
         return -1;
     }
@@ -269,8 +351,8 @@ int CameraServiceSim::startRecord(int channel, int duration, bool audio, const s
     std::ostringstream oss;
     oss << "VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
     std::string filename = oss.str();
-    std::string base = std::string("./sim_sdcard/DCIM/");
-    current_record_file_ = base + filename;
+    const std::string base = simMediaDir();
+    current_record_file_ = joinPath(base, filename);
     Misc::createDirectory(base);
 
     auto vidParam = std::make_shared<media::VideoParams>();
@@ -355,11 +437,11 @@ std::string CameraServiceSim::getAllPropertiesJson() {
 }
 
 std::string CameraServiceSim::getMediaDatabasePath() {
-    return "./sim_sdcard/data/db/media_file.db";
+    return joinPath(simDbDir(), "media_file.db");
 }
 
 std::string CameraServiceSim::getThumbnailDatabasePath() {
-    return "./sim_sdcard/data/db/media_thumb.db";
+    return joinPath(simDbDir(), "media_thumb.db");
 }
 
 std::string CameraServiceSim::getMediaList(int offset, int limit) {
@@ -383,7 +465,7 @@ std::string CameraServiceSim::getMediaList(int offset, int limit) {
         Json::Value item;
         item["id"] = 1;
         item["type"] = 1;
-        item["path"] = "./sim_sdcard/DCIM/IMG_001.jpg";
+        item["path"] = joinPath(simMediaDir(), "IMG_001.jpg");
         item["size"] = 0;
         item["timestamp"] = static_cast<Json::UInt64>(std::time(nullptr));
         item["duration"] = 0;

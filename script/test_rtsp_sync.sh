@@ -41,7 +41,7 @@ echo ""
 
 # 启动 ffplay
 echo "3. 使用 ffplay 连接 RTSP 流..."
-ffplay -loglevel info -t 15 -nodisp rtsp://localhost:554/live 2>&1 | tee /tmp/ffplay_sync.log &
+ffplay -loglevel info -t 15 -nodisp rtsp://localhost:8554/live 2>&1 | tee /tmp/ffplay_sync.log &
 FFPLAY_PID=$!
 
 echo "   ffplay PID: $FFPLAY_PID"

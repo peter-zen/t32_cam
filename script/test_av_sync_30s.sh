@@ -23,14 +23,14 @@ echo ""
 # 启动ffprobe持续监控
 echo "步骤2: 启动ffprobe监控..."
 ffprobe -v info -show_streams -show_frames -show_entries frame=pkt_pts_time,pkt_dts_time,pkt_duration,pkt_pos:stream_index \
-    rtsp://localhost:554/live > test_av_sync_client.log 2>&1 &
+    rtsp://localhost:8554/live > test_av_sync_client.log 2>&1 &
 FFPROBE_PID=$!
 echo "  ✓ ffprobe启动 (PID: $FFPROBE_PID)"
 echo ""
 
 # 同时启动ffplay播放（可选，用于验证）
 echo "步骤3: 启动ffplay播放（10秒）..."
-timeout 10s ffplay -nodisp -autoexit -loglevel info rtsp://localhost:554/live > /dev/null 2>&1 &
+timeout 10s ffplay -nodisp -autoexit -loglevel info rtsp://localhost:8554/live > /dev/null 2>&1 &
 FFPLAY_PID=$!
 echo "  ✓ ffplay启动 (PID: $FFPLAY_PID)"
 echo ""

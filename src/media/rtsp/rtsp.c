@@ -63,6 +63,8 @@ typedef struct {
     bool has_rtp_info;
 } Stream;
 
+typedef struct Client Client;
+
 // RTSP Server structure to hold server resources
 struct rtsp_server {
     struct event_base *base;
@@ -70,11 +72,13 @@ struct rtsp_server {
     struct event *sigint_handler;
     struct rtsp_server_param param;
     bool is_running;
+    Client *active_client;
+    uint64_t active_session_id;
 
     func_t funcs[FUNC_ID_MAX];
 };
 
-typedef struct {
+struct Client {
     struct event_base *base;
     struct bufferevent *bev;
     struct sockaddr_storage addr;
@@ -84,7 +88,7 @@ typedef struct {
     struct event *deferred_play_ev;
     uint64_t deferred_play_session_id;
     struct rtsp_server *peer;
-} Client;
+};
 
 declImpl(SmolRTSP_Controller, Client);
 
@@ -107,6 +111,15 @@ static void on_sigint_cb(evutil_socket_t sig, short events, void *ctx);
 static void client_deferred_play_cb(evutil_socket_t fd, short events, void *arg);
 static void client_cancel_deferred_play(Client *self);
 static void client_start_playback(Client *self, uint64_t session_id);
+static bool server_has_conflicting_active_session(
+    const struct rtsp_server *server, const Client *client, uint64_t session_id);
+static bool server_is_active_session_owner(
+    const struct rtsp_server *server, const Client *client, uint64_t session_id);
+static void server_reserve_active_session(
+    struct rtsp_server *server, Client *client, uint64_t session_id);
+static void server_release_active_session(
+    struct rtsp_server *server, Client *client, uint64_t session_id,
+    bool notify_peer, const char *reason);
 
 static int setup_transport(
     Client *self, SmolRTSP_Context *ctx, const SmolRTSP_Request *req,
@@ -664,6 +677,68 @@ static void listener_cb(
     bufferevent_enable(bev, EV_READ | EV_WRITE);
 }
 
+static bool server_has_conflicting_active_session(
+    const struct rtsp_server *server, const Client *client, uint64_t session_id) {
+    if (!server || server->active_client == NULL || server->active_session_id == 0) {
+        return false;
+    }
+
+    return server->active_client != client || server->active_session_id != session_id;
+}
+
+static bool server_is_active_session_owner(
+    const struct rtsp_server *server, const Client *client, uint64_t session_id) {
+    if (!server || !client || session_id == 0) {
+        return false;
+    }
+
+    return server->active_client == client && server->active_session_id == session_id;
+}
+
+static void server_reserve_active_session(
+    struct rtsp_server *server, Client *client, uint64_t session_id) {
+    if (!server || !client || session_id == 0) {
+        return;
+    }
+
+    server->active_client = client;
+    server->active_session_id = session_id;
+    elog_i(RTSP_LOG_TAG, "Active preview reserved for session=%" PRIu64, session_id);
+}
+
+static void server_release_active_session(
+    struct rtsp_server *server, Client *client, uint64_t session_id,
+    bool notify_peer, const char *reason) {
+    if (!server || server->active_client != client || server->active_session_id == 0) {
+        return;
+    }
+
+    if (session_id != 0 && server->active_session_id != session_id) {
+        return;
+    }
+
+    const uint64_t active_session_id = server->active_session_id;
+    server->active_client = NULL;
+    server->active_session_id = 0;
+
+    if (reason && reason[0] != '\0') {
+        elog_i(
+            RTSP_LOG_TAG,
+            "Active preview released for session=%" PRIu64 " (%s)",
+            active_session_id,
+            reason);
+    } else {
+        elog_i(
+            RTSP_LOG_TAG,
+            "Active preview released for session=%" PRIu64,
+            active_session_id);
+    }
+
+    if (notify_peer && server->funcs[FUNC_ID_ON_SESSION_CLOSED]) {
+        server->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL, NULL);
+    }
+}
+
 static void client_cancel_deferred_play(Client *self) {
     if (!self) {
         return;
@@ -698,6 +773,7 @@ static void client_start_playback(Client *self, uint64_t session_id) {
 
     if (!has_stream) {
         elog_w(RTSP_LOG_TAG, "PLAY: deferred start skipped, session not found %" PRIu64, session_id);
+        server_release_active_session(self->peer, self, session_id, false, "deferred session missing");
         return;
     }
 
@@ -776,16 +852,10 @@ static void on_event_cb(struct bufferevent *bev, short events, void *ctx) {
 
     if (events & BEV_EVENT_EOF) {
         elog_i(RTSP_LOG_TAG, "Connection closed");
-        // Access server if needed
-        if (server && server->funcs[FUNC_ID_ON_SESSION_CLOSED]) {
-            server->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL, NULL);
-        }
+        server_release_active_session(server, client, 0, true, "connection closed");
     } else if (events & BEV_EVENT_ERROR) {
         elog_e(RTSP_LOG_TAG, "Connection error");
-        // Access server if needed
-        if (server && server->funcs[FUNC_ID_ON_SESSION_CLOSED]) {
-            server->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL, NULL);
-        }
+        server_release_active_session(server, client, 0, true, "connection error");
     }
 
     bufferevent_free(bev);
@@ -807,6 +877,7 @@ static void on_sigint_cb(evutil_socket_t sig, short events, void *ctx) {
 static void Client_drop(VSelf) {
     VSELF(Client);
 
+    server_release_active_session(self->peer, self, 0, true, "client dropped");
     client_cancel_deferred_play(self);
 
     for (size_t i = 0; i < MAX_STREAMS; i++) {
@@ -1036,6 +1107,25 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         return;
     }
 
+    if (server_has_conflicting_active_session(self->peer, self, session_id)) {
+        elog_w(
+            RTSP_LOG_TAG,
+            "PLAY rejected for session=%" PRIu64 ", active preview session=%" PRIu64,
+            session_id,
+            self->peer->active_session_id);
+        smolrtsp_respond(
+            ctx,
+            SMOLRTSP_STATUS_METHOD_NOT_VALID_IN_THIS_STATE,
+            "Another preview session is active");
+        return;
+    }
+
+    bool reserved_active_session = false;
+    if (!server_is_active_session_owner(self->peer, self, session_id)) {
+        server_reserve_active_session(self->peer, self, session_id);
+        reserved_active_session = true;
+    }
+
     if (!already_active && self->peer->funcs[FUNC_ID_ON_SESSION_PLAY]) {
         self->peer->funcs[FUNC_ID_ON_SESSION_PLAY](NULL, NULL, NULL);
         for (size_t i = 0; i < MAX_STREAMS; i++) {
@@ -1068,6 +1158,9 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     smolrtsp_header(ctx, SMOLRTSP_HEADER_RTP_INFO, "%s", rtp_info_buf);
     if (smolrtsp_respond_ok(ctx) < 0) {
         elog_e(RTSP_LOG_TAG, "PLAY: failed to respond OK for session=%" PRIu64, session_id);
+        if (reserved_active_session) {
+            server_release_active_session(self->peer, self, session_id, true, "play response failed");
+        }
         return;
     }
     elog_i(
@@ -1135,9 +1228,7 @@ Client_teardown(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         return;
     }
 
-    if (self->peer && self->peer->funcs[FUNC_ID_ON_SESSION_CLOSED]) {
-        self->peer->funcs[FUNC_ID_ON_SESSION_CLOSED](NULL, NULL, NULL);
-    }
+    server_release_active_session(self->peer, self, session_id, true, "teardown");
 
     smolrtsp_respond_ok(ctx);
 }

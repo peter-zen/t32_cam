@@ -9,7 +9,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER_BIN="$PROJECT_ROOT/build_sim/src/service/http_server/test_http_server"
 PORT="${HTTP_TEST_PORT:-8080}"
 BASE_URL="http://127.0.0.1:${PORT}"
-LOG_FILE="${HTTP_TEST_LOG:-$PROJECT_ROOT/build_sim/sdcard/logs/http_test_server.log}"
+LOG_FILE="${HTTP_TEST_LOG:-$PROJECT_ROOT/sim_sdcard_runtime/logs/http_test_server.log}"
 
 pass_count=0
 fail_count=0

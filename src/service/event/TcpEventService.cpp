@@ -20,9 +20,7 @@ namespace service {
 
 namespace {
 
-uint64_t nowSeconds() {
-    return static_cast<uint64_t>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
-}
+constexpr uint64_t kHeartbeatLoopSleepMs = 200;
 
 uint64_t nowMilliseconds() {
     return static_cast<uint64_t>(
@@ -48,6 +46,15 @@ bool sendAll(int fd, const std::string& payload) {
         totalSent += static_cast<size_t>(sent);
     }
     return true;
+}
+
+TcpEventMessage buildHeartbeatMessage() {
+    TcpEventMessage message;
+    message.category = "device";
+    message.type = "device.heartbeat";
+    message.level = TcpEventLevel::INFO;
+    message.data["heartbeat_interval_ms"] = static_cast<Json::UInt64>(kDefaultTcpHeartbeatIntervalMs);
+    return message;
 }
 
 } // namespace
@@ -109,10 +116,12 @@ bool TcpEventService::start(uint16_t port) {
         listenFd_ = listenFd;
         port_ = port;
         connectionSequence_ = 0;
+        lastActivityMs_ = 0;
         running_ = true;
     }
 
     acceptThread_ = std::thread(&TcpEventService::acceptLoop, this);
+    heartbeatThread_ = std::thread(&TcpEventService::heartbeatLoop, this);
     elog_i(TAG, "tcp event server started on port %u", port);
     return true;
 }
@@ -137,10 +146,15 @@ void TcpEventService::stop() {
         acceptThread_.join();
     }
 
+    if (heartbeatThread_.joinable()) {
+        heartbeatThread_.join();
+    }
+
     {
         std::lock_guard<std::mutex> lock(mutex_);
         closeClientLocked();
         connectionSequence_ = 0;
+        lastActivityMs_ = 0;
     }
 
     elog_i(TAG, "tcp event server stopped");
@@ -161,18 +175,27 @@ uint16_t TcpEventService::port() const {
 }
 
 bool TcpEventService::publish(const TcpEventMessage& message) {
+    const uint64_t timestampMs = nowMilliseconds();
+    const uint64_t timestampSeconds = timestampMs / 1000;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    return publishLocked(message, timestampSeconds, timestampMs);
+}
+
+bool TcpEventService::publishLocked(const TcpEventMessage& message,
+                                    uint64_t timestampSeconds,
+                                    uint64_t timestampMs) {
     Json::Value root(Json::objectValue);
     root["version"] = 1;
     root["event_id"] = buildEventId();
     root["category"] = message.category;
     root["type"] = message.type;
-    root["timestamp"] = static_cast<Json::UInt64>(nowSeconds());
+    root["timestamp"] = static_cast<Json::UInt64>(timestampSeconds);
     root["level"] = levelToString(message.level);
     root["data"] = message.data;
 
     Json::FastWriter writer;
 
-    std::lock_guard<std::mutex> lock(mutex_);
     if (!running_ || clientFd_ < 0) {
         return false;
     }
@@ -191,6 +214,7 @@ bool TcpEventService::publish(const TcpEventMessage& message) {
     }
 
     ++connectionSequence_;
+    lastActivityMs_ = timestampMs;
     return true;
 }
 
@@ -256,17 +280,35 @@ void TcpEventService::acceptLoop() {
     }
 }
 
+void TcpEventService::heartbeatLoop() {
+    while (running_) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (running_ && clientFd_ >= 0) {
+                const uint64_t timestampMs = nowMilliseconds();
+                if (lastActivityMs_ == 0 || timestampMs - lastActivityMs_ >= kDefaultTcpHeartbeatIntervalMs) {
+                    publishLocked(buildHeartbeatMessage(), timestampMs / 1000, timestampMs);
+                }
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(kHeartbeatLoopSleepMs));
+    }
+}
+
 void TcpEventService::closeClientLocked() {
     if (clientFd_ >= 0) {
         close(clientFd_);
         clientFd_ = -1;
     }
+    lastActivityMs_ = 0;
 }
 
 void TcpEventService::replaceClientLocked(int clientFd) {
     closeClientLocked();
     clientFd_ = clientFd;
     connectionSequence_ = 0;
+    lastActivityMs_ = 0;
 }
 
 std::string TcpEventService::buildEventId() const {

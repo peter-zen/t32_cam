@@ -24,13 +24,23 @@ project(htc_firmware VERSION 1.0)
 set(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH "Path to SDK")
 set(SDK_PATH "${PROJECT_ROOT}/sdk" CACHE PATH "Path to SDK")
 if(USE_UCLIBC)
-set(SDK_LIB_PATH "${SDK_PATH}/lib/uclibc" CACHE PATH "Path to HI libraries")
+set(HTC_SDK_LIB_SUBDIR "uclibc")
 else()
-set(SDK_LIB_PATH "${SDK_PATH}/lib/glibc" CACHE PATH "Path to HI libraries")
+set(HTC_SDK_LIB_SUBDIR "glibc")
 endif()
+set(SDK_LIB_PATH "${SDK_PATH}/lib/${HTC_SDK_LIB_SUBDIR}" CACHE PATH "Path to HI libraries")
 set(SDK_INC_PATH "${SDK_PATH}/include" CACHE PATH "Relative include path")
 set(SOURCES "${PROJECT_ROOT}/src" CACHE STRING "Source files for the project")
 set(THIRD_PARTY_PATH "${PROJECT_ROOT}/third_party" CACHE STRING "Third party libraries")
+
+# Keep build-tree binaries runnable after workspace renames by avoiding
+# hard-coded absolute paths to in-tree shared libraries.
+set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
+set(CMAKE_BUILD_RPATH
+    "\$ORIGIN"
+    "\$ORIGIN/../lib"
+    "\$ORIGIN/../../sdk/lib/${HTC_SDK_LIB_SUBDIR}"
+)
 
 #Revision info
 # Only set default values if the macros are not already defined externally

@@ -21,7 +21,7 @@ echo ""
 
 # 测试1: 使用ffplay连接5秒
 echo "步骤2: 使用ffplay连接5秒..."
-timeout 5s ffplay -nodisp -autoexit -loglevel info rtsp://localhost:554/live > /dev/null 2>&1 &
+timeout 5s ffplay -nodisp -autoexit -loglevel info rtsp://localhost:8554/live > /dev/null 2>&1 &
 FFPLAY_PID=$!
 
 echo "  等待5秒..."

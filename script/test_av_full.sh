@@ -27,8 +27,8 @@ echo ""
 
 # 清理旧的日志和进程
 echo "Cleaning up..."
-mkdir -p build_sim/sdcard/log
-rm -f build_sim/sdcard/log/app.log
+mkdir -p sim_sdcard_runtime/logs
+rm -f sim_sdcard_runtime/logs/app.log
 pkill -9 htc_main_app 2>/dev/null || true
 pkill -9 ffprobe 2>/dev/null || true
 pkill -9 ffplay 2>/dev/null || true
@@ -37,29 +37,29 @@ echo ""
 
 # 初始化模拟环境
 echo "Initializing simulation environment..."
-mkdir -p build_sim/sdcard/configs
-mkdir -p build_sim/sdcard/media/audio
-mkdir -p build_sim/sdcard/media/video
-mkdir -p build_sim/sdcard/data/db
+mkdir -p sim_sdcard_runtime/configs
+mkdir -p sim_sdcard_runtime/media/audio
+mkdir -p sim_sdcard_runtime/media/video
+mkdir -p sim_sdcard_runtime/data/db
 
 # 复制默认配置
 if [ -f res/config.sim.ini ]; then
-    cp res/config.sim.ini build_sim/sdcard/configs/
+    cp res/config.sim.ini sim_sdcard_runtime/configs/
 fi
 if [ -f res/setting.json ]; then
-    cp res/setting.json build_sim/sdcard/configs/
+    cp res/setting.json sim_sdcard_runtime/configs/
 fi
 # 复制 RTSP 模拟配置和资源
 if [ -f tests/assets/configs/rtsp_config.ini ]; then
-    cp tests/assets/configs/rtsp_config.ini build_sim/sdcard/configs/
+    cp tests/assets/configs/rtsp_config.ini sim_sdcard_runtime/configs/
 fi
 if [ -d tests/assets/video ]; then
-    cp tests/assets/video/* build_sim/sdcard/media/video/
+    cp tests/assets/video/* sim_sdcard_runtime/media/video/
 fi
 if [ -d tests/assets/audio ]; then
-    cp tests/assets/audio/* build_sim/sdcard/media/audio/
+    cp tests/assets/audio/* sim_sdcard_runtime/media/audio/
 fi
-echo "✓ Simulation environment ready at build_sim/sdcard"
+echo "✓ Simulation environment ready at sim_sdcard_runtime"
 echo ""
 
 # 启动 RTSP 服务器
@@ -92,7 +92,7 @@ echo "  Step 2: Analyzing Streams with ffprobe"
 echo "========================================="
 echo "Running ffprobe analysis..."
 
-ffprobe -v info -show_streams -show_format rtsp://localhost:554/live 2>&1 > ffprobe_output.log &
+ffprobe -v info -show_streams -show_format rtsp://localhost:8554/live 2>&1 > ffprobe_output.log &
 FFPROBE_PID=$!
 
 # 等待 ffprobe 收集数据
@@ -165,7 +165,7 @@ echo "Running ffplay in headless mode (10 seconds)..."
 # -autoexit: 播放完成后自动退出
 # -t 10: 最多播放10秒
 # -loglevel info: 显示日志信息
-timeout 12s ffplay -nodisp -autoexit -t 10 -loglevel info rtsp://localhost:554/live > ffplay_output.log 2>&1 &
+timeout 12s ffplay -nodisp -autoexit -t 10 -loglevel info rtsp://localhost:8554/live > ffplay_output.log 2>&1 &
 FFPLAY_PID=$!
 
 echo "ffplay started (PID: $FFPLAY_PID)"
@@ -373,7 +373,7 @@ echo "Test artifacts saved:"
 echo "  - server_output.log"
 echo "  - ffprobe_output.log"
 echo "  - ffplay_output.log"
-echo "  - build_sim/sdcard/log/app.log"
+echo "  - sim_sdcard_runtime/logs/app.log"
 echo ""
 
 exit $([ "$FINAL_STATUS" = "PASSED" ] && echo 0 || echo 1)

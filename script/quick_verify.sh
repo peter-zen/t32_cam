@@ -18,13 +18,13 @@ if ! pgrep -x htc_main_app > /dev/null; then
     echo ""
 fi
 
-echo "Analyzing RTSP stream at rtsp://localhost:554/live"
+echo "Analyzing RTSP stream at rtsp://localhost:8554/live"
 echo ""
 
 # 使用 ffprobe 分析流
 if command -v ffprobe &> /dev/null; then
     echo "--- Stream Information ---"
-    ffprobe -v quiet -show_streams -show_format rtsp://localhost:554/live 2>&1 | \
+    ffprobe -v quiet -show_streams -show_format rtsp://localhost:8554/live 2>&1 | \
         grep -E "(codec_name|codec_type|width|height|sample_rate|channels|r_frame_rate|bit_rate)" | \
         while IFS= read -r line; do
             if [[ $line == *"codec_type=video"* ]]; then
@@ -41,20 +41,20 @@ if command -v ffprobe &> /dev/null; then
     echo "--- Quick Summary ---"
 
     # 提取关键信息
-    VIDEO=$(ffprobe -v quiet -show_streams rtsp://localhost:554/live 2>&1 | grep -c "codec_type=video" || echo "0")
-    AUDIO=$(ffprobe -v quiet -show_streams rtsp://localhost:554/live 2>&1 | grep -c "codec_type=audio" || echo "0")
+    VIDEO=$(ffprobe -v quiet -show_streams rtsp://localhost:8554/live 2>&1 | grep -c "codec_type=video" || echo "0")
+    AUDIO=$(ffprobe -v quiet -show_streams rtsp://localhost:8554/live 2>&1 | grep -c "codec_type=audio" || echo "0")
 
     if [ "$VIDEO" -gt 0 ]; then
-        WIDTH=$(ffprobe -v quiet -show_streams rtsp://localhost:554/live 2>&1 | grep -A 10 "codec_type=video" | grep "width=" | cut -d= -f2)
-        HEIGHT=$(ffprobe -v quiet -show_streams rtsp://localhost:554/live 2>&1 | grep -A 10 "codec_type=video" | grep "height=" | cut -d= -f2)
+        WIDTH=$(ffprobe -v quiet -show_streams rtsp://localhost:8554/live 2>&1 | grep -A 10 "codec_type=video" | grep "width=" | cut -d= -f2)
+        HEIGHT=$(ffprobe -v quiet -show_streams rtsp://localhost:8554/live 2>&1 | grep -A 10 "codec_type=video" | grep "height=" | cut -d= -f2)
         echo "✓ Video: ${WIDTH}x${HEIGHT}"
     else
         echo "✗ Video: NOT DETECTED"
     fi
 
     if [ "$AUDIO" -gt 0 ]; then
-        RATE=$(ffprobe -v quiet -show_streams rtsp://localhost:554/live 2>&1 | grep -A 10 "codec_type=audio" | grep "sample_rate=" | cut -d= -f2)
-        CHAN=$(ffprobe -v quiet -show_streams rtsp://localhost:554/live 2>&1 | grep -A 10 "codec_type=audio" | grep "channels=" | cut -d= -f2)
+        RATE=$(ffprobe -v quiet -show_streams rtsp://localhost:8554/live 2>&1 | grep -A 10 "codec_type=audio" | grep "sample_rate=" | cut -d= -f2)
+        CHAN=$(ffprobe -v quiet -show_streams rtsp://localhost:8554/live 2>&1 | grep -A 10 "codec_type=audio" | grep "channels=" | cut -d= -f2)
         echo "✓ Audio: ${RATE} Hz, ${CHAN} channels"
     else
         echo "✗ Audio: NOT DETECTED"

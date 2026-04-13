@@ -20,7 +20,7 @@ int main() {
     payload.model = "T32CamPro";
     payload.serialNumber = "ABC123456";
     payload.firmwareVersion = "1.2.3";
-    payload.rtspPort = 554;
+    payload.rtspPort = 8554;
     payload.ctrlPort = 8080;
     payload.macAddress = "AA:BB:CC:DD:EE:FF";
     payload.status = "ready";
@@ -32,7 +32,7 @@ int main() {
         "model=T32CamPro",
         "sn=ABC123456",
         "fw_ver=1.2.3",
-        "rtsp_port=554",
+        "rtsp_port=8554",
         "ctrl_port=8080",
         "mac=AA:BB:CC:DD:EE:FF",
         "status=ready"
