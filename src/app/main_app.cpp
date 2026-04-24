@@ -339,6 +339,76 @@ static bool syncWithMCU()
     return true;
 }
 
+static bool processCmdSnap(bool is_rtc_work_well) {
+    //move media file from /tmp to sdcard
+    std::vector<std::string> file_names;
+    
+    std::ifstream jsonFile(QUICK_SNAP_INFO_FILE);
+    if (jsonFile.is_open()) {
+        Json::Value root;
+        Json::CharReaderBuilder readerBuilder;
+        std::string errs;
+        if (!Json::parseFromStream(readerBuilder, jsonFile, &root, &errs)) {
+            Logger::log(LogLevel::ERROR, "Parse json file failed");
+            return false;
+        } 
+        auto dir = root["dir"].asString();
+        auto files = root["files"];
+        std::string oldpath = QUICK_SNAP_DIR + dir + "/*";
+        std::string newpath, upload_path, timeStr;
+        if (is_rtc_work_well) {
+            #if ALL_MEDIA_FILE_IN_ONE_FOLDER
+            newpath =  MEDIA_STORE_FOLDER_PATH;
+            #else
+            newpath =  MEDIA_TARGET_PATH + dir;
+            #endif
+            upload_path = MEDIA_UPLOAD_PATH + dir;
+        } else {
+            timeStr = getCurrentTimeFormatted();
+            #if ALL_MEDIA_FILE_IN_ONE_FOLDER
+            newpath =  MEDIA_STORE_FOLDER_PATH;
+            #else
+            newpath =  MEDIA_TARGET_PATH + timeStr;
+            #endif
+            upload_path = MEDIA_UPLOAD_PATH + timeStr;
+        }
+
+        if (!Misc::createDirectory(newpath) || !Misc::createDirectory(MEDIA_UPLOAD_PATH) || !Misc::moveFile(oldpath, newpath)) {
+            Logger::log(LogLevel::ERROR, "move %s to %s failed", oldpath.c_str(), newpath.c_str());
+            return false;
+        }
+
+        //create desc file
+        for (auto & file : files) {
+            std::string filename; 
+            if (is_rtc_work_well) {
+                filename = newpath + "/" + file.asString();
+            } else {
+                auto oldname = newpath + "/" + file.asString();
+                filename = newpath + "/" + timeStr + "_" + file.asString();
+                Logger::log(LogLevel::INFO, "rename %s to %s", oldname.c_str(), filename.c_str());
+                Misc::moveFile(oldname, filename);
+            }
+            file_names.push_back(filename);
+        }
+
+        auto desc_filename = upload_path + ".json";
+        createDescInfoFile(file_names, desc_filename);
+    }
+    
+    if (file_names.empty()) {//only for test
+        file_names = {
+            "./res/20250620_101358.JPG", 
+            "./res/20250620_101458.JPG", 
+            "./res/20250620_101558.JPG"
+        };
+        auto snap_param = ImageSnapParams();
+        auto imageSnap = std::make_shared<ImageSnap>(snap_param);
+        imageSnap->snap(file_names);
+        createDescInfoFile(file_names, "./res/20250620_101358.json");
+    }
+    return true;
+}
 static void printUsage(char *argv[])
 {
     std::cout << "Usage: " << argv[0] << " <command> [options]" << std::endl;
@@ -803,6 +873,12 @@ int main(int argc, char* argv[])
         }
     }
 
+    if (command & CMD_SNAP && is_rtc_work_well) {
+        if (!processCmdSnap(is_rtc_work_well)) {
+            goto main_exit;
+        }
+    }
+
     //connect wifi
     if (command & CMD_CONN_NET) {
         if (program_type == PTYPE_WIFI) {
@@ -893,75 +969,12 @@ int main(int argc, char* argv[])
         }
     }
 
-    if (command & CMD_SNAP) {
-        //move media file from /tmp to sdcard
-        std::vector<std::string> file_names;
-       
-        std::ifstream jsonFile(QUICK_SNAP_INFO_FILE);
-        if (jsonFile.is_open()) {
-            Json::Value root;
-            Json::CharReaderBuilder readerBuilder;
-            std::string errs;
-            if (!Json::parseFromStream(readerBuilder, jsonFile, &root, &errs)) {
-                Logger::log(LogLevel::ERROR, "Parse json file failed");
-                goto main_exit;
-            } 
-            auto dir = root["dir"].asString();
-            auto files = root["files"];
-            std::string oldpath = QUICK_SNAP_DIR + dir + "/*";
-            std::string newpath, upload_path, timeStr;
-            if (is_rtc_work_well) {
-                #if ALL_MEDIA_FILE_IN_ONE_FOLDER
-                newpath =  MEDIA_STORE_FOLDER_PATH;
-                #else
-                newpath =  MEDIA_TARGET_PATH + dir;
-                #endif
-                upload_path = MEDIA_UPLOAD_PATH + dir;
-            } else {
-                timeStr = getCurrentTimeFormatted();
-                #if ALL_MEDIA_FILE_IN_ONE_FOLDER
-                newpath =  MEDIA_STORE_FOLDER_PATH;
-                #else
-                newpath =  MEDIA_TARGET_PATH + timeStr;
-                #endif
-                upload_path = MEDIA_UPLOAD_PATH + timeStr;
-            }
-
-            if (!Misc::createDirectory(newpath) || !Misc::createDirectory(MEDIA_UPLOAD_PATH) || !Misc::moveFile(oldpath, newpath)) {
-                Logger::log(LogLevel::ERROR, "move %s to %s failed", oldpath.c_str(), newpath.c_str());
-                goto main_exit;
-            }
-
-            //create desc file
-            for (auto & file : files) {
-                std::string filename; 
-                if (is_rtc_work_well) {
-                    filename = newpath + "/" + file.asString();
-                } else {
-                    auto oldname = newpath + "/" + file.asString();
-                    filename = newpath + "/" + timeStr + "_" + file.asString();
-                    Logger::log(LogLevel::INFO, "rename %s to %s", oldname.c_str(), filename.c_str());
-                    Misc::moveFile(oldname, filename);
-                }
-                file_names.push_back(filename);
-            }
-
-            auto desc_filename = upload_path + ".json";
-            createDescInfoFile(file_names, desc_filename);
-        }
-        
-        if (file_names.empty()) {//only for test
-            file_names = {
-                "./res/20250620_101358.JPG", 
-                "./res/20250620_101458.JPG", 
-                "./res/20250620_101558.JPG"
-            };
-            auto snap_param = ImageSnapParams();
-            auto imageSnap = std::make_shared<ImageSnap>(snap_param);
-            imageSnap->snap(file_names);
-            createDescInfoFile(file_names, "./res/20250620_101358.json");
+    if (command & CMD_SNAP && !is_rtc_work_well) {
+        if (!processCmdSnap(is_rtc_work_well)) {
+            goto main_exit;
         }
     }
+
     if (command & CMD_AUDIO_RECORD) {
         Logger::log(LogLevel::INFO, "[Main] CMD_AUDIO_RECORD enter");
         
