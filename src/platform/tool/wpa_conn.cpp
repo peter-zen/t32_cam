@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <mutex>
+#include <string>
 #include "system_call.h"
 #include <netinet/in.h>
 

@@ -10,6 +10,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <string>
 #include "../base/IMediaSource.h"
 #include "../fifo/MediaFIFO.h"
 
