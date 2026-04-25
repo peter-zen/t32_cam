@@ -122,6 +122,7 @@ struct mdnsd {
 	os_socket sockfd;
 	os_socket notify_pipe[2];
 	int stop_flag;
+	uint32_t interface_addr;
 
 	struct rr_group *group;
 	struct rr_list *announce;
@@ -138,7 +139,7 @@ struct mdns_service {
 
 #define log_message(loglevel, format, ...) fprintf (stderr, format, ##__VA_ARGS__)
 
-static os_socket create_recv_sock(void) {
+static os_socket create_recv_sock(uint32_t interface_addr) {
 	os_socket sd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (os_invalid_socket(sd)) {
 		log_message(LOG_ERR, "recv socket(): %s", strerror(errno));
@@ -166,11 +167,21 @@ static os_socket create_recv_sock(void) {
 	// add membership to receiving socket
 	struct ip_mreq_custom mreq;
 	memset(&mreq, 0, sizeof(struct ip_mreq_custom));
-	mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+	mreq.imr_interface.s_addr = interface_addr;
 	mreq.imr_multiaddr.s_addr = inet_addr(MDNS_ADDR);
 	if ((r = setsockopt(sd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *) &mreq, sizeof(mreq))) < 0) {
 		log_message(LOG_ERR, "recv setsockopt(IP_ADD_MEMBERSHIP): %s", strerror(errno));
 		return r;
+	}
+
+	if (interface_addr != htonl(INADDR_ANY)) {
+		struct in_addr multicast_if;
+		memset(&multicast_if, 0, sizeof(multicast_if));
+		multicast_if.s_addr = interface_addr;
+		if ((r = setsockopt(sd, IPPROTO_IP, IP_MULTICAST_IF, (char *) &multicast_if, sizeof(multicast_if))) < 0) {
+			log_message(LOG_ERR, "recv setsockopt(IP_MULTICAST_IF): %s", strerror(errno));
+			return r;
+		}
 	}
 
 	// enable loopback in case someone else needs the data
@@ -655,9 +666,10 @@ void mdns_service_destroy(struct mdns_service *srv) {
 	free(srv);
 }
 
-struct mdnsd *mdnsd_start(void) {
+struct mdnsd *mdnsd_start_on_interface(uint32_t interface_addr) {
 	struct mdnsd *server = malloc(sizeof(struct mdnsd));
 	memset(server, 0, sizeof(struct mdnsd));
+	server->interface_addr = interface_addr;
 
 	if (create_pipe(server->notify_pipe) != 0) {
 		log_message(LOG_ERR, "pipe(): %s\n", strerror(errno));
@@ -665,7 +677,7 @@ struct mdnsd *mdnsd_start(void) {
 		return NULL;
 	}
 
-	server->sockfd = create_recv_sock();
+	server->sockfd = create_recv_sock(interface_addr);
 	if (os_invalid_socket(server->sockfd)) {
 		log_message(LOG_ERR, "unable to create recv socket");
 		free(server);
@@ -682,6 +694,10 @@ struct mdnsd *mdnsd_start(void) {
 	}
 
 	return server;
+}
+
+struct mdnsd *mdnsd_start(void) {
+	return mdnsd_start_on_interface(htonl(INADDR_ANY));
 }
 
 void mdnsd_stop(struct mdnsd *s) {
@@ -711,4 +727,3 @@ void mdnsd_stop(struct mdnsd *s) {
 
 	free(s);
 }
-

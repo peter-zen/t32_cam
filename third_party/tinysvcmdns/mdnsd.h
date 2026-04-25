@@ -44,6 +44,10 @@ struct mdns_service;
 // returns NULL if unsuccessful
 MDNS_EXPORT struct mdnsd *mdnsd_start(void);
 
+// starts a MDNS responder instance bound to the specified IPv4 interface
+// address (network byte order). Pass INADDR_ANY to keep the default behavior.
+MDNS_EXPORT struct mdnsd *mdnsd_start_on_interface(uint32_t interface_addr);
+
 // stops the given MDNS responder instance
 void MDNS_EXPORT mdnsd_stop(struct mdnsd *s);
 

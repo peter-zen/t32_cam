@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -23,6 +24,76 @@ std::mutex Misc::syscall_mutex;
 bool Misc::syscall_inited = false;
 bool Misc::already_insmod_mmc = false;
 bool Misc::already_inited_wifi = false;
+
+namespace {
+
+bool parseIpv4(const std::string& ip, uint32_t* host_order_addr)
+{
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip.c_str(), &addr) != 1) {
+        return false;
+    }
+
+    if (host_order_addr != nullptr) {
+        *host_order_addr = ntohl(addr.s_addr);
+    }
+    return true;
+}
+
+bool isPrivateIpv4(const std::string& ip)
+{
+    uint32_t addr = 0;
+    if (!parseIpv4(ip, &addr)) {
+        return false;
+    }
+
+    const uint8_t a = static_cast<uint8_t>((addr >> 24) & 0xFF);
+    const uint8_t b = static_cast<uint8_t>((addr >> 16) & 0xFF);
+
+    return a == 10
+        || (a == 172 && b >= 16 && b <= 31)
+        || (a == 192 && b == 168);
+}
+
+bool isLinkLocalIpv4(const std::string& ip)
+{
+    uint32_t addr = 0;
+    if (!parseIpv4(ip, &addr)) {
+        return false;
+    }
+
+    const uint8_t a = static_cast<uint8_t>((addr >> 24) & 0xFF);
+    const uint8_t b = static_cast<uint8_t>((addr >> 16) & 0xFF);
+    return a == 169 && b == 254;
+}
+
+bool isBenchmarkIpv4(const std::string& ip)
+{
+    uint32_t addr = 0;
+    if (!parseIpv4(ip, &addr)) {
+        return false;
+    }
+
+    const uint8_t a = static_cast<uint8_t>((addr >> 24) & 0xFF);
+    const uint8_t b = static_cast<uint8_t>((addr >> 16) & 0xFF);
+    return a == 198 && (b == 18 || b == 19);
+}
+
+int scoreInterfaceIpv4(const std::string& ip)
+{
+    if (isPrivateIpv4(ip)) {
+        return 3;
+    }
+    if (isLinkLocalIpv4(ip)) {
+        return 2;
+    }
+    if (isBenchmarkIpv4(ip)) {
+        return 0;
+    }
+    return 1;
+}
+
+} // namespace
 
 std::string Misc::getFilename(const std::string &pathname)
 {
@@ -245,8 +316,31 @@ std::string Misc::getMACAddress(const std::string &interface_name)
 
 std::string Misc::findUsableNetworkInterface(const std::string &preferred_name)
 {
-    if (!preferred_name.empty() && !getIPAddress(preferred_name).empty()) {
-        return preferred_name;
+#ifdef BUILD_FOR_SIMULATION
+    const char* sim_override = std::getenv("SIM_NETIF_NAME");
+    if (sim_override != nullptr && sim_override[0] != '\0') {
+        std::string override_name(sim_override);
+        if (!getIPAddress(override_name).empty()) {
+            return override_name;
+        }
+        Logger::log(LogLevel::WARNING,
+                    "SIM_NETIF_NAME=%s has no usable IPv4 address, fallback to auto detection",
+                    override_name.c_str());
+    }
+#endif
+
+    std::string best_name;
+    int best_score = -1;
+
+    if (!preferred_name.empty()) {
+        std::string preferred_ip = getIPAddress(preferred_name);
+        if (!preferred_ip.empty()) {
+            best_name = preferred_name;
+            best_score = scoreInterfaceIpv4(preferred_ip);
+            if (best_score >= 3) {
+                return preferred_name;
+            }
+        }
     }
 
     struct ifaddrs *ifaddr = nullptr;
@@ -265,13 +359,32 @@ std::string Misc::findUsableNetworkInterface(const std::string &preferred_name)
         }
 
         std::string candidate = ifa->ifa_name;
-        if (!candidate.empty() && !getIPAddress(candidate).empty()) {
+        if (candidate.empty()) {
+            continue;
+        }
+
+        std::string ip = getIPAddress(candidate);
+        if (ip.empty()) {
+            continue;
+        }
+
+        int candidate_score = scoreInterfaceIpv4(ip);
+        bool prefer_candidate = candidate_score > best_score;
+        if (!prefer_candidate && candidate_score == best_score) {
+            prefer_candidate = !preferred_name.empty() && candidate == preferred_name;
+        }
+
+        if (prefer_candidate) {
             fallback = candidate;
-            break;
+            best_name = candidate;
+            best_score = candidate_score;
         }
     }
 
     freeifaddrs(ifaddr);
+    if (!best_name.empty()) {
+        return best_name;
+    }
     return fallback;
 }
 

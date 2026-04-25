@@ -180,7 +180,7 @@ bool MdnsService::startLocked(const MdnsServiceParams& params) {
         return false;
     }
 
-    server_ = mdnsd_start();
+    server_ = mdnsd_start_on_interface(inet_addr(params_.ipAddress.c_str()));
     if (server_ == nullptr) {
         elog_e(kTag, "mdnsd_start failed");
         return false;

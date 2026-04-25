@@ -6,6 +6,7 @@ sim_sdcard/video
 sim_sdcard/log
 sim_sdcard/DCIM
 sim_sdcard/data
+sim_sdcard_runtime/
 *.log
 CMakeFiles
 local_assets/*

@@ -12,6 +12,7 @@ cmake --build build_sim -j$(nproc)
 # 3. 运行
 ./build_sim/bin/htc_main_app -h
 ./build_sim/bin/htc_main_app -rs
+./build_sim/bin/htc_main_app -m
 ```
 
 ## 详细说明
@@ -46,20 +47,23 @@ PC 模拟版本使用相对路径，需要在项目根目录下运行：
 # 确保在项目根目录
 cd /path/to/t32
 
-# 运行程序
+# 启动 RTSP-only
 ./build_sim/bin/htc_main_app -rs
 
+# 启动移动网络模式（HTTP + RTSP + mDNS 设备发现）
+./build_sim/bin/htc_main_app -m
+
 # 查看rtsp端口占用
-sudo ss -tlnp | grep 554
+ss -tlnp | grep 8554
 
 # 结束程序
-sudo pkill -9 htc_main_app
+pkill -f "htc_main_app -m"
 ```
 
 配置文件位置：
 - `./res/env.ini` - 环境配置
 - `./res/config.ini` - 设备配置
-- `./sim_sdcard/` - 模拟 SD 卡目录 (自动创建)
+- `./sim_sdcard_runtime/` - 模拟运行时目录 (自动创建)
 
 ## 可用命令
 
@@ -82,6 +86,52 @@ sudo pkill -9 htc_main_app
 # HTTP Server 独立测试
 ./build_sim/bin/test_http_server
 ```
+
+### 设备发现验证
+
+当前 simu 的局域网设备发现走 `mDNS`，只有 `-m` 模式会启动：
+
+```bash
+./build_sim/bin/htc_main_app -m
+```
+
+默认端口：
+
+- HTTP: `8080`
+- RTSP: `8554`
+- TCP Event: `5000`
+- mDNS: `_t32cam._tcp.local`
+
+如果手机端要验证 RTSP，可连接：
+
+```bash
+ffplay rtsp://127.0.0.1:8554/live
+```
+
+### WSL 多网卡说明
+
+在 WSL2 环境下，Linux 侧可能同时出现多张网卡，例如：
+
+- WSL 虚拟出口网卡
+- Tailscale / VPN 网卡
+- 真正连接局域网的桥接网卡
+
+`simu` 现在会优先自动选择私网 IPv4 接口（如 `192.168.x.x` / `10.x.x.x` / `172.16.x.x`），用于 HTTP / RTSP / mDNS。
+
+如果自动选择结果不符合预期，可显式指定网卡：
+
+```bash
+SIM_NETIF_NAME=eth0 ./build_sim/bin/htc_main_app -m
+```
+
+建议先观察启动日志中的两行：
+
+```text
+[SIM] Selected network interface: ethX
+Started mDNS service _t32cam._tcp.local on ethX (192.168.x.x)
+```
+
+如果这里显示的不是你局域网可达的 IP，手机端通常无法发现设备。
 
 ## 使用 No-B RTSP 测试源
 
@@ -122,7 +172,7 @@ cd build_sim/bin
 | 功能 | PC 模拟行为 |
 |------|-------------|
 | GPIO | 内存模拟，打印操作日志 |
-| SD 卡挂载 | 创建本地目录 `./sim_sdcard/` |
+| SD 卡挂载 | 创建本地目录 `./sim_sdcard_runtime/` |
 | poweroff/reboot | 只打印日志，不执行 |
 | RTC | 使用系统时间 |
 | MCU (I2C) | 返回模拟数据 |
@@ -147,4 +197,4 @@ cmake --build build_sim -j$(nproc)
 | 构建目录 | `build_sim/` | `build/` |
 | 工具链 | 本机 GCC | MIPS 交叉编译器 |
 | 配置路径 | `./res/` | `/config/htc/` |
-| SD 卡路径 | `./sim_sdcard/` | `/mnt/sdcard/` |
+| SD 卡路径 | `./sim_sdcard_runtime/` | `/mnt/sdcard/` |
