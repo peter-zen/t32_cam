@@ -15,6 +15,21 @@ target_include_directories(test_database PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
 )
 
+add_executable(test_minimp4_fragmented_mux test_minimp4_fragmented_mux.cpp)
+
+target_compile_definitions(test_minimp4_fragmented_mux PRIVATE
+    TEST_PROJECT_ROOT="${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_minimp4_fragmented_mux
+    PRIVATE
+    minimp4
+)
+
+target_include_directories(test_minimp4_fragmented_mux PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/minimp4/include
+)
+
 add_executable(test_camera_properties test_camera_properties.cpp)
 
 target_compile_definitions(test_camera_properties PRIVATE

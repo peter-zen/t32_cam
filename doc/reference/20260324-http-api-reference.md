@@ -123,6 +123,7 @@ graph TD
 | POST | `/api/v1/camera/video/stop` | 停止录像 |
 | GET | `/api/v1/camera/video/status` | 录像状态 |
 | GET | `/api/v1/camera/video/list` | 录像列表 |
+| GET | `/api/v1/camera/video/playback` | 视频在线播放 / Range 拉流 |
 | GET | `/api/v1/camera/properties` | 获取全部属性 |
 | POST | `/api/v1/camera/properties` | 批量设置属性 |
 | GET | `/api/v1/camera/properties/{name}` | 获取单个属性 |
@@ -131,11 +132,78 @@ graph TD
 | GET | `/api/v1/camera/presets` | 获取预设 |
 | POST | `/api/v1/camera/presets/{id}` | 应用预设 |
 | GET | `/api/v1/camera/photos` | 照片列表 |
+| GET | `/api/v1/camera/files/download` | 下载照片原图或视频原文件 |
 | POST | `/api/v1/camera/files/delete` | 删除文件 |
 | GET | `/api/v1/camera/database/media` | 下载媒体数据库 |
 | GET | `/api/v1/camera/database/thumbnail` | 下载缩略图数据库 |
 | GET | `/api/v1/camera/preview` | 实时预览 |
 | GET | `/api/v1/camera/thumbnail` | 缩略图 |
+
+## 媒体下载与播放
+
+### GET `/api/v1/camera/video/playback`
+
+用途：给播放器直接打开的视频播放 URL，支持普通 `GET`、`HEAD` 和 `Range` 请求。
+
+请求参数：
+
+- `id=<media_id>` 或 `token=<playback_token>`
+
+约束：
+
+- 只允许视频记录
+- `playback_capable=true`
+- `container_type` 必须为 `fmp4` 或 `mp4`
+- 不接受 raw path
+
+成功响应：
+
+- HTTP `200`：整文件返回
+- HTTP `206`：Range 返回
+- `Content-Type: video/mp4`
+
+错误：
+
+- HTTP `400`：缺少 `id/token` 或参数非法
+- HTTP `404`：记录不存在或不是视频
+- HTTP `415`：视频当前不可播放或容器不支持
+- HTTP `403`：文件越界、symlink、非 regular file
+
+说明：
+
+- 这是播放器使用的 URL，不是单纯“下载附件”语义
+- 当前实现会在 `GET /api/v1/camera/video/list` 的每条可播放视频里返回 `playback_url`
+
+### GET `/api/v1/camera/files/download`
+
+用途：单纯下载媒体原文件，支持照片原图和视频原文件。
+
+请求参数：
+
+- `id=<media_id>` 或 `token=<playback_token>`
+
+约束：
+
+- 只允许照片或视频记录
+- 不接受 raw path
+- 仍然会做 canonical path / media root / regular file / symlink 校验
+
+成功响应：
+
+- 照片：`Content-Type: image/jpeg`
+- 视频：`Content-Type: video/mp4`
+- 附带 `Content-Disposition: attachment; filename="..."`
+
+错误：
+
+- HTTP `400`：缺少 `id/token` 或参数非法
+- HTTP `404`：记录不存在
+- HTTP `403`：文件越界、symlink、非 regular file
+
+说明：
+
+- 这是下载器使用的 URL
+- 当前实现会在 `GET /api/v1/camera/photos` 和 `GET /api/v1/camera/video/list` 的条目里返回 `download_url`
 
 ## 基础探针
 

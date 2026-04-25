@@ -5,9 +5,24 @@
 
 #define TAG "DAO"
 
+namespace {
+
+const char* MEDIA_SELECT_COLUMNS =
+    "file_path, id, type, timestamp, file_size, duration, width, height, "
+    "is_favorite, is_locked, container_type, playback_capable, playback_reason, "
+    "playback_token, range_supported, seek_support, seek_granularity_ms, "
+    "effective_gop_frames, effective_gop_ms, fragment_index_path";
+
+static std::string getColumnText(sqlite3_stmt* stmt, int column) {
+    const unsigned char* text = sqlite3_column_text(stmt, column);
+    return text ? reinterpret_cast<const char*>(text) : "";
+}
+
+} // namespace
+
 static MediaItem buildMediaItemFromRow(sqlite3_stmt* stmt) {
     MediaItem item;
-    item.filePath = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+    item.filePath = getColumnText(stmt, 0);
     item.id = sqlite3_column_int(stmt, 1);
     item.type = sqlite3_column_int(stmt, 2);
     item.timestamp = sqlite3_column_int64(stmt, 3);
@@ -17,6 +32,16 @@ static MediaItem buildMediaItemFromRow(sqlite3_stmt* stmt) {
     item.height = sqlite3_column_int(stmt, 7);
     item.isFavorite = sqlite3_column_int(stmt, 8) != 0;
     item.isLocked = sqlite3_column_int(stmt, 9) != 0;
+    item.containerType = getColumnText(stmt, 10);
+    item.playbackCapable = sqlite3_column_int(stmt, 11) != 0;
+    item.playbackReason = getColumnText(stmt, 12);
+    item.playbackToken = getColumnText(stmt, 13);
+    item.rangeSupported = sqlite3_column_int(stmt, 14) != 0;
+    item.seekSupport = getColumnText(stmt, 15);
+    item.seekGranularityMs = sqlite3_column_int(stmt, 16);
+    item.effectiveGopFrames = sqlite3_column_int(stmt, 17);
+    item.effectiveGopMs = sqlite3_column_int(stmt, 18);
+    item.fragmentIndexPath = getColumnText(stmt, 19);
     return item;
 }
 
@@ -24,7 +49,12 @@ bool MetadataDao::addMedia(const MediaItem& item) {
     sqlite3* db = DatabaseManager::getInstance().getMediaDb();
     if (!db) return false;
 
-    const char* sql = "INSERT OR REPLACE INTO media_files (file_path, type, timestamp, file_size, duration, width, height, is_favorite, is_locked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);";
+    const char* sql =
+        "INSERT OR REPLACE INTO media_files ("
+        "file_path, type, timestamp, file_size, duration, width, height, is_favorite, is_locked, "
+        "container_type, playback_capable, playback_reason, playback_token, range_supported, "
+        "seek_support, seek_granularity_ms, effective_gop_frames, effective_gop_ms, fragment_index_path"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* stmt;
 
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -32,7 +62,7 @@ bool MetadataDao::addMedia(const MediaItem& item) {
         return false;
     }
 
-    sqlite3_bind_text(stmt, 1, item.filePath.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, item.filePath.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 2, item.type);
     sqlite3_bind_int64(stmt, 3, item.timestamp);
     sqlite3_bind_int64(stmt, 4, item.fileSize);
@@ -41,6 +71,16 @@ bool MetadataDao::addMedia(const MediaItem& item) {
     sqlite3_bind_int(stmt, 7, item.height);
     sqlite3_bind_int(stmt, 8, item.isFavorite ? 1 : 0);
     sqlite3_bind_int(stmt, 9, item.isLocked ? 1 : 0);
+    sqlite3_bind_text(stmt, 10, item.containerType.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 11, item.playbackCapable ? 1 : 0);
+    sqlite3_bind_text(stmt, 12, item.playbackReason.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 13, item.playbackToken.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 14, item.rangeSupported ? 1 : 0);
+    sqlite3_bind_text(stmt, 15, item.seekSupport.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 16, item.seekGranularityMs);
+    sqlite3_bind_int(stmt, 17, item.effectiveGopFrames);
+    sqlite3_bind_int(stmt, 18, item.effectiveGopMs);
+    sqlite3_bind_text(stmt, 19, item.fragmentIndexPath.c_str(), -1, SQLITE_TRANSIENT);
 
     bool success = (sqlite3_step(stmt) == SQLITE_DONE);
     if (!success) {
@@ -77,27 +117,58 @@ bool MetadataDao::getMedia(const std::string& filePath, MediaItem& item) {
     sqlite3* db = DatabaseManager::getInstance().getMediaDb();
     if (!db) return false;
 
-    const char* sql = "SELECT id, type, timestamp, file_size, duration, width, height, is_favorite, is_locked FROM media_files WHERE file_path = ?;";
+    std::string sql = std::string("SELECT ") + MEDIA_SELECT_COLUMNS + " FROM media_files WHERE file_path = ?;";
     sqlite3_stmt* stmt;
 
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
         return false;
     }
 
-    sqlite3_bind_text(stmt, 1, filePath.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, filePath.c_str(), -1, SQLITE_TRANSIENT);
 
     bool found = false;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-        item.filePath = filePath;
-        item.id = sqlite3_column_int(stmt, 0);
-        item.type = sqlite3_column_int(stmt, 1);
-        item.timestamp = sqlite3_column_int64(stmt, 2);
-        item.fileSize = sqlite3_column_int64(stmt, 3);
-        item.duration = sqlite3_column_int(stmt, 4);
-        item.width = sqlite3_column_int(stmt, 5);
-        item.height = sqlite3_column_int(stmt, 6);
-        item.isFavorite = sqlite3_column_int(stmt, 7) != 0;
-        item.isLocked = sqlite3_column_int(stmt, 8) != 0;
+        item = buildMediaItemFromRow(stmt);
+        found = true;
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+bool MetadataDao::getMediaById(int id, MediaItem& item) {
+    sqlite3* db = DatabaseManager::getInstance().getMediaDb();
+    if (!db || id <= 0) return false;
+
+    std::string sql = std::string("SELECT ") + MEDIA_SELECT_COLUMNS + " FROM media_files WHERE id = ?;";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, id);
+    bool found = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        item = buildMediaItemFromRow(stmt);
+        found = true;
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+bool MetadataDao::getMediaByPlaybackToken(const std::string& token, MediaItem& item) {
+    sqlite3* db = DatabaseManager::getInstance().getMediaDb();
+    if (!db || token.empty()) return false;
+
+    std::string sql = std::string("SELECT ") + MEDIA_SELECT_COLUMNS + " FROM media_files WHERE playback_token = ?;";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, token.c_str(), -1, SQLITE_TRANSIENT);
+    bool found = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        item = buildMediaItemFromRow(stmt);
         found = true;
     }
     sqlite3_finalize(stmt);
@@ -148,10 +219,10 @@ std::vector<MediaItem> MetadataDao::getTimeline(int offset, int limit) {
     sqlite3* db = DatabaseManager::getInstance().getMediaDb();
     if (!db) return list;
 
-    const char* sql = "SELECT file_path, id, type, timestamp, file_size, duration, width, height, is_favorite, is_locked FROM media_files ORDER BY timestamp DESC LIMIT ? OFFSET ?;";
+    std::string sql = std::string("SELECT ") + MEDIA_SELECT_COLUMNS + " FROM media_files ORDER BY timestamp DESC LIMIT ? OFFSET ?;";
     sqlite3_stmt* stmt;
 
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
         return list;
     }
 
@@ -170,12 +241,12 @@ std::vector<MediaItem> MetadataDao::getTimelineByType(int mediaType, int offset,
     sqlite3* db = DatabaseManager::getInstance().getMediaDb();
     if (!db) return list;
 
-    const char* sql =
-        "SELECT file_path, id, type, timestamp, file_size, duration, width, height, is_favorite, is_locked "
-        "FROM media_files WHERE type = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?;";
+    std::string sql =
+        std::string("SELECT ") + MEDIA_SELECT_COLUMNS +
+        " FROM media_files WHERE type = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?;";
     sqlite3_stmt* stmt;
 
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
         return list;
     }
 

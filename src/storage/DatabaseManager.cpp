@@ -3,10 +3,33 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <string.h>
 //#include <filesystem>
 
 
 #define TAG "DB"
+
+namespace {
+
+bool mediaColumnExists(sqlite3* db, const char* columnName) {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "PRAGMA table_info(media_files);", -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    bool found = false;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char* name = sqlite3_column_text(stmt, 1);
+        if (name && strcmp(reinterpret_cast<const char*>(name), columnName) == 0) {
+            found = true;
+            break;
+        }
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+} // namespace
 
 DatabaseManager& DatabaseManager::getInstance() {
     static DatabaseManager instance;
@@ -136,7 +159,17 @@ void DatabaseManager::createTables() {
             width INTEGER DEFAULT 0,
             height INTEGER DEFAULT 0,
             is_favorite INTEGER DEFAULT 0,
-            is_locked INTEGER DEFAULT 0
+            is_locked INTEGER DEFAULT 0,
+            container_type TEXT DEFAULT '',
+            playback_capable INTEGER DEFAULT 0,
+            playback_reason TEXT DEFAULT '',
+            playback_token TEXT DEFAULT '',
+            range_supported INTEGER DEFAULT 0,
+            seek_support TEXT DEFAULT '',
+            seek_granularity_ms INTEGER DEFAULT 0,
+            effective_gop_frames INTEGER DEFAULT 0,
+            effective_gop_ms INTEGER DEFAULT 0,
+            fragment_index_path TEXT DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_media_time ON media_files(timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_media_type ON media_files(type);
@@ -146,6 +179,7 @@ void DatabaseManager::createTables() {
     if (!exec(m_mediaDb, sqlMedia)) {
         elog_e(TAG, "Failed to create media_files table");
     }
+    migrateMediaSchema();
 
     // 2. Thumbnails Table (media_thumb.db)
     const char* sqlThumb = R"(
@@ -158,4 +192,34 @@ void DatabaseManager::createTables() {
     if (!exec(m_thumbDb, sqlThumb)) {
         elog_e(TAG, "Failed to create thumbnails table");
     }
+}
+
+void DatabaseManager::migrateMediaSchema() {
+    struct ColumnDef {
+        const char* name;
+        const char* ddl;
+    };
+
+    const ColumnDef columns[] = {
+        {"container_type", "ALTER TABLE media_files ADD COLUMN container_type TEXT DEFAULT '';"},
+        {"playback_capable", "ALTER TABLE media_files ADD COLUMN playback_capable INTEGER DEFAULT 0;"},
+        {"playback_reason", "ALTER TABLE media_files ADD COLUMN playback_reason TEXT DEFAULT '';"},
+        {"playback_token", "ALTER TABLE media_files ADD COLUMN playback_token TEXT DEFAULT '';"},
+        {"range_supported", "ALTER TABLE media_files ADD COLUMN range_supported INTEGER DEFAULT 0;"},
+        {"seek_support", "ALTER TABLE media_files ADD COLUMN seek_support TEXT DEFAULT '';"},
+        {"seek_granularity_ms", "ALTER TABLE media_files ADD COLUMN seek_granularity_ms INTEGER DEFAULT 0;"},
+        {"effective_gop_frames", "ALTER TABLE media_files ADD COLUMN effective_gop_frames INTEGER DEFAULT 0;"},
+        {"effective_gop_ms", "ALTER TABLE media_files ADD COLUMN effective_gop_ms INTEGER DEFAULT 0;"},
+        {"fragment_index_path", "ALTER TABLE media_files ADD COLUMN fragment_index_path TEXT DEFAULT '';"}
+    };
+
+    for (const auto& column : columns) {
+        if (!mediaColumnExists(m_mediaDb, column.name) && !exec(m_mediaDb, column.ddl)) {
+            elog_e(TAG, "Failed to add media_files column: %s", column.name);
+        }
+    }
+
+    exec(m_mediaDb, "CREATE INDEX IF NOT EXISTS idx_media_playback ON media_files(type, playback_capable);");
+    exec(m_mediaDb, "CREATE INDEX IF NOT EXISTS idx_media_playback_token ON media_files(playback_token);");
+    exec(m_mediaDb, "PRAGMA user_version = 2;");
 }

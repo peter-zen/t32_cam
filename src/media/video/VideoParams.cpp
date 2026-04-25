@@ -7,6 +7,7 @@ VideoParams::VideoParams()
     , height(1080)
     , fps(30)
     , bitrate(2000000)  // 默认2Mbps
+    , gop(0)
     , codecFormat(VideoCodecFormat::H265)
     , rcMode(VideoRcMode::CBR) {
 }
@@ -51,4 +52,12 @@ void VideoParams::setRcMode(VideoRcMode mode) {
 
 VideoRcMode VideoParams::getRcMode() const {
     return rcMode;
+}
+
+void VideoParams::setGop(int gop) {
+    this->gop = gop;
+}
+
+int VideoParams::getGop() const {
+    return gop;
 }

@@ -10,14 +10,24 @@
 struct MediaItem {
     int id = 0;
     std::string filePath;
-    int type; // 1:Photo, 2:Video
-    int64_t timestamp;
-    int64_t fileSize;
+    int type = 0; // 1:Photo, 2:Video
+    int64_t timestamp = 0;
+    int64_t fileSize = 0;
     int duration = 0;
     int width = 0;
     int height = 0;
     bool isFavorite = false;
     bool isLocked = false;
+    std::string containerType;
+    bool playbackCapable = false;
+    std::string playbackReason;
+    std::string playbackToken;
+    bool rangeSupported = false;
+    std::string seekSupport;
+    int seekGranularityMs = 0;
+    int effectiveGopFrames = 0;
+    int effectiveGopMs = 0;
+    std::string fragmentIndexPath;
 };
 
 /**
@@ -50,6 +60,22 @@ public:
      * @return true if found.
      */
     bool getMedia(const std::string& filePath, MediaItem& item);
+
+    /**
+     * @brief Get a specific media item by database id.
+     * @param id Media row id.
+     * @param[out] item The result item.
+     * @return true if found.
+     */
+    bool getMediaById(int id, MediaItem& item);
+
+    /**
+     * @brief Get a specific media item by opaque playback token.
+     * @param token Playback token.
+     * @param[out] item The result item.
+     * @return true if found.
+     */
+    bool getMediaByPlaybackToken(const std::string& token, MediaItem& item);
 
     /**
      * @brief Delete a media record (and its thumbnail).

@@ -56,6 +56,7 @@ private:
     bool openDb(const std::string& path, sqlite3** db, bool isThumbDb);
     void configurePragma(sqlite3* db, bool isThumbDb);
     void createTables();
+    void migrateMediaSchema();
 
     sqlite3* m_mediaDb = nullptr;
     sqlite3* m_thumbDb = nullptr;

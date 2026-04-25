@@ -62,11 +62,18 @@ public:
     void setRcMode(VideoRcMode mode);
     VideoRcMode getRcMode() const;
 
+    /**
+     * 设置 GOP 帧数；<=0 时由录像器按帧率选择默认值。
+     */
+    void setGop(int gop);
+    int getGop() const;
+
 private:
     int width;
     int height;
     int fps;
     int bitrate;
+    int gop;
     VideoCodecFormat codecFormat;
     VideoRcMode rcMode;
 };

@@ -17,8 +17,11 @@
 
 #include <sys/stat.h>
 
+#include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <algorithm>
 #include <chrono>
 #include <map>
@@ -181,6 +184,128 @@ static std::string get_parent_path(const std::string& path) {
         return "/";
     }
     return trimmed.substr(0, pos);
+}
+
+static std::string join_path(const std::string& base, const std::string& name) {
+    if (base.empty()) {
+        return name;
+    }
+    if (base.back() == '/') {
+        return base + name;
+    }
+    return base + "/" + name;
+}
+
+static bool canonicalize_existing_path(const std::string& path, std::string& canonical) {
+    char resolved[PATH_MAX];
+    if (realpath(path.c_str(), resolved) == nullptr) {
+        return false;
+    }
+    canonical = resolved;
+    return true;
+}
+
+static bool is_path_under_root(const std::string& path, const std::string& root) {
+    if (path == root) {
+        return false;
+    }
+    const std::string normalizedRoot = (!root.empty() && root.back() == '/') ? root.substr(0, root.size() - 1) : root;
+    return path.size() > normalizedRoot.size() &&
+           path.compare(0, normalizedRoot.size(), normalizedRoot) == 0 &&
+           path[normalizedRoot.size()] == '/';
+}
+
+static std::string get_media_root_from_database_path(const std::string& media_db_path) {
+    const std::string db_dir = get_parent_path(media_db_path);
+    const std::string data_dir = get_parent_path(db_dir);
+    const std::string sd_root = get_parent_path(data_dir);
+    return sd_root.empty() ? "" : join_path(sd_root, "DCIM");
+}
+
+static bool resolve_media_item(const struct mg_request_info* req_info, MediaItem& item, int& status_code, std::string& message) {
+    std::string token;
+    std::string idValue;
+    MetadataDao dao;
+    bool found = false;
+
+    if (get_query_string_value(req_info, "token", token) && !token.empty()) {
+        found = dao.getMediaByPlaybackToken(token, item);
+    } else if (get_query_string_value(req_info, "id", idValue) && !idValue.empty()) {
+        char* end = nullptr;
+        errno = 0;
+        long parsedId = strtol(idValue.c_str(), &end, 10);
+        if (errno != 0 || end == idValue.c_str() || *end != '\0' || parsedId <= 0 || parsedId > INT_MAX) {
+            status_code = 400;
+            message = "Invalid media id";
+            return false;
+        }
+        found = dao.getMediaById(static_cast<int>(parsedId), item);
+    } else {
+        status_code = 400;
+        message = "Missing media id or token";
+        return false;
+    }
+
+    if (!found) {
+        status_code = 404;
+        message = "Media not found";
+        return false;
+    }
+
+    return true;
+}
+
+static bool validate_media_file_access(const std::shared_ptr<service::ICameraService>& camera_service,
+                                       const MediaItem& item,
+                                       std::string& canonicalPath,
+                                       int& status_code,
+                                       std::string& message) {
+    const std::string mediaRoot = get_media_root_from_database_path(camera_service->getMediaDatabasePath());
+    std::string canonicalRoot;
+    if (mediaRoot.empty() || !canonicalize_existing_path(mediaRoot, canonicalRoot)) {
+        status_code = 500;
+        message = "Media root unavailable";
+        return false;
+    }
+
+    struct stat linkStat;
+    if (lstat(item.filePath.c_str(), &linkStat) != 0) {
+        status_code = 404;
+        message = "Media file not found";
+        return false;
+    }
+    if (S_ISLNK(linkStat.st_mode)) {
+        status_code = 403;
+        message = "Symlink media access is not allowed";
+        return false;
+    }
+
+    if (!canonicalize_existing_path(item.filePath, canonicalPath)) {
+        status_code = 404;
+        message = "Media file not found";
+        return false;
+    }
+
+    struct stat fileStat;
+    if (stat(canonicalPath.c_str(), &fileStat) != 0 || !S_ISREG(fileStat.st_mode)) {
+        status_code = 403;
+        message = "Media target is not a regular file";
+        return false;
+    }
+    if (!is_path_under_root(canonicalPath, canonicalRoot)) {
+        status_code = 403;
+        message = "Media path is outside media root";
+        return false;
+    }
+
+    return true;
+}
+
+static const char* get_media_mime_type(const MediaItem& item) {
+    if (item.type == 1) {
+        return "image/jpeg";
+    }
+    return "video/mp4";
 }
 
 static MediaScannerMode parse_media_scanner_mode(const std::string& raw_mode) {
@@ -388,6 +513,20 @@ static Json::Value build_media_item_json(const MediaItem& item) {
     jItem["duration"] = item.duration;
     jItem["width"] = item.width;
     jItem["height"] = item.height;
+    jItem["container_type"] = item.containerType;
+    jItem["playback_capable"] = item.playbackCapable;
+    jItem["playback_reason"] = item.playbackReason;
+    jItem["range_supported"] = item.rangeSupported;
+    jItem["seek_support"] = item.seekSupport;
+    jItem["seek_granularity_ms"] = item.seekGranularityMs;
+    jItem["effective_gop_frames"] = item.effectiveGopFrames;
+    jItem["effective_gop_ms"] = item.effectiveGopMs;
+    if (item.type == 1 || item.type == 2) {
+        jItem["download_url"] = "/api/v1/camera/files/download?id=" + std::to_string(item.id);
+    }
+    if (item.playbackCapable && item.type == 2) {
+        jItem["playback_url"] = "/api/v1/camera/video/playback?id=" + std::to_string(item.id);
+    }
     return jItem;
 }
 
@@ -880,6 +1019,86 @@ static int api_v1_camera_video_list(struct mg_connection* conn, void* cbdata) {
     return send_media_list(conn, 2, "videos");
 }
 
+static int api_v1_camera_video_playback(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    const struct mg_request_info* req_info = mg_get_request_info(conn);
+    if (!uri_equals(conn, "/api/v1/camera/video/playback")) {
+        return reject_unmatched_subpath(conn, "/api/v1/camera/video/playback");
+    }
+    if (strcmp(req_info->request_method, "GET") != 0 && strcmp(req_info->request_method, "HEAD") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    MediaItem item;
+    int status_code = 200;
+    std::string message;
+    if (!resolve_media_item(req_info, item, status_code, message)) {
+        send_http_error(conn, status_code, message);
+        return status_code;
+    }
+
+    if (item.type != 2) {
+        send_http_error(conn, 404, "Video not found");
+        return 404;
+    }
+    if (!item.playbackCapable) {
+        const std::string reason = item.playbackReason.empty() ? "Video is not playback capable" : item.playbackReason;
+        send_http_error(conn, 415, reason);
+        return 415;
+    }
+    if (item.containerType != "fmp4" && item.containerType != "mp4") {
+        send_http_error(conn, 415, "Unsupported video container");
+        return 415;
+    }
+
+    std::string canonicalPath;
+    std::shared_ptr<service::ICameraService> camera_service = get_camera_service();
+    if (!validate_media_file_access(camera_service, item, canonicalPath, status_code, message)) {
+        send_http_error(conn, status_code, message);
+        return status_code;
+    }
+
+    mg_send_mime_file(conn, canonicalPath.c_str(), "video/mp4");
+    return 200;
+}
+
+static int api_v1_camera_files_download(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    const struct mg_request_info* req_info = mg_get_request_info(conn);
+    if (!uri_equals(conn, "/api/v1/camera/files/download")) {
+        return reject_unmatched_subpath(conn, "/api/v1/camera/files/download");
+    }
+    if (strcmp(req_info->request_method, "GET") != 0 && strcmp(req_info->request_method, "HEAD") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    MediaItem item;
+    int status_code = 200;
+    std::string message;
+    if (!resolve_media_item(req_info, item, status_code, message)) {
+        send_http_error(conn, status_code, message);
+        return status_code;
+    }
+    if (item.type != 1 && item.type != 2) {
+        send_http_error(conn, 404, "Media not found");
+        return 404;
+    }
+
+    std::string canonicalPath;
+    std::shared_ptr<service::ICameraService> camera_service = get_camera_service();
+    if (!validate_media_file_access(camera_service, item, canonicalPath, status_code, message)) {
+        send_http_error(conn, status_code, message);
+        return status_code;
+    }
+
+    const std::string attachmentHeader = "Content-Disposition: attachment; filename=\"" +
+                                         get_filename(canonicalPath) + "\"\r\n";
+    mg_send_mime_file2(conn, canonicalPath.c_str(), get_media_mime_type(item), attachmentHeader.c_str());
+    return 200;
+}
+
 static int api_v1_camera_properties_get(struct mg_connection* conn, void* cbdata) {
     (void)cbdata;
     send_success_response(conn, get_property_service().getAllPropertiesJson());
@@ -1317,6 +1536,7 @@ extern "C" void http_api_register_v1(struct mg_context* ctx) {
     mg_set_request_handler(ctx, "/api/v1/camera/video/start", api_v1_camera_video_start, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/video/stop", api_v1_camera_video_stop, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/video/status", api_v1_camera_video_status, NULL);
+    mg_set_request_handler(ctx, "/api/v1/camera/video/playback", api_v1_camera_video_playback, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/video/list", api_v1_camera_video_list, NULL);
 
     mg_set_request_handler(ctx, "/api/v1/camera/properties/reset", api_v1_camera_properties_reset, NULL);
@@ -1329,6 +1549,7 @@ extern "C" void http_api_register_v1(struct mg_context* ctx) {
     mg_set_request_handler(ctx, "/api/v1/camera/preview", api_v1_camera_preview, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/thumbnail", api_v1_camera_thumbnail, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/photos", api_v1_camera_photos, NULL);
+    mg_set_request_handler(ctx, "/api/v1/camera/files/download", api_v1_camera_files_download, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/files/delete", api_v1_camera_files_delete, NULL);
 }
 

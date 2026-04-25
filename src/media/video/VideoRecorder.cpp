@@ -61,6 +61,105 @@ static int writeCallback(int64_t offset, const void *buffer, size_t size, void *
     return fwrite(buffer, 1, size, f) != size;
 }
 
+static int getAacSamplingFrequencyIndex(int sampleRate)
+{
+    switch (sampleRate) {
+        case 96000: return 0;
+        case 88200: return 1;
+        case 64000: return 2;
+        case 48000: return 3;
+        case 44100: return 4;
+        case 32000: return 5;
+        case 24000: return 6;
+        case 22050: return 7;
+        case 16000: return 8;
+        case 12000: return 9;
+        case 11025: return 10;
+        case 8000:  return 11;
+        default:    return -1;
+    }
+}
+
+static bool buildAacAudioSpecificConfig(int sampleRate, int channels, uint8_t asc[2])
+{
+    const int sfi = getAacSamplingFrequencyIndex(sampleRate);
+    if (sfi < 0 || channels <= 0 || channels > 7) {
+        return false;
+    }
+
+    const uint8_t audioObjectType = 2; // AAC LC
+    const uint8_t chCfg = static_cast<uint8_t>(channels);
+    asc[0] = static_cast<uint8_t>((audioObjectType << 3) | (sfi >> 1));
+    asc[1] = static_cast<uint8_t>(((sfi & 0x01) << 7) | (chCfg << 3));
+    return true;
+}
+
+static bool parseAacAdtsConfig(const std::vector<uint8_t>& data, int& sampleRate, int& channels)
+{
+    static const int sampleRates[16] = {
+        96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+        16000, 12000, 11025, 8000, 7350, 0, 0, 0
+    };
+
+    for (size_t offset = 0; offset + 7 <= data.size(); ++offset) {
+        const uint8_t* p = data.data() + offset;
+        if (!(p[0] == 0xFF && (p[1] & 0xF0) == 0xF0)) {
+            continue;
+        }
+
+        const int samplingFreqIndex = (p[2] & 0x3C) >> 2;
+        const int channelConfig = ((p[2] & 0x01) << 2) | ((p[3] & 0xC0) >> 6);
+        if (samplingFreqIndex < 0 || samplingFreqIndex >= 16 || sampleRates[samplingFreqIndex] <= 0) {
+            return false;
+        }
+
+        sampleRate = sampleRates[samplingFreqIndex];
+        channels = channelConfig > 0 ? channelConfig : channels;
+        return channels > 0;
+    }
+
+    return false;
+}
+
+static int addAacAudioTrack(MP4E_mux_t* muxer, int sampleRate, int channels)
+{
+    uint8_t asc[2] = {0, 0};
+    if (!buildAacAudioSpecificConfig(sampleRate, channels, asc)) {
+        return MP4E_STATUS_BAD_ARGUMENTS;
+    }
+
+    MP4E_track_t audioTrack;
+    memset(&audioTrack, 0, sizeof(MP4E_track_t));
+    audioTrack.object_type_indication = MP4_OBJECT_TYPE_AUDIO_ISO_IEC_14496_3;
+    strcpy((char*)audioTrack.language, "und");
+    audioTrack.track_media_kind = e_audio;
+    audioTrack.time_scale = sampleRate;
+    audioTrack.default_duration = 1024;
+    audioTrack.u.a.channelcount = channels;
+
+    const int trackId = MP4E_add_track(muxer, &audioTrack);
+    if (trackId < 0) {
+        return trackId;
+    }
+    if (MP4E_set_dsi(muxer, trackId, asc, sizeof(asc)) != MP4E_STATUS_OK) {
+        return MP4E_STATUS_BAD_ARGUMENTS;
+    }
+    return trackId;
+}
+
+static int addPrivateAudioTrack(MP4E_mux_t* muxer, int sampleRate, int channels, int defaultDuration)
+{
+    MP4E_track_t audioTrack;
+    memset(&audioTrack, 0, sizeof(MP4E_track_t));
+    audioTrack.object_type_indication = MP4_OBJECT_TYPE_USER_PRIVATE;
+    strcpy((char*)audioTrack.language, "und");
+    audioTrack.track_media_kind = e_audio;
+    audioTrack.time_scale = sampleRate > 0 ? sampleRate : 16000;
+    audioTrack.default_duration = defaultDuration > 0 ? defaultDuration : (audioTrack.time_scale / 100);
+    audioTrack.u.a.channelcount = channels > 0 ? channels : 1;
+    return MP4E_add_track(muxer, &audioTrack);
+}
+
 VideoRecorder::VideoRecorder()
     : stopRecording(false)
     , vidParam(nullptr)
@@ -222,8 +321,6 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
 bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &filename, int duration)
 {
     int i = 0;
-    int ret = 0;
-    int audioWaitLoops = 0;
 
     hal::VideoStreamInfo info{};
     if (stream_) {
@@ -241,7 +338,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
         Logger::log(LogLevel::ERROR, "fopen %s failed", filename.c_str());
         return false;
     }
-    MP4E_mux_t *muxer = MP4E_open(0, 0, fp, writeCallback);
+    MP4E_mux_t *muxer = MP4E_open(0, 1, fp, writeCallback);
 
     if (!muxer) {
         Logger::log(LogLevel::ERROR, "MP4E_open %s failed", filename.c_str());
@@ -259,27 +356,90 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
 
     audio_track_id = -1;
     int configuredAudioChannels = audioChannels > 0 ? audioChannels : 1;
+    bool playbackCapable = true;
+    std::string playbackReason;
 
-	//int fps = params.getFps();
-	int fps = info.fps_num / info.fps_den;
-	int frameCount = duration*fps;
-	Logger::log(LogLevel::INFO, "%s: duration:%d, frameCount:%d, fps:%d", __func__, duration, frameCount, fps);
-	auto checkRecordCondition = [&frameCount, duration, this]() {
-		if (this->stopRecording) {
-			return false;
-		}
+    if (audioRecording) {
+        if (audioIsAac) {
+            int parsedSampleRate = audioSampleRate;
+            int parsedChannels = configuredAudioChannels;
+            bool parsedAdtsConfig = false;
+            for (int waitMs = 0; waitMs <= 500 && !parsedAdtsConfig; waitMs += 10) {
+                {
+                    std::lock_guard<std::mutex> lock(audioDataMutex);
+                    if (!audioDataQueue.empty()) {
+                        parsedAdtsConfig = parseAacAdtsConfig(audioDataQueue.front().data, parsedSampleRate, parsedChannels);
+                    }
+                }
+                if (!parsedAdtsConfig) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }
+            if (parsedAdtsConfig) {
+                audioSampleRate = parsedSampleRate;
+                audioChannels = parsedChannels;
+                configuredAudioChannels = parsedChannels;
+            } else {
+                Logger::log(LogLevel::WARNING,
+                            "AAC ADTS preflight did not find a frame; using configured audio params sampleRate=%d channels=%d",
+                            audioSampleRate, configuredAudioChannels);
+            }
+            audio_track_id = addAacAudioTrack(muxer, audioSampleRate, configuredAudioChannels);
+            if (audio_track_id < 0) {
+                Logger::log(LogLevel::ERROR,
+                            "Failed to predeclare AAC track before first fMP4 fragment: sampleRate=%d channels=%d",
+                            audioSampleRate, configuredAudioChannels);
+                MP4E_close(muxer);
+                mp4_h26x_write_close(&mp4wr);
+                fclose(fp);
+                return false;
+            }
+            audioDsiSet = true;
+        } else {
+            const int defaultDuration = audParam ? audParam->getNumPerFrame() : (audioSampleRate / 100);
+            audio_track_id = addPrivateAudioTrack(muxer, audioSampleRate, configuredAudioChannels, defaultDuration);
+            if (audio_track_id < 0) {
+                Logger::log(LogLevel::ERROR, "Failed to predeclare private audio track before first fMP4 fragment");
+                MP4E_close(muxer);
+                mp4_h26x_write_close(&mp4wr);
+                fclose(fp);
+                return false;
+            }
+            playbackCapable = false;
+            playbackReason = "audio_codec_not_playback_capable";
+        }
+    }
 
-		if (duration == 0) {
-			return true;
-		}
+    int fps = info.fps_den > 0 ? (info.fps_num / info.fps_den) : 0;
+    if (fps <= 0) {
+        fps = vidParam ? vidParam->getFrameRate() : 30;
+    }
+    if (fps <= 0) {
+        fps = 30;
+    }
+    int effectiveGopFrames = vidParam ? vidParam->getGop() : 0;
+    if (effectiveGopFrames <= 0) {
+        effectiveGopFrames = fps > 0 ? fps * 2 : 60;
+    }
+    int effectiveGopMs = (fps > 0) ? (effectiveGopFrames * 1000 / fps) : 2000;
+    int frameCount = duration * fps;
+    Logger::log(LogLevel::INFO, "%s: duration:%d, frameCount:%d, fps:%d", __func__, duration, frameCount, fps);
+    auto checkRecordCondition = [&frameCount, duration, this]() {
+        if (this->stopRecording) {
+            return false;
+        }
+
+        if (duration == 0) {
+            return true;
+        }
 
         if (frameCount > 0) {
             frameCount--;
             return true;
         }
 
-		return false;
-	};
+        return false;
+    };
     
     // Reset last timestamp for new recording
     lastVideoTimestamp = 0;
@@ -293,14 +453,15 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
         }
     }
     
+    bool audioAdtsLogged = false;
     while (checkRecordCondition()) {
-    	/* Polling stream, set timeout as 1000msec */
+        /* Polling stream, set timeout as 1000msec */
         if (!stream_->polling(1000)) {
             Logger::log(LogLevel::ERROR, "stream_->polling(1000) timeout");
             MP4E_close(muxer);
             Logger::log(LogLevel::WARNING, "closing mp4 writer on polling timeout");
             mp4_h26x_write_close(&mp4wr);
-        	fclose(fp);
+            fclose(fp);
             return false;
         }
 
@@ -309,7 +470,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
             Logger::log(LogLevel::ERROR, "getFrame failed");
             MP4E_close(muxer);
             mp4_h26x_write_close(&mp4wr);
-        	fclose(fp);
+            fclose(fp);
             return false;
         }
         for (i = 0; i < frame.piece_count; i++) {
@@ -364,7 +525,6 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                 const std::vector<uint8_t>& audioData = audioSample.data;
                 if (audioIsAac) {
                     size_t offset = 0;
-                    static bool audioAdtsLogged = false;
                     while (offset + 7 <= audioData.size()) {
                         const uint8_t* p = audioData.data() + offset;
                         if (!(p[0] == 0xFF && (p[1] & 0xF0) == 0xF0)) {
@@ -380,7 +540,6 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                             break;
                         }
                         if (!audioAdtsLogged) {
-                            uint8_t profile = (p[2] & 0xC0) >> 6;
                             uint8_t samplingFreqIndex = (p[2] & 0x3C) >> 2;
                             uint8_t channelConfig = ((p[2] & 0x01) << 2) | ((p[3] & 0xC0) >> 6);
                             int sr = 16000;
@@ -408,42 +567,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                             audioAdtsLogged = true;
                         }
                         if (audio_track_id < 0) {
-                            MP4E_track_t audioTrack;
-                            memset(&audioTrack, 0, sizeof(MP4E_track_t));
-                            audioTrack.object_type_indication = MP4_OBJECT_TYPE_AUDIO_ISO_IEC_14496_3;
-                            strcpy((char*)audioTrack.language, "und");
-                            audioTrack.track_media_kind = e_audio;
-                            audioTrack.time_scale = (audioSampleRate > 0) ? audioSampleRate : 16000;
-                            int sampleTicks = 1024;
-                            audioTrack.default_duration = sampleTicks;
-                            audioTrack.u.a.channelcount = audioChannels;
-                            audio_track_id = MP4E_add_track(muxer, &audioTrack);
-                            if (audio_track_id < 0) {
-                                break;
-                            }
-                            int sfi = 8;
-                            switch (audioSampleRate) {
-                                case 96000: sfi = 0; break;
-                                case 88200: sfi = 1; break;
-                                case 64000: sfi = 2; break;
-                                case 48000: sfi = 3; break;
-                                case 44100: sfi = 4; break;
-                                case 32000: sfi = 5; break;
-                                case 24000: sfi = 6; break;
-                                case 22050: sfi = 7; break;
-                                case 16000: sfi = 8; break;
-                                case 12000: sfi = 9; break;
-                                case 11025: sfi = 10; break;
-                                case 8000:  sfi = 11; break;
-                                default:    sfi = 8; break;
-                            }
-                            uint8_t audioObjectType = 2;
-                            uint8_t chCfg = static_cast<uint8_t>(audioChannels);
-                            uint8_t asc[2];
-                            asc[0] = static_cast<uint8_t>((audioObjectType << 3) | (sfi >> 1));
-                            asc[1] = static_cast<uint8_t>(((sfi & 0x01) << 7) | (chCfg << 3));
-                            MP4E_set_dsi(muxer, audio_track_id, asc, 2);
-                            audioDsiSet = true;
+                            break;
                         }
                         const uint8_t* framePayload = p + headerLen;
                         int payloadLen = frameLen - headerLen;
@@ -453,20 +577,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                     }
                 } else {
                     if (audio_track_id < 0) {
-                        int bytesPerSample = audioChannels * 2;
-                        int pktSamples = (int)audioData.size() / (bytesPerSample > 0 ? bytesPerSample : 2);
-                        MP4E_track_t audioTrack;
-                        memset(&audioTrack, 0, sizeof(MP4E_track_t));
-                        audioTrack.object_type_indication = MP4_OBJECT_TYPE_USER_PRIVATE;
-                        strcpy((char*)audioTrack.language, "und");
-                        audioTrack.track_media_kind = e_audio;
-                        audioTrack.time_scale = (audioSampleRate > 0) ? audioSampleRate : 16000;
-                        audioTrack.default_duration = (pktSamples > 0) ? pktSamples : (audioTrack.time_scale / 100);
-                        audioTrack.u.a.channelcount = audioChannels > 0 ? audioChannels : configuredAudioChannels;
-                        audio_track_id = MP4E_add_track(muxer, &audioTrack);
-                        if (audio_track_id < 0) {
-                            continue;
-                        }
+                        continue;
                     }
                     int bytesPerSample = audioChannels * 2;
                     int pktSamples = (int)audioData.size() / (bytesPerSample > 0 ? bytesPerSample : 2);
@@ -512,14 +623,18 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                     if (frameLen <= headerLen || offset + frameLen > audioData.size()) break;
                     const uint8_t* framePayload = p + headerLen;
                     int payloadLen = frameLen - headerLen;
-                    MP4E_put_sample(muxer, audio_track_id, framePayload, payloadLen, 1024, MP4E_SAMPLE_DEFAULT);
+                    if (audio_track_id >= 0) {
+                        MP4E_put_sample(muxer, audio_track_id, framePayload, payloadLen, 1024, MP4E_SAMPLE_DEFAULT);
+                    }
                     offset += frameLen;
                 }
             } else {
                 int bytesPerSample = audioChannels * 2;
                 int pktSamples = (int)audioData.size() / (bytesPerSample > 0 ? bytesPerSample : 2);
                 int audioFrameDuration = (pktSamples > 0) ? pktSamples : ((audioSampleRate > 0) ? (audioSampleRate / 100) : (16000 / 100));
-                MP4E_put_sample(muxer, audio_track_id, audioData.data(), static_cast<int>(audioData.size()), audioFrameDuration, MP4E_SAMPLE_DEFAULT);
+                if (audio_track_id >= 0) {
+                    MP4E_put_sample(muxer, audio_track_id, audioData.data(), static_cast<int>(audioData.size()), audioFrameDuration, MP4E_SAMPLE_DEFAULT);
+                }
             }
         }
         while (true) {
@@ -547,21 +662,35 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                     if (frameLen <= headerLen || offset + frameLen > audioData.size()) break;
                     const uint8_t* framePayload = p + headerLen;
                     int payloadLen = frameLen - headerLen;
-                    MP4E_put_sample(muxer, audio_track_id, framePayload, payloadLen, 1024, MP4E_SAMPLE_DEFAULT);
+                    if (audio_track_id >= 0) {
+                        MP4E_put_sample(muxer, audio_track_id, framePayload, payloadLen, 1024, MP4E_SAMPLE_DEFAULT);
+                    }
                     offset += frameLen;
                 }
             } else {
                 int bytesPerSample = audioChannels * 2;
                 int pktSamples = (int)audioData.size() / (bytesPerSample > 0 ? bytesPerSample : 2);
                 int audioFrameDuration = (pktSamples > 0) ? pktSamples : ((audioSampleRate > 0) ? (audioSampleRate / 100) : (16000 / 100));
-                MP4E_put_sample(muxer, audio_track_id, audioData.data(), static_cast<int>(audioData.size()), audioFrameDuration, MP4E_SAMPLE_DEFAULT);
+                if (audio_track_id >= 0) {
+                    MP4E_put_sample(muxer, audio_track_id, audioData.data(), static_cast<int>(audioData.size()), audioFrameDuration, MP4E_SAMPLE_DEFAULT);
+                }
             }
         }
     }
     MP4E_close(muxer);
-	mp4_h26x_write_close(&mp4wr);
-    long fileSize = ftell(fp);
-	fclose(fp);
+    mp4_h26x_write_close(&mp4wr);
+    fflush(fp);
+    long fileSize = 0;
+    if (fseek(fp, 0, SEEK_END) == 0) {
+        fileSize = ftell(fp);
+        if (fileSize < 0) {
+            Logger::log(LogLevel::WARNING, "Failed to get file size: %s", filename.c_str());
+            fileSize = 0;
+        }
+    } else {
+        Logger::log(LogLevel::WARNING, "Failed to seek to end for file size: %s", filename.c_str());
+    }
+    fclose(fp);
 
     if (!stream_->stop()) {
         Logger::log(LogLevel::ERROR, "stop stream failed");
@@ -587,7 +716,15 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     item.duration = duration;
     item.width = info.width;
     item.height = info.height;
-    
+    item.containerType = "fmp4";
+    item.playbackCapable = playbackCapable;
+    item.playbackReason = playbackCapable ? "" : playbackReason;
+    item.rangeSupported = playbackCapable;
+    item.seekSupport = playbackCapable ? "keyframe" : "";
+    item.seekGranularityMs = playbackCapable ? effectiveGopMs : 0;
+    item.effectiveGopFrames = effectiveGopFrames;
+    item.effectiveGopMs = effectiveGopMs;
+
     MetadataDao dao;
     if (dao.addMedia(item)) {
         Logger::log(LogLevel::INFO, "Saved video to DB: %s", filename.c_str());
@@ -622,11 +759,15 @@ bool VideoRecorder::initVideo()
     cfg.channel.sensor_index = VIDEO_SENSOR_ID;
     cfg.channel.stream_index = VIDEO_STREAM_ID;
     cfg.width = w;
-    cfg.height = h;
-    cfg.fps_num = vidParam ? vidParam->getFrameRate() : 30;
-    cfg.fps_den = 1;
-    cfg.rc_mode = hal::VideoRcMode::CBR;
-    cfg.enable_ivdc = true;
+	    cfg.height = h;
+	    cfg.fps_num = vidParam ? vidParam->getFrameRate() : 30;
+	    cfg.fps_den = 1;
+        cfg.gop = vidParam ? vidParam->getGop() : 0;
+        if (cfg.gop <= 0) {
+            cfg.gop = cfg.fps_num > 0 ? cfg.fps_num * 2 : 60;
+        }
+	    cfg.rc_mode = hal::VideoRcMode::CBR;
+	    cfg.enable_ivdc = true;
     if (!stream_->configure(cfg)) {
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
         return false;

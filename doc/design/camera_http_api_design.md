@@ -548,23 +548,80 @@ sequenceDiagram
     "offset": 0,
     "videos": [
       {
-        "record_id": "video_20250119_143520_001",
-        "filename": "VID_20250119_143520_001.mp4",
-        "url": "/media/video/2025/01/19/VID_20250119_143520_001.mp4",
-        "thumbnail_url": "/media/video/thumb/2025/01/19/VID_20250119_143520_001_thumb.jpg",
+        "id": 43,
+        "type": 2,
+        "path": "/sdcard/DCIM/VID_20260425_184200_FMP4_03.mp4",
         "size": 10485760,
-        "duration": 30,
-        "timestamp": 1737276320,
+        "timestamp": 1777113720,
+        "duration": 40,
         "width": 1920,
         "height": 1080,
-        "fps": 25,
-        "bitrate": 4096,
-        "audio": true
+        "container_type": "fmp4",
+        "playback_capable": true,
+        "playback_reason": "",
+        "range_supported": true,
+        "seek_support": "keyframe",
+        "seek_granularity_ms": 2000,
+        "effective_gop_frames": 60,
+        "effective_gop_ms": 2000,
+        "download_url": "/api/v1/camera/files/download?id=43",
+        "playback_url": "/api/v1/camera/video/playback?id=43"
       }
     ]
   }
 }
 ```
+
+### 4.5 视频播放
+
+**接口**：`GET /api/v1/camera/video/playback`
+
+**描述**：给播放器直接使用的视频播放 URL。支持普通 `GET`、`HEAD` 和 `Range` 请求。
+
+**请求参数**（Query String）：
+```
+?id=43
+```
+
+或
+
+```
+?token=opaque_token
+```
+
+**约束**：
+- 仅允许 `type == 2` 的视频记录
+- 仅允许 `playback_capable == true`
+- 容器必须是 `fmp4` / `mp4`
+- 不接受 raw path
+
+**响应特性**：
+- `Content-Type: video/mp4`
+- 支持 `206 Partial Content`
+- 支持播放器边下边播和 seek
+
+### 4.6 原文件下载
+
+**接口**：`GET /api/v1/camera/files/download`
+
+**描述**：下载媒体原文件，适用于照片原图和视频原文件。
+
+**请求参数**（Query String）：
+```
+?id=43
+```
+
+或
+
+```
+?token=opaque_token
+```
+
+**响应特性**：
+- 视频返回 `video/mp4`
+- 照片返回 `image/jpeg`
+- 返回 `Content-Disposition: attachment`
+- 不接受 raw path，仍做 canonical path / media root / regular file / symlink 校验
 
 ---
 
@@ -1043,14 +1100,22 @@ sequenceDiagram
     "offset": 0,
     "photos": [
       {
-        "photo_id": "photo_20250119_143520_001",
-        "filename": "IMG_20250119_143520_001.jpg",
-        "url": "/media/photo/2025/01/19/IMG_20250119_143520_001.jpg",
-        "thumbnail_url": "/media/photo/thumb/2025/01/19/IMG_20250119_143520_001_thumb.jpg",
+        "id": 40,
+        "type": 1,
+        "path": "/sdcard/DCIM/IMG_20260119_112056.jpg",
         "size": 1024000,
         "width": 1920,
         "height": 1080,
-        "timestamp": 1737276320
+        "timestamp": 1768792856,
+        "container_type": "",
+        "playback_capable": false,
+        "playback_reason": "",
+        "range_supported": false,
+        "seek_support": "",
+        "seek_granularity_ms": 0,
+        "effective_gop_frames": 0,
+        "effective_gop_ms": 0,
+        "download_url": "/api/v1/camera/files/download?id=40"
       }
     ]
   }

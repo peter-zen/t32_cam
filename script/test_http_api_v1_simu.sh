@@ -55,13 +55,13 @@ expect_contains() {
 
 call_get() {
     local path="$1"
-    curl -sS --max-time 5 "$BASE_URL$path"
+    curl --noproxy '*' -sS --max-time 5 "$BASE_URL$path"
 }
 
 call_post() {
     local path="$1"
     local payload="$2"
-    curl -sS --max-time 5 -X POST \
+    curl --noproxy '*' -sS --max-time 5 -X POST \
         -H "Content-Type: application/json" \
         -d "$payload" \
         "$BASE_URL$path"
@@ -69,7 +69,7 @@ call_post() {
 
 wait_server_ready() {
     for _ in $(seq 1 30); do
-        if curl -sS --max-time 1 "$BASE_URL/api/health" >/dev/null 2>&1; then
+        if curl --noproxy '*' -sS --max-time 1 "$BASE_URL/api/health" >/dev/null 2>&1; then
             return 0
         fi
         sleep 0.2
@@ -80,6 +80,11 @@ wait_server_ready() {
 extract_job_id() {
     local body="$1"
     echo "$body" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p'
+}
+
+extract_playback_url() {
+    local body="$1"
+    echo "$body" | sed -n 's/.*"playback_url":"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 wait_photo_job_completed() {
@@ -103,7 +108,7 @@ expect_binary_jpeg() {
     local tmp_body
     tmp_body="$(mktemp)"
     local meta
-    meta="$(curl -sS --max-time 5 -o "$tmp_body" -w '%{http_code} %{content_type} %{size_download}' "$BASE_URL$path")"
+    meta="$(curl --noproxy '*' -sS --max-time 5 -o "$tmp_body" -w '%{http_code} %{content_type} %{size_download}' "$BASE_URL$path")"
 
     local http_code content_type size_download
     http_code="$(echo "$meta" | awk '{print $1}')"
@@ -115,6 +120,33 @@ expect_binary_jpeg() {
     else
         fail "$name"
         echo "  expected: 200 image/jpeg size>0"
+        echo "  actual: $meta"
+    fi
+
+    rm -f "$tmp_body"
+}
+
+expect_video_mp4_get() {
+    local name="$1"
+    local path="$2"
+    local expected_code="$3"
+    shift 3
+
+    local tmp_body
+    tmp_body="$(mktemp)"
+    local meta
+    meta="$(curl --noproxy '*' -sS --max-time 5 "$@" -o "$tmp_body" -w '%{http_code} %{content_type} %{size_download}' "$BASE_URL$path")"
+
+    local http_code content_type size_download
+    http_code="$(echo "$meta" | awk '{print $1}')"
+    content_type="$(echo "$meta" | awk '{print $2}')"
+    size_download="$(echo "$meta" | awk '{print $3}')"
+
+    if [[ "$http_code" == "$expected_code" && "$content_type" == "video/mp4" && "$size_download" -gt 0 ]]; then
+        pass "$name"
+    else
+        fail "$name"
+        echo "  expected: $expected_code video/mp4 size>0"
         echo "  actual: $meta"
     fi
 
@@ -234,6 +266,17 @@ expect_contains "GET /api/v1/camera/photos field" "$resp" '"photos"'
 resp="$(call_get "/api/v1/camera/video/list?offset=0&limit=5")"
 expect_contains "GET /api/v1/camera/video/list code" "$resp" '"code":0'
 expect_contains "GET /api/v1/camera/video/list field" "$resp" '"videos"'
+expect_contains "GET /api/v1/camera/video/list playback_capable" "$resp" '"playback_capable":true'
+expect_contains "GET /api/v1/camera/video/list playback_url" "$resp" '"playback_url"'
+
+playback_url="$(extract_playback_url "$resp")"
+if [[ -z "$playback_url" ]]; then
+    fail "Extract playback_url"
+else
+    pass "Extract playback_url"
+    expect_video_mp4_get "GET playback full video/mp4" "$playback_url" "200"
+    expect_video_mp4_get "GET playback Range video/mp4" "$playback_url" "206" -H "Range: bytes=0-1023"
+fi
 
 expect_binary_jpeg "GET /api/v1/camera/preview" "/api/v1/camera/preview?format=jpeg"
 expect_binary_jpeg "GET /api/v1/camera/thumbnail" "/api/v1/camera/thumbnail?size=160"

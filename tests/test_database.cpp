@@ -7,6 +7,7 @@
 #include <cstdlib>
 //#include <filesystem>
 #include <unistd.h>
+#include <sqlite3.h>
 
 #define TEST_DB_DIR "test_db_dir"
 #define TEST_MEDIA_DIR "test_media_dir"
@@ -31,6 +32,85 @@ void test_init() {
     require(DatabaseManager::getInstance().init(TEST_DB_DIR) == true, "database init failed");
     require(DatabaseManager::getInstance().getMediaDb() != nullptr, "media db is null");
     require(DatabaseManager::getInstance().getThumbDb() != nullptr, "thumbnail db is null");
+    std::cout << "[PASS]" << std::endl;
+}
+
+static void exec_sql(sqlite3* db, const char* sql) {
+    char* err = nullptr;
+    int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
+    if (rc != SQLITE_OK) {
+        std::cerr << "[FAIL] SQL error: " << (err ? err : "") << std::endl;
+        sqlite3_free(err);
+        exit(1);
+    }
+}
+
+void test_media_schema_migration() {
+    std::cout << "[Test] Media Schema Migration..." << std::endl;
+    DatabaseManager::getInstance().close();
+    cleanup();
+    (void)system(("mkdir -p " + std::string(TEST_DB_DIR)).c_str());
+
+    sqlite3* db = nullptr;
+    require(sqlite3_open((std::string(TEST_DB_DIR) + "/media_file.db").c_str(), &db) == SQLITE_OK,
+            "failed to create old media db");
+    exec_sql(db, R"(
+        CREATE TABLE media_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT NOT NULL UNIQUE,
+            type INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL,
+            file_size INTEGER NOT NULL,
+            duration INTEGER DEFAULT 0,
+            width INTEGER DEFAULT 0,
+            height INTEGER DEFAULT 0,
+            is_favorite INTEGER DEFAULT 0,
+            is_locked INTEGER DEFAULT 0
+        );
+        INSERT INTO media_files
+            (file_path, type, timestamp, file_size, duration, width, height, is_favorite, is_locked)
+        VALUES
+            ('/sdcard/DCIM/old.mp4', 2, 1700000000, 4096, 12, 1280, 720, 0, 0);
+    )");
+    sqlite3_close(db);
+
+    require(DatabaseManager::getInstance().init(TEST_DB_DIR) == true, "database init after migration failed");
+
+    MetadataDao dao;
+    MediaItem oldItem;
+    require(dao.getMedia("/sdcard/DCIM/old.mp4", oldItem) == true, "old media row missing after migration");
+    require(oldItem.fileSize == 4096, "old media file size not preserved");
+    require(oldItem.playbackCapable == false, "old media should default to playback_capable=false");
+    require(oldItem.containerType.empty(), "old media container type should default empty");
+
+    MediaItem playbackItem;
+    playbackItem.filePath = "/sdcard/DCIM/new.mp4";
+    playbackItem.type = 2;
+    playbackItem.timestamp = 1700000010;
+    playbackItem.fileSize = 8192;
+    playbackItem.duration = 20;
+    playbackItem.width = 1920;
+    playbackItem.height = 1080;
+    playbackItem.containerType = "fmp4";
+    playbackItem.playbackCapable = true;
+    playbackItem.rangeSupported = true;
+    playbackItem.seekSupport = "keyframe";
+    playbackItem.seekGranularityMs = 2000;
+    playbackItem.effectiveGopFrames = 60;
+    playbackItem.effectiveGopMs = 2000;
+    require(dao.addMedia(playbackItem) == true, "add playback-capable media failed");
+
+    MediaItem loaded;
+    require(dao.getMedia("/sdcard/DCIM/new.mp4", loaded) == true, "get playback-capable media failed");
+    require(dao.getMediaById(loaded.id, loaded) == true, "getMediaById failed");
+    require(loaded.containerType == "fmp4", "container type mismatch");
+    require(loaded.playbackCapable == true, "playback capability mismatch");
+    require(loaded.rangeSupported == true, "range support mismatch");
+    require(loaded.seekSupport == "keyframe", "seek support mismatch");
+    require(loaded.effectiveGopFrames == 60, "effective GOP frames mismatch");
+
+    DatabaseManager::getInstance().close();
+    cleanup();
     std::cout << "[PASS]" << std::endl;
 }
 
@@ -195,6 +275,7 @@ void test_pending_thumbnail_scan() {
 }
 
 int main() {
+    test_media_schema_migration();
     test_init();
     test_crud();
     test_thumbnail();
