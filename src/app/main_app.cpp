@@ -17,6 +17,7 @@
 #include <thread>
 #include <mutex>
 #include <unordered_map>
+#include <algorithm>
 
 
 #include "MgmtServClient.h"
@@ -144,6 +145,37 @@ static std::string normalizePath(const std::string& path)
         return std::string(resolved);
     }
     return path;
+}
+
+static std::string getParentPath(const std::string& path)
+{
+    if (path.empty()) {
+        return "";
+    }
+
+    std::string trimmed = path;
+    while (trimmed.size() > 1 && trimmed.back() == '/') {
+        trimmed.pop_back();
+    }
+
+    const size_t pos = trimmed.find_last_of('/');
+    if (pos == std::string::npos) {
+        return "";
+    }
+    if (pos == 0) {
+        return "/";
+    }
+    return trimmed.substr(0, pos);
+}
+
+static MediaScannerMode parseMediaScannerMode(const std::string& rawMode)
+{
+    std::string mode = trimConfigString(rawMode);
+    std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
+    if (mode == "full" || mode == "full_scan" || mode == "media") {
+        return MediaScannerMode::FullScan;
+    }
+    return MediaScannerMode::PendingThumbnails;
 }
 
 static uint16_t getConfiguredPort(const std::shared_ptr<DeviceConfig>& config,
@@ -817,11 +849,22 @@ int main(int argc, char* argv[])
         fprintf(stderr, "Failed to initialize Database\n");
     }
 
-    // Start Media Scanner (async)
-    // Only scan if directory exists (avoid creating if no SD card)
+    // Start Media Scanner (async). Default mode uses the small pending-thumbnail
+    // directory as a recovery queue; full scan is reserved for maintenance.
     struct stat st;
     if (stat(media_root.c_str(), &st) == 0) {
-        MediaScanner::getInstance().startScan(media_root);
+        MediaScannerOptions scannerOptions;
+        scannerOptions.mediaRootDir = media_root;
+        scannerOptions.mode = parseMediaScannerMode(
+            EnvManager::getInstance()->getEnv("MEDIA_SCANNER_MODE", "pending_thumb"));
+
+        const std::string dataRoot = getParentPath(db_path);
+        const std::string defaultPendingThumbDir =
+            dataRoot.empty() ? (db_path + "/thumb_pending") : (dataRoot + "/thumb_pending");
+        scannerOptions.pendingThumbDir =
+            EnvManager::getInstance()->getEnv("THUMB_PENDING_DIR", defaultPendingThumbDir);
+
+        MediaScanner::getInstance().startScan(scannerOptions);
     }
     
     // Initialize EasyLogger - must be called early before any logging

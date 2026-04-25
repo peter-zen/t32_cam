@@ -19,6 +19,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -182,6 +183,15 @@ static std::string get_parent_path(const std::string& path) {
     return trimmed.substr(0, pos);
 }
 
+static MediaScannerMode parse_media_scanner_mode(const std::string& raw_mode) {
+    std::string mode = raw_mode;
+    std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
+    if (mode == "full" || mode == "full_scan" || mode == "media") {
+        return MediaScannerMode::FullScan;
+    }
+    return MediaScannerMode::PendingThumbnails;
+}
+
 static void ensure_sim_media_storage_ready(const std::shared_ptr<service::ICameraService>& camera_service) {
 #ifdef SIMULATION_MODE
     static std::once_flag once;
@@ -205,7 +215,17 @@ static void ensure_sim_media_storage_ready(const std::shared_ptr<service::ICamer
         const std::string media_root = sd_root.empty() ? "" : (sd_root + "/DCIM");
         struct stat st;
         if (!media_root.empty() && stat(media_root.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-            MediaScanner::getInstance().startScan(media_root);
+            const char* env_mode = std::getenv("MEDIA_SCANNER_MODE");
+            const char* env_thumb_dir = std::getenv("THUMB_PENDING_DIR");
+            const std::string data_root = get_parent_path(db_dir);
+
+            MediaScannerOptions options;
+            options.mode = parse_media_scanner_mode(env_mode ? env_mode : "pending_thumb");
+            options.mediaRootDir = media_root;
+            options.pendingThumbDir = (env_thumb_dir && env_thumb_dir[0] != '\0')
+                                          ? std::string(env_thumb_dir)
+                                          : (data_root.empty() ? (db_dir + "/thumb_pending") : (data_root + "/thumb_pending"));
+            MediaScanner::getInstance().startScan(options);
         }
     });
 #else
