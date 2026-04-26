@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "factory": {
+    "BOOT": {
+      "PType": 1,
+      "PModel": "SCT000",
+      "PName": "CAMERA",
+      "PCompany": "SEESUNG",
+      "LED_Mode": 0
+    },
+    "DEVICE": {
+      "PMAC": "",
+      "PID": "SCT00000S26000000",
+      "CSSID": "SCT",
+      "CPWD": "12345678",
+      "UPID": "Null",
+      "UPWD": "12345678"
+    },
+    "SERVER": {
+      "TP_Setting": "10",
+      "M_Server": "www.aidetcloud.com:8899",
+      "NTP_Server": "www.aidetcloud.com:123",
+      "NTP_Timezone": "+8",
+      "B_Server": "0",
+      "AI_Server": "0"
+    },
+    "Functions": {
+      "Photo_DS_EN": 1,
+      "Photo_Size_MAX": 0,
+      "Photo_Burst_MAX": 0,
+      "Video_DS_EN": 1,
+      "Video_Size_MAX": 0,
+      "Video_Length_MAX": 0,
+      "Data_ASD_EN": 0,
+      "Data_AUD_EN": 0,
+      "AI_Alarm_SET": 0,
+      "BServer_EN": 0,
+      "RWakeup _SET": 0,
+      "RWakeup _HB": 0,
+      "Smart_DCVR_EN": 0,
+      "Video_ATR_EN": 0,
+      "DHCP_EN": 0,
+      "Stamp_EN": 1,
+      "VTS_Alarm_EN": 0,
+      "Audio_SPK_EN": 0,
+      "Timer_Range_MAX": 3,
+      "Upload_EN": 0
+    }
+  },
+  "properties": {
+    "Camera_Setting": {
+      "CAM_Mode": 0,
+      "CAM_ImageSize": "4M",
+      "Video_Size": "1080P/30FPS",
+      "Video_Bitrate_Value": 4000,
+      "Video_Length": 10
+    },
+    "PIR_Setting": {
+      "PIR_Mode": 1,
+      "PIR_Sensitivity": 2
+    },
+    "System_Setting": {
+      "Stamp": 1,
+      "Cycle": 1
+    }
+  }
+}

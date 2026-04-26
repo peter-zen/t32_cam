@@ -15,6 +15,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -88,6 +89,22 @@ def ensure_file(path: Path, description: str) -> Path:
 
 def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+
+@lru_cache(maxsize=None)
+def ffmpeg_has_filter(filter_name: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return False
+
+    token = f" {filter_name} "
+    return token in result.stdout or token in result.stderr
 
 
 def ffprobe_json(path: Path) -> dict:
@@ -266,13 +283,26 @@ def drawtext_filter(text: str, x: int, y: int, fontsize: int) -> str:
 def common_overlay_filters(label: str, subtitle: str, index: int) -> list[str]:
     accent_x = 40 + (index * 83) % 920
     accent_y = 130 + (index * 47) % 320
-    return [
+    filters = [
         f"drawbox=x=0:y=0:w=iw:h=96:color={choose_color(index)}@0.55:t=fill",
         f"drawbox=x={accent_x}:y={accent_y}:w=280:h=160:color={choose_color(index + 4)}@0.38:t=fill",
         "drawbox=x=18:y=622:w=1244:h=74:color=black@0.28:t=fill",
-        drawtext_filter(label, 46, 26, 42),
-        drawtext_filter(subtitle, 34, 644, 26),
     ]
+    if ffmpeg_has_filter("drawtext"):
+        filters += [
+            drawtext_filter(label, 46, 26, 42),
+            drawtext_filter(subtitle, 34, 644, 26),
+        ]
+    else:
+        stripe_w = 70 + (index * 19) % 110
+        stripe_h = 18 + (index * 7) % 16
+        stripe_x = 48 + (index * 29) % 980
+        filters += [
+            f"drawbox=x={stripe_x}:y=42:w={stripe_w}:h={stripe_h}:color={choose_color(index + 7)}@0.88:t=fill",
+            f"drawbox=x=34:y=642:w={220 + (index * 13) % 180}:h=22:color={choose_color(index + 9)}@0.65:t=fill",
+            f"drawbox=x=1202:y={146 + (index * 23) % 420}:w=22:h={96 + (index * 17) % 140}:color={choose_color(index + 2)}@0.72:t=fill",
+        ]
+    return filters
 
 
 def build_photo_filter(photo_index: int, global_index: int, timestamp_dt: datetime) -> str:

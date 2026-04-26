@@ -8,6 +8,7 @@
 #include "TcpEventService.h"
 #include "CameraPropertyService.h"
 #include "CameraServiceFactory.h"
+#include "CameraStatusService.h"
 #include "../../storage/DatabaseManager.h"
 #include "../../storage/MediaScanner.h"
 #include "../../storage/MetadataDao.h"
@@ -369,6 +370,10 @@ static std::shared_ptr<service::ICameraService> get_camera_service() {
 
 static service::CameraPropertyService& get_property_service() {
     return service::CameraPropertyService::getInstance();
+}
+
+static service::CameraStatusService& get_status_service() {
+    return service::CameraStatusService::getInstance();
 }
 
 static std::string get_filename(const std::string& path) {
@@ -1101,7 +1106,12 @@ static int api_v1_camera_files_download(struct mg_connection* conn, void* cbdata
 
 static int api_v1_camera_properties_get(struct mg_connection* conn, void* cbdata) {
     (void)cbdata;
-    send_success_response(conn, get_property_service().getAllPropertiesJson());
+    const struct mg_request_info* req_info = mg_get_request_info(conn);
+    std::string group = "all";
+    std::string include = "schema,value";
+    get_query_string_value(req_info, "group", group);
+    get_query_string_value(req_info, "include", include);
+    send_success_response(conn, get_property_service().getPropertiesJson(group, include));
     return 200;
 }
 
@@ -1178,6 +1188,158 @@ static int api_v1_camera_properties(struct mg_connection* conn, void* cbdata) {
     return 405;
 }
 
+static int api_v1_camera_properties_item(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/camera/properties/item")) {
+        return reject_unmatched_subpath(conn, "/api/v1/camera/properties/item");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "GET") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    const struct mg_request_info* req_info = mg_get_request_info(conn);
+    std::string name;
+    if (!get_query_string_value(req_info, "name", name) || name.empty()) {
+        send_http_error(conn, 400, "Missing name query");
+        return 400;
+    }
+
+    std::string include = "schema,value";
+    get_query_string_value(req_info, "include", include);
+
+    Json::Value data;
+    std::string error;
+    if (!get_property_service().getRegistryPropertyJson(name, data, include, &error)) {
+        send_http_error(conn, 404, error.empty() ? "Property not found" : error);
+        return 404;
+    }
+
+    send_success_response(conn, data);
+    return 200;
+}
+
+static int api_v1_camera_properties_set_one(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/camera/properties/set")) {
+        return reject_unmatched_subpath(conn, "/api/v1/camera/properties/set");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "POST") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    Json::Value req_json;
+    if (!parse_json_body(conn, req_json)) {
+        return 400;
+    }
+    if (!req_json.isMember("name") || !req_json["name"].isString() || !req_json.isMember("value")) {
+        send_http_error(conn, 400, "Missing name or value field");
+        return 400;
+    }
+
+    const std::string name = req_json["name"].asString();
+    Json::Value propertyJson;
+    std::string error;
+    int ret = get_property_service().setRegistryPropertyValue(name, req_json["value"], &propertyJson, &error);
+    if (ret == 0) {
+        Json::Value data(Json::objectValue);
+        data["name"] = propertyJson["name"];
+        data["raw_name"] = propertyJson["raw_name"];
+        data["value"] = propertyJson["value"];
+        data["updated"] = true;
+        send_success_response(conn, data);
+        return 200;
+    }
+
+    Json::Value root(Json::objectValue);
+    root["code"] = 400;
+    root["message"] = error.empty() ? "Failed to set property" : error;
+    Json::Value data(Json::objectValue);
+    data["name"] = name;
+    data["value"] = req_json["value"];
+    Json::Value detail;
+    if (get_property_service().getRegistryPropertyJson(name, detail, "schema,value", nullptr)) {
+        data["raw_name"] = detail["raw_name"];
+        if (detail.isMember("disabled_reason")) {
+            data["disabled_reason"] = detail["disabled_reason"];
+        }
+        append_property_constraints(detail, data);
+    }
+    root["data"] = data;
+    send_json_response(conn, 200, root);
+    return 200;
+}
+
+static int api_v1_camera_properties_factory_reset(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/camera/properties/factory-reset")) {
+        return reject_unmatched_subpath(conn, "/api/v1/camera/properties/factory-reset");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "POST") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    Json::Value req_json;
+    if (!parse_json_body(conn, req_json)) {
+        return 400;
+    }
+
+    std::string group = "all";
+    if (req_json.isMember("group")) {
+        if (!req_json["group"].isString()) {
+            send_http_error(conn, 400, "Invalid group field");
+            return 400;
+        }
+        group = req_json["group"].asString();
+    }
+
+    std::vector<std::string> names;
+    const Json::Value* namesJson = nullptr;
+    if (req_json.isMember("names")) {
+        namesJson = &req_json["names"];
+    } else if (req_json.isMember("properties")) {
+        namesJson = &req_json["properties"];
+    }
+
+    if (namesJson) {
+        if (!namesJson->isArray()) {
+            send_http_error(conn, 400, "Invalid names field");
+            return 400;
+        }
+        for (const auto& item : *namesJson) {
+            if (!item.isString()) {
+                send_http_error(conn, 400, "Invalid property name");
+                return 400;
+            }
+            names.push_back(item.asString());
+        }
+    }
+
+    Json::Value data(Json::objectValue);
+    std::string error;
+    get_property_service().resetFactoryProperties(group, names, data, &error);
+    send_success_response(conn, data);
+    return 200;
+}
+
+static int api_v1_camera_status(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/camera/status")) {
+        return reject_unmatched_subpath(conn, "/api/v1/camera/status");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "GET") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    std::string group = "all";
+    get_query_string_value(mg_get_request_info(conn), "group", group);
+    send_success_response(conn, get_status_service().getStatusJson(group));
+    return 200;
+}
+
 static int api_v1_camera_properties_reset(struct mg_connection* conn, void* cbdata) {
     (void)cbdata;
     if (!uri_equals(conn, "/api/v1/camera/properties/reset")) {
@@ -1221,8 +1383,17 @@ static int api_v1_camera_properties_single(struct mg_connection* conn, void* cbd
     std::string uri = req_info->local_uri;
     const std::string prefix = "/api/v1/camera/properties/";
 
+    if (uri == "/api/v1/camera/properties/factory-reset") {
+        return api_v1_camera_properties_factory_reset(conn, cbdata);
+    }
     if (uri == "/api/v1/camera/properties/reset") {
         return api_v1_camera_properties_reset(conn, cbdata);
+    }
+    if (uri == "/api/v1/camera/properties/item") {
+        return api_v1_camera_properties_item(conn, cbdata);
+    }
+    if (uri == "/api/v1/camera/properties/set") {
+        return api_v1_camera_properties_set_one(conn, cbdata);
     }
     if (uri == "/api/v1/camera/properties") {
         return api_v1_camera_properties(conn, cbdata);
@@ -1540,7 +1711,9 @@ extern "C" void http_api_register_v1(struct mg_context* ctx) {
     mg_set_request_handler(ctx, "/api/v1/camera/video/list", api_v1_camera_video_list, NULL);
 
     mg_set_request_handler(ctx, "/api/v1/camera/properties/reset", api_v1_camera_properties_reset, NULL);
+    mg_set_request_handler(ctx, "/api/v1/camera/properties/factory-reset", api_v1_camera_properties_factory_reset, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/properties", api_v1_camera_properties_single, NULL);
+    mg_set_request_handler(ctx, "/api/v1/camera/status", api_v1_camera_status, NULL);
 
     mg_set_request_handler(ctx, "/api/v1/camera/presets", api_v1_camera_presets, NULL);
 

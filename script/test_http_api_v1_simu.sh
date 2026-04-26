@@ -213,7 +213,31 @@ expect_contains "POST /api/v1/storage/format status" "$resp" '"status":"schedule
 
 resp="$(call_get "/api/v1/camera/properties")"
 expect_contains "GET /api/v1/camera/properties code" "$resp" '"code":0'
-expect_contains "GET /api/v1/camera/properties resolution" "$resp" '"resolution"'
+expect_contains "GET /api/v1/camera/properties group" "$resp" '"Camera_Setting"'
+expect_contains "GET /api/v1/camera/properties ordered array" "$resp" '"properties":[{"group":"Camera_Setting"'
+expect_contains "GET /api/v1/camera/properties ordered timer" "$resp" '{"group":"Timer_Setting","items"'
+
+resp="$(call_get "/api/v1/camera/properties?group=Camera_Setting")"
+expect_contains "GET /api/v1/camera/properties group code" "$resp" '"code":0'
+expect_contains "GET /api/v1/camera/properties group raw name" "$resp" '"raw_name":"CAM_Mode"'
+
+resp="$(call_get "/api/v1/camera/properties/item?name=CAM_%20Ffixed_Shutter")"
+expect_contains "GET /api/v1/camera/properties/item code" "$resp" '"code":0'
+expect_contains "GET /api/v1/camera/properties/item raw name" "$resp" '"raw_name":"CAM_ Ffixed_Shutter"'
+
+resp="$(call_post "/api/v1/camera/properties/set" '{"name":"CAM_Mode","value":1}')"
+expect_contains "POST /api/v1/camera/properties/set code" "$resp" '"code":0'
+expect_contains "POST /api/v1/camera/properties/set updated" "$resp" '"updated":true'
+
+resp="$(call_post "/api/v1/camera/properties/factory-reset" '{"names":["CAM_Mode","CAM_ Ffixed_Shutter"]}')"
+expect_contains "POST /api/v1/camera/properties/factory-reset code" "$resp" '"code":0'
+expect_contains "POST /api/v1/camera/properties/factory-reset applied" "$resp" '"applied":1'
+expect_contains "POST /api/v1/camera/properties/factory-reset skipped" "$resp" '"skipped":1'
+
+resp="$(call_get "/api/v1/camera/status?group=all")"
+expect_contains "GET /api/v1/camera/status all code" "$resp" '"code":0'
+expect_contains "GET /api/v1/camera/status all device" "$resp" '"device"'
+expect_contains "GET /api/v1/camera/status all placeholder" "$resp" '"available":false'
 
 resp="$(call_get "/api/v1/camera/properties/resolution")"
 expect_contains "GET /api/v1/camera/properties/resolution name" "$resp" '"name":"resolution"'

@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <set>
 #include <sstream>
 
@@ -50,6 +52,66 @@ std::vector<std::string> buildPropertyNames() {
         "max_record_duration",
         "timestamp_overlay",
     };
+}
+
+std::string toLowerCopy(const std::string& value) {
+    std::string lowered = value;
+    std::transform(lowered.begin(),
+                   lowered.end(),
+                   lowered.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return lowered;
+}
+
+bool equalsIgnoreCase(const std::string& lhs, const std::string& rhs) {
+    return toLowerCopy(lhs) == toLowerCopy(rhs);
+}
+
+bool includeTokenEnabled(const std::string& include, const std::string& token) {
+    if (include.empty()) {
+        return true;
+    }
+
+    std::stringstream ss(include);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        item.erase(std::remove_if(item.begin(),
+                                  item.end(),
+                                  [](unsigned char ch) { return std::isspace(ch) != 0; }),
+                   item.end());
+        if (item == "all" || item == token) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const std::vector<std::string>& specPropertyGroupOrder() {
+    static const std::vector<std::string> order = {
+        "Camera_Setting",
+        "Audio_Setting",
+        "PIR_Setting",
+        "Timer_Setting",
+        "Network_Setting",
+        "Server_Setting",
+        "System_Setting",
+        "AI_Setting",
+    };
+    return order;
+}
+
+std::string canonicalPropertyGroup(const std::string& requestedGroup) {
+    for (const auto& group : specPropertyGroupOrder()) {
+        if (equalsIgnoreCase(group, requestedGroup)) {
+            return group;
+        }
+    }
+    return requestedGroup;
+}
+
+bool isWritableRegistryStorage(const ParameterDefinition& definition) {
+    return definition.storage.kind == ParameterStorageKind::SETTINGS ||
+           definition.storage.kind == ParameterStorageKind::DEVICE_CONFIG;
 }
 
 std::string resolutionToString(int width, int height) {
@@ -140,6 +202,42 @@ std::string jsonValueToString(const Json::Value& value) {
     Json::StreamWriterBuilder writer;
     writer["indentation"] = "";
     return Json::writeString(writer, value);
+}
+
+Json::Value settingByte(uint8_t value) {
+    return Json::Value(static_cast<int>(value));
+}
+
+std::string formatTime(uint8_t hour, uint8_t minute) {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%02u:%02u", static_cast<unsigned>(hour), static_cast<unsigned>(minute));
+    return std::string(buf);
+}
+
+bool parseTimeValue(const Json::Value& value, uint8_t& hour, uint8_t& minute) {
+    if (!value.isString()) {
+        return false;
+    }
+
+    const std::string text = value.asString();
+    const size_t pos = text.find(':');
+    if (pos == std::string::npos) {
+        return false;
+    }
+
+    int parsedHour = 0;
+    int parsedMinute = 0;
+    if (!parseIntString(text.substr(0, pos), parsedHour) ||
+        !parseIntString(text.substr(pos + 1), parsedMinute)) {
+        return false;
+    }
+    if (parsedHour < 0 || parsedHour > 23 || parsedMinute < 0 || parsedMinute > 59) {
+        return false;
+    }
+
+    hour = static_cast<uint8_t>(parsedHour);
+    minute = static_cast<uint8_t>(parsedMinute);
+    return true;
 }
 
 void appendVideoMode(std::vector<VideoMode>& modes, int width, int height, int fps) {
@@ -310,6 +408,69 @@ void writeVideoLengthSeconds(int seconds) {
     settings->videoLength_l = static_cast<uint8_t>(seconds & 0xFF);
 }
 
+std::string videoModeToSpecString(const VideoMode& mode) {
+    if (mode.width >= 3840 || mode.height >= 2160) {
+        return "4K/" + std::to_string(mode.fps) + "FPS";
+    }
+    if (mode.width >= 2560 || mode.height >= 1440) {
+        return "2K/" + std::to_string(mode.fps) + "FPS";
+    }
+    if (mode.width >= 1920 || mode.height >= 1080) {
+        return "1080P/" + std::to_string(mode.fps) + "FPS";
+    }
+    return "720P/" + std::to_string(mode.fps) + "FPS";
+}
+
+bool parseSpecVideoMode(const std::string& value, int& width, int& height, int& fps) {
+    const size_t slash = value.find('/');
+    const size_t fpsPos = value.find("FPS", slash == std::string::npos ? 0 : slash);
+    if (slash == std::string::npos || fpsPos == std::string::npos) {
+        return false;
+    }
+
+    const std::string size = value.substr(0, slash);
+    if (size == "4K") {
+        width = 3840;
+        height = 2160;
+    } else if (size == "2K") {
+        width = 2560;
+        height = 1440;
+    } else if (size == "1080P") {
+        width = 1920;
+        height = 1080;
+    } else if (size == "720P") {
+        width = 1280;
+        height = 720;
+    } else {
+        return false;
+    }
+
+    return parseIntString(value.substr(slash + 1, fpsPos - slash - 1), fps);
+}
+
+Json::Value storageBindingToJson(const ParameterStorageBinding& storage) {
+    Json::Value root(Json::objectValue);
+    root["kind"] = parameterStorageKindToString(storage.kind);
+    if (!storage.section.empty()) {
+        root["section"] = storage.section;
+    }
+    if (!storage.key.empty()) {
+        root["key"] = storage.key;
+    }
+    if (!storage.member.empty()) {
+        root["member"] = storage.member;
+    }
+    return root;
+}
+
+Json::Value rangeToJson(const ParameterRange& range) {
+    Json::Value root(Json::objectValue);
+    root["min"] = range.min;
+    root["max"] = range.max;
+    root["step"] = range.step;
+    return root;
+}
+
 } // namespace
 
 CameraPropertyService& CameraPropertyService::getInstance() {
@@ -321,9 +482,14 @@ std::vector<std::string> CameraPropertyService::getPropertyNames() const {
     return buildPropertyNames();
 }
 
-bool CameraPropertyService::hasProperty(const std::string& name) const {
+bool CameraPropertyService::hasLegacyProperty(const std::string& name) const {
     const auto propertyNames = buildPropertyNames();
     return std::find(propertyNames.begin(), propertyNames.end(), name) != propertyNames.end();
+}
+
+bool CameraPropertyService::hasProperty(const std::string& name) const {
+    return hasLegacyProperty(name) ||
+           findParameterDefinition(name, ParameterClassification::PROPERTY, true) != nullptr;
 }
 
 CameraPropertySchema CameraPropertyService::buildSchema(const std::string& name) const {
@@ -506,6 +672,196 @@ Json::Value CameraPropertyService::buildPropertyJson(const std::string& name, bo
     return property;
 }
 
+Json::Value CameraPropertyService::readRegistryValue(const ParameterDefinition& definition) const {
+    Settings* settings = Settings::getInstance().get();
+
+    if (definition.storage.kind == ParameterStorageKind::DEVICE_CONFIG) {
+        DeviceConfig* deviceConfig = DeviceConfig::getInstance().get();
+        if (definition.type == ParameterValueType::NUMBER || definition.type == ParameterValueType::BOOLEAN) {
+            return deviceConfig->get(definition.storage.section,
+                                     definition.storage.key,
+                                     definition.defaultValue.isInt() ? definition.defaultValue.asInt() : 0);
+        }
+        return deviceConfig->get(definition.storage.section,
+                                 definition.storage.key,
+                                 definition.defaultValue.isString() ? definition.defaultValue.asString()
+                                                                    : jsonValueToString(definition.defaultValue));
+    }
+
+    if (definition.storage.kind == ParameterStorageKind::COMPUTED) {
+        if (definition.storage.member == "fw_version") {
+#ifdef CAMERA_VERSION
+            return Json::Value(CAMERA_VERSION);
+#else
+            return definition.defaultValue;
+#endif
+        }
+        return definition.defaultValue;
+    }
+
+    if (definition.storage.kind != ParameterStorageKind::SETTINGS) {
+        return definition.defaultValue;
+    }
+
+    const std::string& member = definition.storage.member;
+    if (member == "cameraMode") return settingByte(settings->cameraMode);
+    if (member == "stillSize") {
+        static const char* imageSizes[] = {"2M", "4M", "6M", "8M", "16M", "24M", "32M", "42M"};
+        int index = static_cast<int>(settings->stillSize);
+        if (index >= 0 && index < static_cast<int>(sizeof(imageSizes) / sizeof(imageSizes[0]))) {
+            return Json::Value(imageSizes[index]);
+        }
+        return definition.defaultValue;
+    }
+    if (member == "burstNumber") return settingByte(settings->burstNumber);
+    if (member == "videoSize") {
+        const std::vector<VideoMode> modes = buildSupportedVideoModes();
+        return Json::Value(videoModeToSpecString(getCurrentVideoMode(modes)));
+    }
+    if (member == "bitrate") {
+        const std::vector<VideoMode> modes = buildSupportedVideoModes();
+        return currentBitrateKbpsForMode(getCurrentVideoMode(modes));
+    }
+    if (member == "videoLength") return currentVideoLengthSeconds();
+    if (member == "pirEn") return settingByte(settings->pirEn);
+    if (member == "ckPirSensitivity") return settingByte(settings->ckPirSensitivity);
+    if (member == "shootingLimits") return settingByte(settings->shootingLimits);
+    if (member == "timerEn") return settingByte(settings->timerEn);
+    if (member == "timer1s") return Json::Value(formatTime(settings->timer1s_h, settings->timer1s_m));
+    if (member == "timer1e") return Json::Value(formatTime(settings->timer1e_h, settings->timer1e_m));
+    if (member == "timer2s") return Json::Value(formatTime(settings->timer2s_h, settings->timer2s_m));
+    if (member == "timer2e") return Json::Value(formatTime(settings->timer2e_h, settings->timer2e_m));
+    if (member == "timer3s") return Json::Value(formatTime(settings->timer3s_h, settings->timer3s_m));
+    if (member == "timer3e") return Json::Value(formatTime(settings->timer3e_h, settings->timer3e_m));
+    if (member == "weekRepeats") return Json::Value(std::to_string(static_cast<int>(settings->weekRepeats)));
+    if (member == "stampEn") return settingByte(settings->stampEn);
+    if (member == "autoCover") return settingByte(settings->autoCover);
+    if (member == "heartRate") {
+        int value = (static_cast<int>(settings->heartRate_0) << 24) |
+                    (static_cast<int>(settings->heartRate_1) << 16) |
+                    (static_cast<int>(settings->heartRate_2) << 8) |
+                    static_cast<int>(settings->heartRate_3);
+        return value;
+    }
+    if (member == "remote_wakeup") return settingByte(settings->remote_wakeup);
+    if (member == "devName") return Json::Value(std::string(settings->devName));
+    if (member == "duid") return Json::Value(settings->duid);
+
+    return definition.defaultValue;
+}
+
+bool CameraPropertyService::isParameterEnabled(const ParameterDefinition& definition,
+                                               std::string* disabledReason) const {
+    if (definition.dependency.switchName.empty()) {
+        return true;
+    }
+
+    const ParameterDefinition* dependency = findAnyParameterDefinition(definition.dependency.switchName, false);
+    if (!dependency) {
+        if (disabledReason) {
+            *disabledReason = "Dependency switch not found: " + definition.dependency.switchName;
+        }
+        return false;
+    }
+
+    const Json::Value value = readRegistryValue(*dependency);
+    int intValue = 0;
+    if (!parseIntValue(value, intValue)) {
+        if (disabledReason) {
+            *disabledReason = "Dependency switch is not numeric: " + definition.dependency.switchName;
+        }
+        return false;
+    }
+
+    bool enabled = false;
+    if (definition.dependency.switchName == "Timer_Range_MAX") {
+        if (definition.rawName.find("Timer_4") != std::string::npos) {
+            enabled = intValue >= 4;
+        } else if (definition.rawName.find("Timer_5") != std::string::npos) {
+            enabled = intValue >= 5;
+        } else {
+            enabled = true;
+        }
+    } else {
+        enabled = intValue == definition.dependency.expectedValue;
+    }
+
+    if (!enabled && disabledReason) {
+        *disabledReason = definition.dependency.disabledReason.empty()
+                              ? ("Disabled by " + definition.dependency.switchName)
+                              : definition.dependency.disabledReason;
+    }
+    return enabled;
+}
+
+Json::Value CameraPropertyService::buildRegistryPropertyJson(const ParameterDefinition& definition,
+                                                             bool includeSchema,
+                                                             bool includeValue) const {
+    Json::Value property(Json::objectValue);
+    property["id"] = definition.id;
+    property["name"] = definition.rawName;
+    property["raw_name"] = definition.rawName;
+    property["group"] = definition.group;
+    property["classification"] = parameterClassificationToString(definition.classification);
+    property["chapter"] = definition.chapter;
+    property["source"] = parameterAvailabilityToString(definition.availability);
+
+    std::string disabledReason;
+    const bool enabled = isParameterEnabled(definition, &disabledReason);
+    property["enabled"] = enabled;
+    if (!enabled) {
+        property["disabled_reason"] = disabledReason;
+    }
+
+    if (includeSchema) {
+        property["display_name"] = definition.displayName;
+        property["type"] = parameterValueTypeToString(definition.type);
+        property["permission"] = parameterPermissionToString(definition.permission);
+        property["readonly"] = definition.permission == ParameterPermission::READ ||
+                               definition.permission == ParameterPermission::FACTORY ||
+                               definition.permission == ParameterPermission::COMMAND;
+        property["default"] = definition.defaultValue;
+        property["default_value"] = definition.defaultValue;
+        property["storage_binding"] = storageBindingToJson(definition.storage);
+        if (!definition.legacyAliases.empty()) {
+            Json::Value aliases(Json::arrayValue);
+            for (const auto& alias : definition.legacyAliases) {
+                aliases.append(alias);
+            }
+            property["legacy_aliases"] = aliases;
+        }
+        if (!definition.options.empty()) {
+            Json::Value options(Json::arrayValue);
+            for (const auto& option : definition.options) {
+                options.append(option);
+            }
+            property["options"] = options;
+        }
+        if (definition.range.enabled) {
+            property["range"] = rangeToJson(definition.range);
+            property["min"] = definition.range.min;
+            property["max"] = definition.range.max;
+            property["step"] = definition.range.step;
+        }
+        if (!definition.unit.empty()) {
+            property["unit"] = definition.unit;
+        }
+        if (!definition.dependency.switchName.empty()) {
+            Json::Value dependency(Json::objectValue);
+            dependency["switch"] = definition.dependency.switchName;
+            dependency["expected"] = definition.dependency.expectedValue;
+            dependency["disabled_reason"] = definition.dependency.disabledReason;
+            property["dependency"] = dependency;
+        }
+    }
+
+    if (includeValue) {
+        property["value"] = readRegistryValue(definition);
+    }
+
+    return property;
+}
+
 Json::Value CameraPropertyService::getAllPropertiesJson() const {
     Json::Value root(Json::objectValue);
     for (const auto& name : buildPropertyNames()) {
@@ -514,31 +870,103 @@ Json::Value CameraPropertyService::getAllPropertiesJson() const {
     return root;
 }
 
+Json::Value CameraPropertyService::getPropertiesJson(const std::string& group,
+                                                     const std::string& include) const {
+    const bool includeSchema = includeTokenEnabled(include, "schema");
+    const bool includeValue = includeTokenEnabled(include, "value");
+    const std::string requestedGroup = group.empty() ? "all" : group;
+    const bool includeAllGroups = requestedGroup == "all";
+
+    Json::Value root(Json::objectValue);
+    root["group"] = requestedGroup;
+    root["include_schema"] = includeSchema;
+    root["include_value"] = includeValue;
+
+    Json::Value orderedProperties(Json::arrayValue);
+    int count = 0;
+
+    std::vector<std::string> selectedGroups;
+    if (includeAllGroups) {
+        selectedGroups = specPropertyGroupOrder();
+    } else {
+        selectedGroups.push_back(canonicalPropertyGroup(requestedGroup));
+    }
+
+    for (const auto& currentGroup : selectedGroups) {
+        Json::Value properties(Json::arrayValue);
+        for (const auto& definition : getCameraParameterDefinitions()) {
+            if (definition.classification != ParameterClassification::PROPERTY ||
+                !equalsIgnoreCase(definition.group, currentGroup)) {
+                continue;
+            }
+
+            properties.append(buildRegistryPropertyJson(definition, includeSchema, includeValue));
+            count++;
+        }
+
+        if (!properties.empty()) {
+            Json::Value groupEntry(Json::objectValue);
+            groupEntry["group"] = currentGroup;
+            groupEntry["items"] = properties;
+            orderedProperties.append(groupEntry);
+        }
+    }
+
+    root["count"] = count;
+    root["properties"] = orderedProperties;
+    return root;
+}
+
 bool CameraPropertyService::getPropertyJson(const std::string& name,
                                             Json::Value& outProperty,
                                             std::string* error) const {
-    if (!hasProperty(name)) {
+    if (hasLegacyProperty(name)) {
+        outProperty = buildPropertyJson(name, true);
+        return true;
+    }
+
+    if (!getRegistryPropertyJson(name, outProperty, "schema,value", error)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool CameraPropertyService::getRegistryPropertyJson(const std::string& name,
+                                                    Json::Value& outProperty,
+                                                    const std::string& include,
+                                                    std::string* error) const {
+    const ParameterDefinition* definition = findParameterDefinition(name, ParameterClassification::PROPERTY, true);
+    if (!definition) {
         if (error) {
             *error = "Property not found";
         }
         return false;
     }
 
-    outProperty = buildPropertyJson(name, true);
+    outProperty = buildRegistryPropertyJson(*definition,
+                                            includeTokenEnabled(include, "schema"),
+                                            includeTokenEnabled(include, "value"));
     return true;
 }
 
 int CameraPropertyService::getPropertyValueString(const std::string& name,
                                                   std::string& value,
                                                   std::string* error) const {
-    if (!hasProperty(name)) {
+    if (hasLegacyProperty(name)) {
+        value = jsonValueToString(readValue(name));
+        return 0;
+    }
+
+    const ParameterDefinition* definition = findParameterDefinition(name, ParameterClassification::PROPERTY, true);
+    if (!definition) {
         if (error) {
             *error = "Property not found";
         }
         return -1;
     }
 
-    value = jsonValueToString(readValue(name));
+    value = jsonValueToString(readRegistryValue(*definition));
     return 0;
 }
 
@@ -603,6 +1031,94 @@ bool CameraPropertyService::validateValue(const CameraPropertySchema& schema,
 
     if (!schema.options.empty()) {
         for (const auto& option : schema.options) {
+            if (option.isString() && option.asString() == parsed) {
+                normalized = parsed;
+                return true;
+            }
+        }
+        error = "Invalid value";
+        return false;
+    }
+
+    normalized = parsed;
+    return true;
+}
+
+bool CameraPropertyService::validateRegistryValue(const ParameterDefinition& definition,
+                                                  const Json::Value& value,
+                                                  Json::Value& normalized,
+                                                  std::string& error,
+                                                  bool enforceEnabled) const {
+    if (definition.permission == ParameterPermission::READ ||
+        definition.permission == ParameterPermission::FACTORY ||
+        definition.permission == ParameterPermission::COMMAND) {
+        error = "Property is readonly";
+        return false;
+    }
+
+    if (enforceEnabled) {
+        std::string disabledReason;
+        if (!isParameterEnabled(definition, &disabledReason)) {
+            error = "Property disabled: " + disabledReason;
+            return false;
+        }
+    }
+
+    if (definition.type == ParameterValueType::BOOLEAN) {
+        bool parsed = false;
+        if (!parseBoolValue(value, parsed)) {
+            error = "Invalid boolean value";
+            return false;
+        }
+        normalized = parsed;
+        return true;
+    }
+
+    if (definition.type == ParameterValueType::NUMBER) {
+        int parsed = 0;
+        if (!parseIntValue(value, parsed)) {
+            error = "Invalid integer value";
+            return false;
+        }
+
+        if (!definition.options.empty()) {
+            for (const auto& option : definition.options) {
+                if (option.isInt() && option.asInt() == parsed) {
+                    normalized = parsed;
+                    return true;
+                }
+            }
+            error = "Invalid value";
+            return false;
+        }
+
+        if (definition.range.enabled) {
+            if (parsed < definition.range.min || parsed > definition.range.max) {
+                error = "Value out of range";
+                return false;
+            }
+            if (((parsed - definition.range.min) % definition.range.step) != 0) {
+                error = "Value does not match step";
+                return false;
+            }
+        }
+
+        normalized = parsed;
+        return true;
+    }
+
+    if (definition.type == ParameterValueType::STRING_ARRAY) {
+        if (!value.isArray()) {
+            error = "Invalid array value";
+            return false;
+        }
+        normalized = value;
+        return true;
+    }
+
+    std::string parsed = value.isString() ? value.asString() : jsonValueToString(value);
+    if (!definition.options.empty()) {
+        for (const auto& option : definition.options) {
             if (option.isString() && option.asString() == parsed) {
                 normalized = parsed;
                 return true;
@@ -694,6 +1210,167 @@ int CameraPropertyService::writeValue(const std::string& name, const Json::Value
     return 0;
 }
 
+int CameraPropertyService::writeRegistryValue(const ParameterDefinition& definition,
+                                              const Json::Value& normalized,
+                                              std::string* error) {
+    if (definition.storage.kind == ParameterStorageKind::PLACEHOLDER ||
+        definition.storage.kind == ParameterStorageKind::COMPUTED ||
+        definition.storage.kind == ParameterStorageKind::COMMAND ||
+        definition.storage.kind == ParameterStorageKind::NONE) {
+        if (error) {
+            *error = "Storage binding is not implemented in first pass";
+        }
+        return -1;
+    }
+
+    if (definition.storage.kind == ParameterStorageKind::DEVICE_CONFIG) {
+        auto deviceConfig = DeviceConfig::getInstance();
+        if (definition.type == ParameterValueType::NUMBER || definition.type == ParameterValueType::BOOLEAN) {
+            int value = 0;
+            if (!parseIntValue(normalized, value)) {
+                if (error) {
+                    *error = "Invalid integer value";
+                }
+                return -1;
+            }
+            deviceConfig->set(definition.storage.section, definition.storage.key, value);
+        } else {
+            deviceConfig->set(definition.storage.section, definition.storage.key, normalized.asString());
+        }
+
+        if (!persistDeviceConfig()) {
+            if (error) {
+                *error = "Failed to persist device config";
+            }
+            return -1;
+        }
+        return 0;
+    }
+
+    Settings* settings = Settings::getInstance().get();
+    const std::string& member = definition.storage.member;
+
+    if (member == "cameraMode") {
+        settings->cameraMode = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "stillSize") {
+        static const char* imageSizes[] = {"2M", "4M", "6M", "8M", "16M", "24M", "32M", "42M"};
+        int index = -1;
+        for (int i = 0; i < static_cast<int>(sizeof(imageSizes) / sizeof(imageSizes[0])); ++i) {
+            if (normalized.asString() == imageSizes[i]) {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0) {
+            if (error) {
+                *error = "Unsupported image size";
+            }
+            return -1;
+        }
+        settings->stillSize = static_cast<uint8_t>(index);
+    } else if (member == "burstNumber") {
+        settings->burstNumber = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "videoSize") {
+        int width = 0;
+        int height = 0;
+        int fps = 0;
+        if (!parseSpecVideoMode(normalized.asString(), width, height, fps)) {
+            if (error) {
+                *error = "Invalid video size";
+            }
+            return -1;
+        }
+        const std::vector<VideoMode> modes = buildSupportedVideoModes();
+        const VideoMode* targetMode = findModeByResolutionFps(modes, width, height, fps);
+        if (!targetMode) {
+            if (error) {
+                *error = "Unsupported video size";
+            }
+            return -1;
+        }
+        settings->videoSize = static_cast<uint8_t>(targetMode->index);
+    } else if (member == "bitrate") {
+        const std::vector<VideoMode> modes = buildSupportedVideoModes();
+        writeBitrateForMode(getCurrentVideoMode(modes), normalized.asInt());
+    } else if (member == "videoLength") {
+        writeVideoLengthSeconds(normalized.asInt());
+    } else if (member == "pirEn") {
+        settings->pirEn = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "ckPirSensitivity") {
+        settings->ckPirSensitivity = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "shootingLimits") {
+        settings->shootingLimits = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "timerEn") {
+        settings->timerEn = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "timer1s") {
+        if (!parseTimeValue(normalized, settings->timer1s_h, settings->timer1s_m)) {
+            if (error) *error = "Invalid time value";
+            return -1;
+        }
+    } else if (member == "timer1e") {
+        if (!parseTimeValue(normalized, settings->timer1e_h, settings->timer1e_m)) {
+            if (error) *error = "Invalid time value";
+            return -1;
+        }
+    } else if (member == "timer2s") {
+        if (!parseTimeValue(normalized, settings->timer2s_h, settings->timer2s_m)) {
+            if (error) *error = "Invalid time value";
+            return -1;
+        }
+    } else if (member == "timer2e") {
+        if (!parseTimeValue(normalized, settings->timer2e_h, settings->timer2e_m)) {
+            if (error) *error = "Invalid time value";
+            return -1;
+        }
+    } else if (member == "timer3s") {
+        if (!parseTimeValue(normalized, settings->timer3s_h, settings->timer3s_m)) {
+            if (error) *error = "Invalid time value";
+            return -1;
+        }
+    } else if (member == "timer3e") {
+        if (!parseTimeValue(normalized, settings->timer3e_h, settings->timer3e_m)) {
+            if (error) *error = "Invalid time value";
+            return -1;
+        }
+    } else if (member == "weekRepeats") {
+        int value = 0;
+        if (!parseIntValue(normalized, value)) {
+            if (error) *error = "Invalid repeat value";
+            return -1;
+        }
+        settings->weekRepeats = static_cast<uint8_t>(value);
+    } else if (member == "stampEn") {
+        settings->stampEn = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "autoCover") {
+        settings->autoCover = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "heartRate") {
+        int value = normalized.asInt();
+        settings->heartRate_0 = static_cast<uint8_t>((value >> 24) & 0xFF);
+        settings->heartRate_1 = static_cast<uint8_t>((value >> 16) & 0xFF);
+        settings->heartRate_2 = static_cast<uint8_t>((value >> 8) & 0xFF);
+        settings->heartRate_3 = static_cast<uint8_t>(value & 0xFF);
+    } else if (member == "remote_wakeup") {
+        settings->remote_wakeup = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "devName") {
+        std::strncpy(settings->devName, normalized.asString().c_str(), sizeof(settings->devName) - 1);
+        settings->devName[sizeof(settings->devName) - 1] = '\0';
+    } else {
+        if (error) {
+            *error = "Storage binding is not implemented in first pass";
+        }
+        return -1;
+    }
+
+    if (!persistSettings()) {
+        if (error) {
+            *error = "Failed to persist settings";
+        }
+        return -1;
+    }
+
+    return 0;
+}
+
 bool CameraPropertyService::persistSettings() const {
     std::string settingFilePath = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", "");
     if (settingFilePath.empty()) {
@@ -724,11 +1401,8 @@ int CameraPropertyService::setPropertyValue(const std::string& name,
                                             const Json::Value& value,
                                             Json::Value* outProperty,
                                             std::string* error) {
-    if (!hasProperty(name)) {
-        if (error) {
-            *error = "Property not found";
-        }
-        return -1;
+    if (!hasLegacyProperty(name)) {
+        return setRegistryPropertyValue(name, value, outProperty, error);
     }
 
     const CameraPropertySchema schema = buildSchema(name);
@@ -744,6 +1418,34 @@ int CameraPropertyService::setPropertyValue(const std::string& name,
     int ret = writeValue(name, normalized, error);
     if (ret == 0 && outProperty) {
         *outProperty = buildPropertyJson(name, true);
+    }
+    return ret;
+}
+
+int CameraPropertyService::setRegistryPropertyValue(const std::string& name,
+                                                    const Json::Value& value,
+                                                    Json::Value* outProperty,
+                                                    std::string* error) {
+    const ParameterDefinition* definition = findParameterDefinition(name, ParameterClassification::PROPERTY, true);
+    if (!definition) {
+        if (error) {
+            *error = "Property not found";
+        }
+        return -1;
+    }
+
+    Json::Value normalized;
+    std::string validateError;
+    if (!validateRegistryValue(*definition, value, normalized, validateError)) {
+        if (error) {
+            *error = validateError;
+        }
+        return -1;
+    }
+
+    int ret = writeRegistryValue(*definition, normalized, error);
+    if (ret == 0 && outProperty) {
+        *outProperty = buildRegistryPropertyJson(*definition, true, true);
     }
     return ret;
 }
@@ -780,7 +1482,176 @@ int CameraPropertyService::resetProperties(const std::vector<std::string>& names
         resetCount++;
     }
 
+    if (!names.empty()) {
+        for (const auto& name : names) {
+            if (hasLegacyProperty(name)) {
+                continue;
+            }
+
+            const ParameterDefinition* definition = findParameterDefinition(name, ParameterClassification::PROPERTY, true);
+            if (!definition) {
+                if (error) {
+                    *error = "Property not found";
+                }
+                return -1;
+            }
+
+            Json::Value propertyJson;
+            std::string localError;
+            if (setRegistryPropertyValue(name, definition->defaultValue, &propertyJson, &localError) != 0) {
+                if (error) {
+                    *error = localError;
+                }
+                return -1;
+            }
+            appliedProperties[definition->rawName] = propertyJson["value"];
+            resetCount++;
+        }
+    }
+
     return resetCount;
+}
+
+int CameraPropertyService::resetFactoryProperties(const std::string& group,
+                                                  const std::vector<std::string>& names,
+                                                  Json::Value& result,
+                                                  std::string* error) {
+    const std::string requestedGroup = group.empty() ? "all" : group;
+    const std::string selectedGroup = requestedGroup == "all" ? "all" : canonicalPropertyGroup(requestedGroup);
+
+    result = Json::Value(Json::objectValue);
+    result["group"] = selectedGroup;
+
+    Json::Value results(Json::arrayValue);
+    std::vector<const ParameterDefinition*> targets;
+    std::set<std::string> seenTargets;
+    int applied = 0;
+    int skipped = 0;
+    int failed = 0;
+
+    auto appendTarget = [&](const ParameterDefinition& definition) {
+        if (definition.classification != ParameterClassification::PROPERTY) {
+            return;
+        }
+        if (seenTargets.insert(definition.id).second) {
+            targets.push_back(&definition);
+        }
+    };
+
+    auto appendMissing = [&](const std::string& name, const std::string& reason) {
+        Json::Value item(Json::objectValue);
+        item["name"] = name;
+        item["status"] = "failed";
+        item["reason"] = reason;
+        results.append(item);
+        failed++;
+    };
+
+    if (names.empty()) {
+        if (selectedGroup == "all") {
+            for (const auto& currentGroup : specPropertyGroupOrder()) {
+                for (const auto& definition : getCameraParameterDefinitions()) {
+                    if (definition.classification == ParameterClassification::PROPERTY &&
+                        equalsIgnoreCase(definition.group, currentGroup)) {
+                        appendTarget(definition);
+                    }
+                }
+            }
+        } else {
+            for (const auto& definition : getCameraParameterDefinitions()) {
+                if (definition.classification == ParameterClassification::PROPERTY &&
+                    equalsIgnoreCase(definition.group, selectedGroup)) {
+                    appendTarget(definition);
+                }
+            }
+        }
+    } else {
+        for (const auto& name : names) {
+            if (name.empty()) {
+                appendMissing(name, "empty_name");
+                continue;
+            }
+
+            const ParameterDefinition* definition = findParameterDefinition(name,
+                                                                            ParameterClassification::PROPERTY,
+                                                                            true);
+            if (!definition) {
+                appendMissing(name, "property_not_found");
+                continue;
+            }
+            appendTarget(*definition);
+        }
+    }
+
+    for (const auto* definition : targets) {
+        Json::Value item(Json::objectValue);
+        item["id"] = definition->id;
+        item["name"] = definition->rawName;
+        item["raw_name"] = definition->rawName;
+        item["group"] = definition->group;
+        item["default_value"] = definition->defaultValue;
+        item["storage_kind"] = parameterStorageKindToString(definition->storage.kind);
+
+        if (definition->permission == ParameterPermission::READ ||
+            definition->permission == ParameterPermission::FACTORY ||
+            definition->permission == ParameterPermission::COMMAND) {
+            item["status"] = "skipped";
+            item["reason"] = "readonly";
+            skipped++;
+            results.append(item);
+            continue;
+        }
+
+        if (!isWritableRegistryStorage(*definition)) {
+            item["status"] = "skipped";
+            item["reason"] = "storage_not_implemented";
+            skipped++;
+            results.append(item);
+            continue;
+        }
+
+        Json::Value normalized;
+        std::string validateError;
+        if (!validateRegistryValue(*definition,
+                                   definition->defaultValue,
+                                   normalized,
+                                   validateError,
+                                   false)) {
+            item["status"] = "failed";
+            item["reason"] = "validation_failed";
+            item["error"] = validateError;
+            failed++;
+            results.append(item);
+            continue;
+        }
+
+        std::string writeError;
+        if (writeRegistryValue(*definition, normalized, &writeError) != 0) {
+            item["status"] = "failed";
+            item["reason"] = "write_failed";
+            item["error"] = writeError.empty() ? "Failed to reset property" : writeError;
+            failed++;
+            results.append(item);
+            continue;
+        }
+
+        item["status"] = "applied";
+        item["applied_value"] = readRegistryValue(*definition);
+        applied++;
+        results.append(item);
+    }
+
+    result["total"] = static_cast<int>(results.size());
+    result["applied"] = applied;
+    result["skipped"] = skipped;
+    result["failed"] = failed;
+    result["results"] = results;
+
+    if (failed > 0 && error) {
+        *error = "One or more properties failed to reset";
+    }
+
+    return applied;
 }
 
 void CameraPropertyService::getVideoRecordConfig(int& width, int& height, int& fps, int& bitrateKbps) const {

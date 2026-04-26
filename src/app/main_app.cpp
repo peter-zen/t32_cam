@@ -51,6 +51,7 @@
 #include "TcpEventService.h"
 #include "Timezone.h"
 #include "UsbDongle.h"
+#include "CameraFactoryConfigImporter.h"
 
 using namespace network;
 
@@ -1065,6 +1066,32 @@ int main(int argc, char* argv[])
     } else {
         Logger::log(LogLevel::ERROR, "program type %d not support", program_type);
         goto main_exit;
+    }
+
+    {
+        service::CameraFactoryConfigImporter importer;
+        service::CameraFactoryImportResult import_result = importer.importFromSdRoot(SD_CARD_PATH);
+        if (import_result.selectedInput.find(service::CameraFactoryConfigImporter::kJsonFileName) != std::string::npos) {
+            if (!import_result.success) {
+                Json::StreamWriterBuilder writer;
+                writer["indentation"] = "";
+                Logger::log(LogLevel::ERROR,
+                            "Factory JSON import failed: decision=%s errors=%s",
+                            import_result.decision.c_str(),
+                            Json::writeString(writer, import_result.errors).c_str());
+                config->flush_control(false);
+                goto main_exit;
+            }
+
+            if (import_result.restartRequired) {
+                Logger::log(LogLevel::INFO,
+                            "Factory JSON import applied from %s, count=%d, restart required",
+                            import_result.selectedInput.c_str(),
+                            import_result.appliedCount);
+                config->flush_control(false);
+                goto main_exit;
+            }
+        }
     }
 
     //update config

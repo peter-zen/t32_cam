@@ -129,6 +129,7 @@ graph TD
 | GET | `/api/v1/camera/properties/{name}` | 获取单个属性 |
 | POST | `/api/v1/camera/properties/{name}` | 设置单个属性 |
 | POST | `/api/v1/camera/properties/reset` | 重置属性 |
+| POST | `/api/v1/camera/properties/factory-reset` | 按 CPS 规格默认值恢复出厂属性 |
 | GET | `/api/v1/camera/presets` | 获取预设 |
 | POST | `/api/v1/camera/presets/{id}` | 应用预设 |
 | GET | `/api/v1/camera/photos` | 照片列表 |
@@ -773,6 +774,12 @@ sequenceDiagram
 
 用途：获取全部相机属性定义和当前值。
 
+CPS-CS-SET1 新参数契约见
+[`cps-cs-set1-camera-http-api.md`](cps-cs-set1-camera-http-api.md)。该契约增加
+`group`/`include` 查询、精确 raw name 读取、单字段写入和 section 5 status 读取。
+按组读取时，`properties` 是唯一的有序数组协议；APP 不应依赖 JSON object key 顺序。
+本节保留 legacy 属性示例，用于兼容旧脚本。
+
 当前常见属性名：
 
 - `resolution`
@@ -936,6 +943,48 @@ sequenceDiagram
 说明：
 
 - 若 `properties` 为空，当前实现会重置全部可重置属性
+
+### POST `/api/v1/camera/properties/factory-reset`
+
+用途：按 CPS-CS-SET1 registry 的 `default_value` 将属性恢复为出厂默认值。
+
+请求体可为空。传 `group` 时重置指定规格组；传 `names` 时只重置指定 raw name、内部 id 或 legacy alias。
+
+```json
+{
+  "names": ["CAM_Mode", "CAM_ Ffixed_Shutter"]
+}
+```
+
+成功响应为逐字段结果；有真实存储绑定的字段返回 `applied`，暂未接入的 placeholder/computed/command 字段返回 `skipped`，不会导致整次请求失败：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "group": "all",
+    "total": 2,
+    "applied": 1,
+    "skipped": 1,
+    "failed": 0,
+    "results": [
+      {
+        "name": "CAM_Mode",
+        "raw_name": "CAM_Mode",
+        "status": "applied",
+        "applied_value": 0
+      },
+      {
+        "name": "CAM_ Ffixed_Shutter",
+        "raw_name": "CAM_ Ffixed_Shutter",
+        "status": "skipped",
+        "reason": "storage_not_implemented"
+      }
+    ]
+  },
+  "message": "success"
+}
+```
 
 ### GET `/api/v1/camera/presets`
 

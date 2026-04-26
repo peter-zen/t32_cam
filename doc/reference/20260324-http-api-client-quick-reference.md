@@ -84,6 +84,7 @@
 | GET | `/api/v1/camera/properties/{name}` | 获取单个属性 |
 | POST | `/api/v1/camera/properties/{name}` | 设置单个属性 |
 | POST | `/api/v1/camera/properties/reset` | 重置属性 |
+| POST | `/api/v1/camera/properties/factory-reset` | 按 CPS 默认值恢复出厂属性 |
 | GET | `/api/v1/camera/presets` | 获取预设列表 |
 | POST | `/api/v1/camera/presets/{id}` | 应用预设 |
 | GET | `/api/v1/camera/photos` | 照片列表 |
@@ -431,6 +432,8 @@ flowchart TD
 
 用途：获取全部属性定义和当前值。
 
+CPS grouped 响应中，`properties` 是按规格顺序排列的数组，不应依赖 object key 顺序。
+
 当前常见属性：
 
 - `resolution`
@@ -489,6 +492,23 @@ flowchart TD
 说明：
 
 - 若不传 `properties`，当前实现会重置全部可重置属性
+
+### POST `/api/v1/camera/properties/factory-reset`
+
+请求示例：
+
+```json
+{
+  "names": ["CAM_Mode", "CAM_ Ffixed_Shutter"]
+}
+```
+
+说明：
+
+- 不传 `names`/`properties` 时，按 CPS 规格组顺序尝试重置全部 registry 属性
+- 传 `group` 可重置单个组，例如 `{"group":"Camera_Setting"}`
+- 响应包含 `applied`、`skipped`、`failed` 和逐字段 `results`
+- 暂未接入存储的字段会返回 `status:"skipped"`，不会导致整次请求失败
 
 ### GET `/api/v1/camera/presets`
 

@@ -31,6 +31,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/audio
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/rtsp
         ${CMAKE_CURRENT_SOURCE_DIR}/../service/http_server
+        ${CMAKE_CURRENT_SOURCE_DIR}/../service/camera
         ${CMAKE_CURRENT_SOURCE_DIR}/../service/discovery
         ${CMAKE_CURRENT_SOURCE_DIR}/../service/event
         ${CMAKE_CURRENT_SOURCE_DIR}/../storage
