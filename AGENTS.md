@@ -239,3 +239,11 @@ src/media/
 **See Also**:
 - `doc/refactoring_completion_summary.md` - Complete refactoring summary
 - `doc/refactoring_implementation_plan.md` - Detailed implementation plan
+
+## Project knowledge rules
+
+- Repository-local `doc/knowledge/` is authoritative for project-specific facts.
+- Default read order: `doc/knowledge/README.md` -> `overview.md` -> `working-set.md` -> 1 to 3 task-relevant docs.
+- When creating or updating project docs, follow `doc/knowledge/README.md`.
+- If a note does not clearly fit a category yet, place it in `doc/knowledge/inbox/` first.
+- Do not mechanically copy legacy docs into `doc/knowledge/`; check whether they still match the current codebase.

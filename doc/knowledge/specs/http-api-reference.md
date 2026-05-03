@@ -1,10 +1,10 @@
-# t32_yb HTTP API 参考手册
+# T32 HTTP API 参考手册
 
 ## 来源 / 版本
 
 | 项 | 说明 |
 |----|------|
-| 文档日期 | 2026-03-24 |
+| 文档日期 | 2026-05-03 (更新：CPS-CS-SET1 属性模型对齐) |
 | 代码基线 | `src/service/http_server/http_server.c` + `src/service/http_server/http_api_v1.cpp` |
 | 覆盖范围 | 当前代码中实际注册并可访问的 HTTP 路由 |
 | 基础地址 | `http://<device_ip>:<ctrl_port>` |
@@ -31,7 +31,7 @@ graph TD
 
     Camera --> Photo["photo / burst / timer / status"]
     Camera --> Video["video/start / stop / status / list"]
-    Camera --> Props["properties / properties/{name} / reset"]
+    Camera --> Props["properties / item / set / reset / factory-reset / status"]
     Camera --> Presets["presets / presets/{id}"]
     Camera --> Media["photos / files/delete / database/*"]
     Camera --> Stream["preview / thumbnail"]
@@ -124,12 +124,15 @@ graph TD
 | GET | `/api/v1/camera/video/status` | 录像状态 |
 | GET | `/api/v1/camera/video/list` | 录像列表 |
 | GET | `/api/v1/camera/video/playback` | 视频在线播放 / Range 拉流 |
-| GET | `/api/v1/camera/properties` | 获取全部属性 |
-| POST | `/api/v1/camera/properties` | 批量设置属性 |
-| GET | `/api/v1/camera/properties/{name}` | 获取单个属性 |
-| POST | `/api/v1/camera/properties/{name}` | 设置单个属性 |
-| POST | `/api/v1/camera/properties/reset` | 重置属性 |
-| POST | `/api/v1/camera/properties/factory-reset` | 按 CPS 规格默认值恢复出厂属性 |
+| GET | `/api/v1/camera/properties` | 按组列出属性（CPS grouped model） |
+| POST | `/api/v1/camera/properties` | 批量设置属性（兼容） |
+| GET | `/api/v1/camera/properties/item?name=...` | CPS 精确 raw name 读取 |
+| POST | `/api/v1/camera/properties/set` | CPS 单字段写入 |
+| GET | `/api/v1/camera/properties/{name}` | 获取单个属性（兼容） |
+| POST | `/api/v1/camera/properties/{name}` | 设置单个属性（兼容） |
+| POST | `/api/v1/camera/properties/reset` | 重置属性（兼容） |
+| POST | `/api/v1/camera/properties/factory-reset` | 按 CPS 规格恢复出厂属性 |
+| GET | `/api/v1/camera/status` | CPS Section 5 状态只读 |
 | GET | `/api/v1/camera/presets` | 获取预设 |
 | POST | `/api/v1/camera/presets/{id}` | 应用预设 |
 | GET | `/api/v1/camera/photos` | 照片列表 |
@@ -770,207 +773,264 @@ sequenceDiagram
 }
 ```
 
+### 属性接口概览
+
+属性系统采用 CPS-CS-SET1 规范，支持两层属性：
+- **Registry 属性** (CPS-CS-SET1)：100+ 参数，按 8 组分类，推荐使用
+- **Legacy 属性** (兼容)：8 个硬编码属性名，保留用于旧脚本
+
+**推荐的 CPS-CS-SET1 端点**：
+
+| 端点 | 方法 | 用途 |
+|---|---|---|
+| `/api/v1/camera/properties?group=...&include=...` | GET | 按组列出属性 |
+| `/api/v1/camera/properties/item?name=...` | GET | 精确 raw name 读取（支持含空格的字段名） |
+| `/api/v1/camera/properties/set` | POST | 单字段写入 |
+| `/api/v1/camera/properties/factory-reset` | POST | 出厂恢复 |
+| `/api/v1/camera/status?group=...` | GET | Section 5 状态只读 |
+
+**兼容端点** (legacy 脚本可用)：
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/v1/camera/properties` | POST | 批量设置（支持 legacy 名和 registry 名混用） |
+| `/api/v1/camera/properties/{name}` | GET/POST | 单属性读写（URL-safe 名称） |
+| `/api/v1/camera/properties/reset` | POST | Legacy 重置 |
+
 ### GET `/api/v1/camera/properties`
 
-用途：获取全部相机属性定义和当前值。
+用途：按组获取 CPS 属性定义和当前值。
 
-CPS-CS-SET1 新参数契约见
-[`cps-cs-set1-camera-http-api.md`](cps-cs-set1-camera-http-api.md)。该契约增加
-`group`/`include` 查询、精确 raw name 读取、单字段写入和 section 5 status 读取。
-按组读取时，`properties` 是唯一的有序数组协议；APP 不应依赖 JSON object key 顺序。
-本节保留 legacy 属性示例，用于兼容旧脚本。
+查询参数：
 
-当前常见属性名：
-
-- `resolution`
-- `fps`
-- `bitrate`
-- `pir_enabled`
-- `pir_sensitivity`
-- `loop_recording`
-- `max_record_duration`
-- `timestamp_overlay`
-
-当前示例响应中的单项结构：
-
-```json
-{
-  "default_value": "1920x1080",
-  "display_name": "分辨率",
-  "name": "resolution",
-  "options": ["1280x720", "1920x1080", "2560x1440", "3840x2160"],
-  "persistent": true,
-  "readonly": false,
-  "type": "enum",
-  "value": "1920x1080"
-}
-```
-
-说明：
-
-- 不同属性会出现 `options`、`min`、`max`、`step`、`unit` 等附加字段
-
-### GET `/api/v1/camera/properties/{name}`
-
-用途：获取单个属性定义和当前值。
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `group` | `all` | 属性组名，如 `Camera_Setting`、`Audio_Setting` 等 |
+| `include` | `schema,value` | `schema`、`value`、`schema,value` |
 
 示例：
 
-`GET /api/v1/camera/properties/resolution`
+```bash
+# 获取全部属性
+curl 'http://<ip>/api/v1/camera/properties?group=all&include=schema,value'
 
-当前成功示例：
+# 只获取 Camera_Setting 组的值
+curl 'http://<ip>/api/v1/camera/properties?group=Camera_Setting&include=value'
+```
+
+成功响应：
 
 ```json
 {
   "code": 0,
   "data": {
-    "default_value": "1920x1080",
-    "display_name": "分辨率",
-    "name": "resolution",
-    "options": ["1280x720", "1920x1080", "2560x1440", "3840x2160"],
-    "persistent": true,
-    "readonly": false,
-    "type": "enum",
-    "value": "1920x1080"
-  },
-  "message": "success"
+    "group": "Camera_Setting",
+    "include_schema": true,
+    "include_value": true,
+    "count": 12,
+    "properties": [
+      {
+        "group": "Camera_Setting",
+        "items": [
+          {
+            "id": "property.Camera_Setting.CAM_Mode",
+            "name": "CAM_Mode",
+            "raw_name": "CAM_Mode",
+            "group": "Camera_Setting",
+            "chapter": "3/4",
+            "type": "number",
+            "permission": "read_write",
+            "value": 0,
+            "default": 0,
+            "enabled": true,
+            "readonly": false,
+            "source": "persisted",
+            "storage_binding": { "kind": "settings", "member": "cameraMode" },
+            "options": [0, 1, 2, 3, 4, 5]
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
 
-错误：
+`group=all` 时 `properties[]` 按客户规范顺序返回：
+`Camera_Setting` → `Audio_Setting` → `PIR_Setting` → `Timer_Setting` → `Network_Setting` → `Server_Setting` → `System_Setting` → `AI_Setting`。
 
-- 属性不存在时返回 HTTP `404`
+说明：
 
-### POST `/api/v1/camera/properties`
+- `properties` 是有序数组，客户端不应依赖 JSON object key 顺序
+- 禁用的属性返回 `enabled: false` 和 `disabled_reason`
+- PLACEHOLDER 绑定的属性返回 `source: "placeholder"`，写入会被拒绝
 
-用途：批量设置属性。
+### GET `/api/v1/camera/properties/item`
 
-请求体示例：
+用途：精确读取单个属性（支持含空格的 raw name）。
+
+查询参数：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `name` | 是 | 属性 raw name |
+| `include` | 否 | `schema,value`（默认） |
+
+示例：
+
+```bash
+# 读取含空格的字段名
+curl 'http://<ip>/api/v1/camera/properties/item?name=CAM_%20Ffixed_Shutter'
+curl 'http://<ip>/api/v1/camera/properties/item?name=GPS_%20Enable'
+```
+
+返回完整的 registry 元数据，包含 `storage_binding`、`dependency`、`legacy_aliases`、`enabled`、`disabled_reason` 等。
+
+### POST `/api/v1/camera/properties/set`
+
+用途：设置单个属性（registry 专用路径）。
+
+请求体：
 
 ```json
 {
-  "fps": 60,
-  "bitrate": 8192,
-  "timestamp_overlay": false
+  "name": "CAM_Mode",
+  "value": 2
 }
 ```
 
-当前成功示例：
+成功响应：
 
 ```json
 {
   "code": 0,
   "data": {
-    "failed": 0,
-    "results": [
-      {"applied_value": 60, "name": "fps", "status": "success", "value": 60},
-      {"applied_value": 8192, "name": "bitrate", "status": "success", "value": 8192},
-      {"applied_value": false, "name": "timestamp_overlay", "status": "success", "value": false}
-    ],
-    "success": 3,
-    "total": 3
-  },
-  "message": "success"
+    "name": "CAM_Mode",
+    "raw_name": "CAM_Mode",
+    "value": 2,
+    "updated": true
+  }
+}
+```
+
+错误响应 (code=400)：
+
+```json
+{
+  "code": 400,
+  "data": {
+    "name": "CAM_Mode",
+    "raw_name": "CAM_Mode",
+    "value": 99,
+    "disabled_reason": null,
+    "valid_options": [0, 1, 2, 3, 4, 5]
+  }
 }
 ```
 
 说明：
 
-- 该接口即使部分属性失败，也会返回 HTTP `200`
+- 禁用属性、只读字段、未知名称、非法值、PLACEHOLDER 绑定均会被拒绝
+
+### GET `/api/v1/camera/properties/{name}` (兼容)
+
+用途：获取单个属性（legacy 兼容路径）。
+
+支持 legacy 名称（`resolution`、`fps` 等）和 registry 名称（`CAM_Mode`、`Video_Size` 等）。
+对于含空格的 raw name，请使用 `/properties/item` 端点。
+
+```bash
+curl 'http://<ip>/api/v1/camera/properties/CAM_Mode'
+curl 'http://<ip>/api/v1/camera/properties/resolution'
+```
+
+### POST `/api/v1/camera/properties` (批量设置，兼容)
+
+用途：批量设置属性，支持 legacy 名和 registry 名混用。
+
+请求体：
+
+```json
+{
+  "CAM_Mode": 2,
+  "Video_Size": "1080P/30FPS",
+  "resolution": "1920x1080",
+  "fps": 30
+}
+```
+
+成功响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "total": 4,
+    "success": 3,
+    "failed": 1,
+    "results": [
+      { "name": "CAM_Mode", "value": 2, "status": "success", "applied_value": 2 },
+      { "name": "Video_Size", "value": "1080P/30FPS", "status": "success", "applied_value": "1080P/30FPS" },
+      { "name": "resolution", "value": "1920x1080", "status": "success", "applied_value": "1920x1080" },
+      { "name": "fps", "value": 30, "status": "failed", "error": "..." }
+    ]
+  }
+}
+```
+
+说明：
+
+- 即使部分属性失败，仍返回 HTTP `200`
 - 客户端必须检查 `results[].status`
 
-### POST `/api/v1/camera/properties/{name}`
+### POST `/api/v1/camera/properties/reset` (兼容)
 
-用途：设置单个属性。
-
-请求体：
-
-```json
-{
-  "value": 60
-}
-```
-
-成功响应：
-
-```json
-{
-  "code": 0,
-  "data": {
-    "name": "fps",
-    "updated": true,
-    "value": 60
-  },
-  "message": "success"
-}
-```
-
-错误行为：
-
-- 缺少 `value` 字段时返回 HTTP `400`
-- 值非法时，当前实现返回 HTTP `200`，但 `code=400`
-- 错误 `data` 中可能附带 `valid_options`、`min`、`max`、`step`
-
-### POST `/api/v1/camera/properties/reset`
-
-用途：将指定属性重置为默认值。
+用途：将指定属性重置为默认值（legacy 兼容路径）。
 
 请求体：
 
 ```json
 {
-  "properties": ["fps", "bitrate", "timestamp_overlay"]
+  "properties": ["resolution", "fps", "bitrate"]
 }
 ```
 
-成功响应：
+若 `properties` 为空，重置全部可重置的 legacy 属性。
 
-```json
-{
-  "code": 0,
-  "data": {
-    "properties": {
-      "bitrate": 16384,
-      "fps": 30,
-      "timestamp_overlay": true
-    },
-    "reset_count": 3
-  },
-  "message": "success"
-}
-```
-
-说明：
-
-- 若 `properties` 为空，当前实现会重置全部可重置属性
+新 CPS 客户端应使用 `/properties/factory-reset`。
 
 ### POST `/api/v1/camera/properties/factory-reset`
 
-用途：按 CPS-CS-SET1 registry 的 `default_value` 将属性恢复为出厂默认值。
+用途：按 CPS-CS-SET1 registry 的 `default_value` 恢复出厂默认值。
 
-请求体可为空。传 `group` 时重置指定规格组；传 `names` 时只重置指定 raw name、内部 id 或 legacy alias。
+请求体可为空或指定范围：
 
 ```json
-{
-  "names": ["CAM_Mode", "CAM_ Ffixed_Shutter"]
-}
+{ "group": "Camera_Setting" }
 ```
 
-成功响应为逐字段结果；有真实存储绑定的字段返回 `applied`，暂未接入的 placeholder/computed/command 字段返回 `skipped`，不会导致整次请求失败：
+```json
+{ "names": ["CAM_Mode", "CAM_ Ffixed_Shutter"] }
+```
+
+成功响应为逐字段结果：
 
 ```json
 {
   "code": 0,
   "data": {
-    "group": "all",
+    "group": "Camera_Setting",
     "total": 2,
     "applied": 1,
-    "skipped": 1,
-    "failed": 0,
+    "skipped": 0,
+    "failed": 1,
     "results": [
       {
+        "id": "property.Camera_Setting.CAM_Mode",
         "name": "CAM_Mode",
         "raw_name": "CAM_Mode",
+        "group": "Camera_Setting",
+        "default_value": 0,
+        "storage_kind": "settings",
         "status": "applied",
         "applied_value": 0
       },
@@ -981,10 +1041,60 @@ CPS-CS-SET1 新参数契约见
         "reason": "storage_not_implemented"
       }
     ]
-  },
-  "message": "success"
+  }
 }
 ```
+
+说明：
+
+- `applied`：有真实存储绑定，已恢复
+- `skipped`：PLACEHOLDER/COMPUTED/COMMAND 字段，未操作
+- `failed`：写入出错
+
+### GET `/api/v1/camera/status`
+
+用途：读取 Section 5 状态参数（只读）。
+
+查询参数：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `group` | `all` | `device`、`signal`、`sensor`、`all` |
+
+```bash
+curl 'http://<ip>/api/v1/camera/status?group=all'
+curl 'http://<ip>/api/v1/camera/status?group=device'
+```
+
+未接入硬件的状态值返回：
+
+```json
+{
+  "name": "Battery1",
+  "raw_name": "Battery1",
+  "available": false,
+  "source": "placeholder",
+  "reason": "not_implemented",
+  "value": 0
+}
+```
+
+### CPS 属性目录
+
+完整属性目录见 `cps-cs-set1-camera-http-api.md`。以下是分组概览：
+
+| 组 | 参数示例 |
+|---|---|
+| `Camera_Setting` | CAM_Mode, CAM_ImageSize, Video_Size, Video_Encoded, Video_Bitrate_Value, Video_Length |
+| `Audio_Setting` | Audio_SPK_Volume |
+| `PIR_Setting` | PIR_Mode, PIR_Sensitivity, PIR_Interval, PIR_MaxShooting |
+| `Timer_Setting` | Timer_Enable, Timer_1Start/End ~ Timer_5Start/End, Timer_Repeats |
+| `Network_Setting` | CSSID, CPWD, DHCP_ON, LOCAL_IP, NETMASK, GATEWAY, DNS1, DNS2 |
+| `Server_Setting` | M_Server, NTP_Server, NTP_Timezone, BS_Server, AI_Server |
+| `System_Setting` | Device_Name, GPS_ Enable, Stamp, Cycle, Upload_*, HeartRate, Remote_Wakeup |
+| `AI_Setting` | AI_Enable, AI_Alarm_Enable, Target_List, Recognition_Rate |
+
+客户端应使用 `GET /api/v1/camera/properties?group=all&include=schema,value` 获取权威的类型、选项、范围、默认值、当前值、启用状态和存储源。
 
 ### GET `/api/v1/camera/presets`
 
@@ -1176,8 +1286,10 @@ CPS-CS-SET1 新参数契约见
 
 ## 相关文档
 
-- 客户端精简版：`doc/reference/20260324-http-api-client-quick-reference.md`
-- `doc/reference/20260305-http-simu-test-usage.md`
-- `doc/analysis/20260324-http-api-legacy-vs-v1-assessment.md`
-- `doc/roadmap/20260324-http-api-legacy-removal-minimal-checklist.md`
-- `doc/design/camera_http_api_design.md`
+- CPS 属性 HTTP 合约：`doc/knowledge/specs/cps-cs-set1-camera-http-api.md`
+- CPS 工厂配置：`doc/knowledge/specs/cps-cs-set1-factory-config.md`
+- CPS 客户规范：`doc/knowledge/refs/CPS-CS-SET1-camera-parameter-settings-spec.md`
+- Camera Service 架构：`doc/knowledge/specs/camera-service-architecture.md`
+- 客户端精简版：`doc/knowledge/refs/http-api-client-quick-reference.md`
+- SIMU 测试手册：`doc/knowledge/playbooks/http-api-simu-test.md`
+- 属性存储设计：`doc/knowledge/decisions/camera-property-storage-design.md`
