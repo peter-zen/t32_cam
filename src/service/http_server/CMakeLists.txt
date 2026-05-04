@@ -4,6 +4,7 @@ set(HTTP_SERVER_SOURCES
     http_server.c
     http_api_v1.cpp
     PhotoJobManager.cpp
+    ${CMAKE_SOURCE_DIR}/src/service/ServiceProvider.cpp
 )
 
 add_library(http_server STATIC ${HTTP_SERVER_SOURCES})
@@ -11,6 +12,7 @@ add_library(http_server STATIC ${HTTP_SERVER_SOURCES})
 target_include_directories(http_server PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/src/service/camera
+    ${CMAKE_SOURCE_DIR}/src/service
     ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
 )
 
@@ -19,6 +21,10 @@ target_link_libraries(http_server PUBLIC
     civetweb
     camera_service
     event_service
+    device_service
+    sensor_service
+    storage_service
+    system_service
     jsoncpp
     storage
 )

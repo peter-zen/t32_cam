@@ -74,9 +74,16 @@ CameraServiceT32::~CameraServiceT32() {
 }
 
 int CameraServiceT32::takePhoto(int channel, bool save, const std::string& format, int quality, PhotoResult& result) {
-    std::lock_guard<std::mutex> lock(op_mutex_);
+    std::lock_guard<std::mutex> op_lock(op_mutex_);
+    std::lock_guard<std::mutex> status_lock(status_mutex_);
+    if (is_capturing_) {
+        elog_w(TAG, "Already capturing");
+        return -1;
+    }
+    is_capturing_ = true;
+
     elog_i(TAG, "Taking photo: ch=%d, save=%d", channel, save);
-    
+
     // Generate filename
     auto now = std::time(nullptr);
     auto tm = *std::localtime(&now);
@@ -85,17 +92,18 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
     std::string filename = oss.str();
 
     media::ImageSnapParams params;
-    // params.setImageSize(1920, 1080); // Default
     image_snap_->setParams(params);
 
     if (image_snap_->snap(filename)) {
         result.success = true;
         result.filePath = filename;
         result.timestamp = (long long)now;
+        is_capturing_ = false;
         return 0;
     } else {
         result.success = false;
         result.message = "Snap failed";
+        is_capturing_ = false;
         return -1;
     }
 }
@@ -107,8 +115,8 @@ int CameraServiceT32::startBurstPhoto(int count, int interval, const std::string
 
 PhotoStatus CameraServiceT32::getPhotoStatus() {
     PhotoStatus status;
-    status.state = PhotoState::IDLE; // TODO: Track state
-    status.progress = 0;
+    status.state = is_capturing_ ? PhotoState::CAPTURING : PhotoState::IDLE;
+    status.progress = is_capturing_ ? 50 : 0;
     return status;
 }
 
@@ -237,7 +245,11 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     (void)channel;
     (void)recordId;
     std::lock_guard<std::mutex> lock(op_mutex_);
-    elog_i(TAG, "Start record: duration=%d", duration);
+    if (is_recording_) {
+        elog_w(TAG, "Already recording");
+        return -1;
+    }
+    is_recording_ = true;
 
     // Generate filename
     auto now = std::time(nullptr);
@@ -245,6 +257,7 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     std::ostringstream oss;
     oss << "/sdcard/DCIM/VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
     std::string filename = oss.str();
+    current_record_file_ = filename;
 
     auto vidParam = std::make_shared<media::VideoParams>();
     applyConfiguredVideoParams(vidParam);
@@ -262,25 +275,36 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     }
     video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam);
 
-    if (video_recorder_->record(filename, duration)) {
-        return 0;
-    } else {
+    elog_i(TAG, "Start recording: duration=%d", duration);
+    bool ok = video_recorder_->record(current_record_file_, [this](bool) {
+        std::lock_guard<std::mutex> l(op_mutex_);
+        is_recording_ = false;
+    }, duration);
+    if (!ok) {
+        is_recording_ = false;
         return -1;
     }
+    return 0;
 }
 
 int CameraServiceT32::stopRecord() {
     std::lock_guard<std::mutex> lock(op_mutex_);
-    elog_i(TAG, "Stop record");
-    if (video_recorder_->stopRecorder()) {
+    if (!is_recording_) {
         return 0;
     }
-    return -1;
+    if (video_recorder_) {
+        video_recorder_->stopRecorder();
+    }
+    is_recording_ = false;
+    elog_i(TAG, "Stop recording");
+    return 0;
 }
 
 RecordStatus CameraServiceT32::getRecordStatus() {
     RecordStatus status;
-    status.state = RecordState::IDLE; // TODO: Track state
+    status.state = is_recording_ ? RecordState::RECORDING : RecordState::IDLE;
+    status.duration = 0;
+    status.filePath = current_record_file_;
     return status;
 }
 

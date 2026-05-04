@@ -4,6 +4,7 @@
 #include "../ICameraService.h"
 #include "../../../media/snap/ImageSnap.h"
 #include "../../../media/video/VideoRecorder.h"
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <memory>
@@ -46,9 +47,13 @@ public:
     int factoryReset() override;
 
 private:
+    std::atomic<bool> is_recording_{false};
+    std::atomic<bool> is_capturing_{false};
+    std::mutex status_mutex_;
+    std::mutex op_mutex_;
     std::shared_ptr<media::ImageSnap> image_snap_;
     std::shared_ptr<media::VideoRecorder> video_recorder_;
-    std::mutex op_mutex_;
+    std::string current_record_file_;
     std::mutex timer_mutex_;
     std::condition_variable timer_cv_;
     std::thread timer_thread_;

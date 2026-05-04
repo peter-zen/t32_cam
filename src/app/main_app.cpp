@@ -844,6 +844,8 @@ int main(int argc, char* argv[])
 #else
     std::string db_path = EnvManager::getInstance()->getEnv("DB_PATH", "/sdcard/data/db");
     std::string media_root = "/sdcard/DCIM";
+    std::string log_root = "/sdcard/logs";
+    std::string log_file = log_root + "/app.log";
 #endif
 
     if (!DatabaseManager::getInstance().init(db_path)) {
@@ -889,10 +891,17 @@ int main(int argc, char* argv[])
     Logger::log(LogLevel::INFO, "[SIM] Log Directory: %s", log_root.c_str());
     Logger::log(LogLevel::INFO, "[SIM] Log File: %s", log_file.c_str());
 #else
-    // 真机环境：仅终端输出
-    if (!elog_init_default()) {
+    // 真机环境：终端 + 文件输出
+    Misc::createDirectory(log_root);
+    ElogConfig elog_config;
+    elog_config.enableTerminal = true;
+    elog_config.enableFile = true;
+    elog_config.logFilePath = log_file;
+    elog_config.logLevel = ELOG_LVL_INFO;
+    if (!elog_init_with_config(elog_config)) {
         fprintf(stderr, "Failed to initialize EasyLogger\n");
     }
+    Logger::log(LogLevel::INFO, "Log File: %s", log_file.c_str());
 #endif
     
     daynight_switch = DayNightSwitch::getInstance();

@@ -9,6 +9,7 @@
 #include "CameraPropertyService.h"
 #include "CameraServiceFactory.h"
 #include "CameraStatusService.h"
+#include "../ServiceProvider.h"
 #include "../../storage/DatabaseManager.h"
 #include "../../storage/MediaScanner.h"
 #include "../../storage/MetadataDao.h"
@@ -376,6 +377,26 @@ static service::CameraStatusService& get_status_service() {
     return service::CameraStatusService::getInstance();
 }
 
+static std::shared_ptr<service::IDeviceService> get_device_service() {
+    static auto instance = service::ServiceProvider::createDeviceService();
+    return instance;
+}
+
+static std::shared_ptr<service::ISensorService> get_sensor_service() {
+    static auto instance = service::ServiceProvider::createSensorService();
+    return instance;
+}
+
+static std::shared_ptr<service::IStorageService> get_storage_service() {
+    static auto instance = service::ServiceProvider::createStorageService();
+    return instance;
+}
+
+static std::shared_ptr<service::ISystemService> get_system_service() {
+    static auto instance = service::ServiceProvider::createSystemService();
+    return instance;
+}
+
 static std::string get_filename(const std::string& path) {
     const size_t pos = path.find_last_of("/\\");
     return pos == std::string::npos ? path : path.substr(pos + 1);
@@ -431,45 +452,37 @@ static Json::Value build_async_event_json() {
     return event;
 }
 
-static std::string build_iso_datetime_string() {
-    char datetime_buf[32];
-    time_t now = time(NULL);
-    struct tm* tm_info = localtime(&now);
-    strftime(datetime_buf, sizeof(datetime_buf), "%Y-%m-%dT%H:%M:%S.000", tm_info);
-    return datetime_buf;
-}
-
-static Json::Value build_device_info_json() {
+static Json::Value build_device_info_json(const service::DeviceInfo& info) {
     Json::Value data(Json::objectValue);
-    data["pid"] = "T32-CAM-001";
-    data["camera_ver"] = "1.0.0";
-    data["camera_model"] = "T32";
-    data["camera_build"] = "2025-01-06";
-    data["mcu_ver"] = "MCU-1.0.0";
+    data["pid"] = info.pid;
+    data["camera_ver"] = info.firmwareVersion;
+    data["camera_model"] = info.model;
+    data["camera_build"] = info.buildDate;
+    data["mcu_ver"] = info.mcuVersion;
     return data;
 }
 
-static Json::Value build_sensor_data_json() {
+static Json::Value build_sensor_data_json(const service::SensorData& s) {
     Json::Value data(Json::objectValue);
-    data["battery"] = 3700;
-    data["battery_type"] = 1;
-    data["battery_level"] = 85;
-    data["ext_power"] = 12000;
-    data["sdcard_capacity"] = 32000;
-    data["sdcard_used"] = 8000;
-    data["cds"] = 500;
-    data["temp"] = "25";
-    data["press"] = "1013";
-    data["rh"] = "60";
-    data["datetime"] = build_iso_datetime_string();
+    data["battery"] = s.batteryVoltage;
+    data["battery_type"] = s.batteryType;
+    data["battery_level"] = s.batteryLevel;
+    data["ext_power"] = s.externalVoltage;
+    data["sdcard_capacity"] = s.sdcardCapacity;
+    data["sdcard_used"] = s.sdcardUsed;
+    data["cds"] = s.cds;
+    data["temp"] = std::to_string(s.temperature);
+    data["press"] = std::to_string(s.pressure);
+    data["rh"] = std::to_string(s.humidity);
+    data["datetime"] = s.datetime;
     return data;
 }
 
-static Json::Value build_storage_info_json() {
+static Json::Value build_storage_info_json(const service::StorageInfo& info) {
     Json::Value data(Json::objectValue);
-    data["total"] = 32000;
-    data["free"] = 24000;
-    data["used"] = 8000;
+    data["total"] = info.total;
+    data["free"] = info.free;
+    data["used"] = info.used;
     return data;
 }
 
@@ -690,7 +703,7 @@ static int api_v1_device_info(struct mg_connection* conn, void* cbdata) {
         return 405;
     }
 
-    send_success_response(conn, build_device_info_json());
+    send_success_response(conn, build_device_info_json(get_device_service()->getDeviceInfo()));
     return 200;
 }
 
@@ -704,7 +717,7 @@ static int api_v1_device_sensors(struct mg_connection* conn, void* cbdata) {
         return 405;
     }
 
-    send_success_response(conn, build_sensor_data_json());
+    send_success_response(conn, build_sensor_data_json(get_sensor_service()->getSensorData()));
     return 200;
 }
 
@@ -729,9 +742,10 @@ static int api_v1_system_datetime(struct mg_connection* conn, void* cbdata) {
 
     elog_i(TAG, "Requested datetime update: %s", req_json["datetime"].asCString());
 
+    service::SetDatetimeResult result = get_system_service()->setDatetime(req_json["datetime"].asString());
     Json::Value data(Json::objectValue);
-    data["datetime"] = req_json["datetime"].asString();
-    data["accepted"] = true;
+    data["datetime"] = result.datetime;
+    data["accepted"] = result.accepted;
     send_success_response(conn, data);
     return 200;
 }
@@ -758,9 +772,10 @@ static int api_v1_system_workmode(struct mg_connection* conn, void* cbdata) {
     const int mode = req_json["mode"].asInt();
     elog_i(TAG, "Requested work mode switch: %d", mode);
 
+    service::WorkModeResult result = get_system_service()->setWorkMode(mode);
     Json::Value data(Json::objectValue);
-    data["mode"] = mode;
-    data["accepted"] = true;
+    data["mode"] = result.mode;
+    data["accepted"] = result.accepted;
     send_success_response(conn, data);
     return 200;
 }
@@ -775,7 +790,7 @@ static int api_v1_storage_info(struct mg_connection* conn, void* cbdata) {
         return 405;
     }
 
-    send_success_response(conn, build_storage_info_json());
+    send_success_response(conn, build_storage_info_json(get_storage_service()->getStorageInfo()));
     return 200;
 }
 
@@ -797,9 +812,10 @@ static int api_v1_storage_format(struct mg_connection* conn, void* cbdata) {
     (void)req_json;
     elog_i(TAG, "Requested storage format");
 
+    service::FormatResult result = get_storage_service()->formatStorage();
     Json::Value data(Json::objectValue);
-    data["accepted"] = true;
-    data["status"] = "scheduled";
+    data["accepted"] = result.accepted;
+    data["status"] = result.status;
     send_success_response(conn, data);
     return 200;
 }
