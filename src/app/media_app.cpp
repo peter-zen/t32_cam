@@ -139,6 +139,7 @@ int quick_snap(bool is_rtc_work_well)
         }
     }
     auto snapSizeIndex = Settings::getInstance()->stillSize;
+    if (snapSizeIndex >= SNAP_IMG_SIZE_MAX) snapSizeIndex = SNAP_IMG_SIZE_4M;
     auto snap_param = ImageSnapParams();
     snap_param.setImageSize(SnapImgSize[snapSizeIndex].width, SnapImgSize[snapSizeIndex].height);
     Logger::log(LogLevel::INFO, "Snap image size: %d x %d", SnapImgSize[snapSizeIndex].width, SnapImgSize[snapSizeIndex].height);

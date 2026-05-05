@@ -155,62 +155,63 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 		if (pic_max_size == 32 || pic_max_size == 42) {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2592*1944");
+			json_array.append("5M/2560*1944");
+			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
-			json_array.append("12M/4800*2700");
-			json_array.append("18M/5760*3240");
+			json_array.append("16M/5120*2880");
 			json_array.append("24M/6400*3600");
 			json_array.append("32M/7680*4320");
-			json_array.append("42M/8640*4864");
+			json_array.append("42M/8640*4860");
 			if (still_size > SNAP_IMG_SIZE_42M) {
 				still_size = SNAP_IMG_SIZE_42M;
 			}
 		} else if (pic_max_size == 24) {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2592*1944");
+			json_array.append("5M/2560*1944");
+			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
-			json_array.append("12M/4800*2700");
-			json_array.append("18M/5760*3240");
+			json_array.append("16M/5120*2880");
 			json_array.append("24M/6400*3600");
 			if (still_size > SNAP_IMG_SIZE_24M) {
 				still_size = SNAP_IMG_SIZE_24M;
 			}
-		} else if (18 == pic_max_size) {
+		} else if (16 == pic_max_size) {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2592*1944");
+			json_array.append("5M/2560*1944");
+			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
-			json_array.append("12M/4800*2700");
-			json_array.append("18M/5760*3240");
+			json_array.append("16M/5120*2880");
 
-			if (still_size > SNAP_IMG_SIZE_18M) {
-				still_size = SNAP_IMG_SIZE_18M;
-			}
-		} else if (12 == pic_max_size) {
-			json_array.append("2M/1920*1080");
-			json_array.append("4M/2560*1440");
-			json_array.append("5M/2592*1944");
-			json_array.append("8M/3840*2160");
-			json_array.append("12M/4800*2700");
-
-			if (still_size > SNAP_IMG_SIZE_12M) {
-				still_size = SNAP_IMG_SIZE_12M;
+			if (still_size > SNAP_IMG_SIZE_16M) {
+				still_size = SNAP_IMG_SIZE_16M;
 			}
 		} else if (8 == pic_max_size) {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2592*1944");
+			json_array.append("5M/2560*1944");
+			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
 
 			if (still_size > SNAP_IMG_SIZE_8M) {
 				still_size = SNAP_IMG_SIZE_8M;
 			}
 		}
+		else if (6 == pic_max_size) {
+			json_array.append("2M/1920*1080");
+			json_array.append("4M/2560*1440");
+			json_array.append("5M/2560*1944");
+			json_array.append("6M/2688*2048");
+
+			if (still_size > SNAP_IMG_SIZE_6M) {
+				still_size = SNAP_IMG_SIZE_6M;
+			}
+		}
 		else if (5 == pic_max_size) {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2592*1944");
+			json_array.append("5M/2560*1944");
 
 			if (still_size > SNAP_IMG_SIZE_5M) {
 				still_size = SNAP_IMG_SIZE_5M;
@@ -232,13 +233,13 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 		} else {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2592*1944");
+			json_array.append("5M/2560*1944");
+			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
-			json_array.append("12M/4800*2700");
-			json_array.append("18M/5760*3240");
+			json_array.append("16M/5120*2880");
 			json_array.append("24M/6400*3600");
 			json_array.append("32M/7680*4320");
-			json_array.append("42M/8640*4864");
+			json_array.append("42M/8640*4860");
 
 			if (still_size > SNAP_IMG_SIZE_42M) {
 				still_size = SNAP_IMG_SIZE_42M;

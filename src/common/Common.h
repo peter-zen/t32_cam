@@ -140,15 +140,15 @@ enum dev_type {
 };
 
 enum {
-	SNAP_IMG_SIZE_2M,	
-	SNAP_IMG_SIZE_4M,
-	SNAP_IMG_SIZE_5M,
-	SNAP_IMG_SIZE_8M,
-	SNAP_IMG_SIZE_12M,
-	SNAP_IMG_SIZE_18M,
-	SNAP_IMG_SIZE_24M,
-	SNAP_IMG_SIZE_32M,
-	SNAP_IMG_SIZE_42M,
+	SNAP_IMG_SIZE_2M,    // 1920x1080
+	SNAP_IMG_SIZE_4M,    // 2560x1440
+	SNAP_IMG_SIZE_5M,    // 2560x1944
+	SNAP_IMG_SIZE_6M,    // 2688x2048
+	SNAP_IMG_SIZE_8M,    // 3840x2160
+	SNAP_IMG_SIZE_16M,   // 5120x2880
+	SNAP_IMG_SIZE_24M,   // 6400x3600
+	SNAP_IMG_SIZE_32M,   // 7680x4320
+	SNAP_IMG_SIZE_42M,   // 8640x4860
 	SNAP_IMG_SIZE_MAX,
 };
 enum {
@@ -164,14 +164,15 @@ enum {
 static struct {
 	uint16_t width,height;
 } SnapImgSize[SNAP_IMG_SIZE_MAX]= {
-	{1920,1080}, /* 2M */
-	{2560,1440}, /* 4M */
-	{2592,1944}, /* 5M */
-	{3840,2160}, /* 8M */
-	{4800,2700}, /* 12M */
-	{5760,3240}, /* 18M */
-	{6400,3600}, /* 24M */
-	{7680,4320}, /* 32M */
+	{1920, 1080}, /* 2M  */
+	{2560, 1440}, /* 4M  */
+	{2560, 1944}, /* 5M  */
+	{2688, 2048}, /* 6M  */
+	{3840, 2160}, /* 8M  */
+	{5120, 2880}, /* 16M */
+	{6400, 3600}, /* 24M */
+	{7680, 4320}, /* 32M */
+	{8640, 4860}, /* 42M */
 };
 
 //pin definition
