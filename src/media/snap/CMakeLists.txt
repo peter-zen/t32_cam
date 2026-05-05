@@ -1,7 +1,9 @@
 # Find source files in the current directory
-file(GLOB SOURCE_FILES
+set(SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/ImageSnap.cpp"
- )
+        "${CMAKE_CURRENT_SOURCE_DIR}/JpegEncoder.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/LargeImageSnap.cpp"
+)
 
 # Include current directory headers
 include_directories(
