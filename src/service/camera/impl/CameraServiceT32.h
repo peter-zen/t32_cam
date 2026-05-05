@@ -3,6 +3,7 @@
 
 #include "../ICameraService.h"
 #include "../../../media/snap/ImageSnap.h"
+#include "../../../media/snap/LargeImageSnap.h"
 #include "../../../media/video/VideoRecorder.h"
 #include <atomic>
 #include <condition_variable>
@@ -45,13 +46,17 @@ public:
     
     // --- 系统 ---
     int factoryReset() override;
+    void initScheduler();
+    void stopScheduler();
 
 private:
+    bool isInTimeWindow();
     std::atomic<bool> is_recording_{false};
     std::atomic<bool> is_capturing_{false};
     std::mutex status_mutex_;
     std::mutex op_mutex_;
     std::shared_ptr<media::ImageSnap> image_snap_;
+    std::shared_ptr<media::LargeImageSnap> large_snap_;
     std::shared_ptr<media::VideoRecorder> video_recorder_;
     std::string current_record_file_;
     std::mutex timer_mutex_;
@@ -59,6 +64,15 @@ private:
     std::thread timer_thread_;
     bool timer_stop_requested_ = false;
     TimerPhotoStatus timer_status_;
+    std::mutex burst_mutex_;
+    std::thread burst_thread_;
+    bool burst_stop_requested_ = false;
+    int burst_completed_ = 0;
+    int burst_total_ = 0;
+    std::thread scheduler_thread_;
+    bool scheduler_stop_requested_ = false;
+    std::mutex scheduler_mutex_;
+    std::condition_variable scheduler_cv_;
 };
 
 } // namespace service

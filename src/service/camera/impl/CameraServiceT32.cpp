@@ -13,8 +13,16 @@
 #include <json/json.h>
 #include "../../../storage/MetadataDao.h"
 #include "../../../common/misc/Misc.h"
+#include "../../../common/Common.h"
+#include "../../../config/setting/Settings.h"
+#include "../../../storage/MetadataDao.h"
+#include <sys/statvfs.h>
 
 #define TAG "CamT32"
+
+// Max resolution supported by hardware JPEG encoder (sensor native resolution)
+static constexpr int HW_ENCODER_MAX_W = 2560;
+static constexpr int HW_ENCODER_MAX_H = 1440;
 
 namespace service {
 
@@ -53,11 +61,27 @@ void applyConfiguredVideoParams(const std::shared_ptr<media::VideoParams>& video
     int height = 1080;
     int fps = 30;
     int bitrateKbps = 4096;
-    CameraPropertyService::getInstance().getVideoRecordConfig(width, height, fps, bitrateKbps);
+    CameraPropertyService& props = CameraPropertyService::getInstance();
+    props.getVideoRecordConfig(width, height, fps, bitrateKbps);
 
     videoParams->setResolution(width, height);
     videoParams->setFrameRate(fps);
     videoParams->setBitrate(bitrateKbps * 1024);
+
+    // Convert registry codec value (1=H.264, 2=H.265) to VideoCodecFormat enum (0=H264, 1=H265)
+    int codec = props.getVideoRecordCodec();
+    videoParams->setCodecFormat(codec == 2 ? media::VideoCodecFormat::H265 : media::VideoCodecFormat::H264);
+
+    // Convert registry rcMode value to VideoRcMode enum
+    int rcModeVal = props.getVideoRecordRcMode();
+    media::VideoRcMode rcMode;
+    switch (rcModeVal) {
+        case 2: rcMode = media::VideoRcMode::VBR; break;
+        case 3: rcMode = media::VideoRcMode::CVBR; break;
+        case 4: rcMode = media::VideoRcMode::SMART; break;
+        default: rcMode = media::VideoRcMode::CBR; break;
+    }
+    videoParams->setRcMode(rcMode);
 }
 
 } // namespace
@@ -65,10 +89,13 @@ void applyConfiguredVideoParams(const std::shared_ptr<media::VideoParams>& video
 CameraServiceT32::CameraServiceT32() {
     elog_i(TAG, "CameraServiceT32 created");
     image_snap_ = std::make_shared<media::ImageSnap>();
+    large_snap_ = std::make_shared<media::LargeImageSnap>();
     video_recorder_ = std::make_shared<media::VideoRecorder>();
+    initScheduler();
 }
 
 CameraServiceT32::~CameraServiceT32() {
+    stopScheduler();
     stopTimerPhoto(nullptr);
     elog_i(TAG, "CameraServiceT32 destroyed");
 }
@@ -80,9 +107,24 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
         elog_w(TAG, "Already capturing");
         return -1;
     }
+
+    // CAM_Mode guard: reject photo in video-only mode
+    uint8_t camMode = Settings::getInstance()->cameraMode;
+    if (camMode == 2) {  // Mode 2: Video only
+        elog_w(TAG, "Photo rejected: cameraMode=%d (video only)", camMode);
+        return -1;
+    }
+
     is_capturing_ = true;
 
-    elog_i(TAG, "Taking photo: ch=%d, save=%d", channel, save);
+    // Read configured photo size from settings
+    int sizeIndex = Settings::getInstance()->stillSize;
+    if (sizeIndex < 0 || sizeIndex >= SNAP_IMG_SIZE_MAX) sizeIndex = SNAP_IMG_SIZE_4M;
+    int width = SnapImgSize[sizeIndex].width;
+    int height = SnapImgSize[sizeIndex].height;
+    int jpegQuality = (quality > 0 && quality <= 99) ? quality : CameraPropertyService::getInstance().getStillQualityForJpeg();
+
+    elog_i(TAG, "Taking photo: ch=%d, save=%d, size=%dx%d, quality=%d", channel, save, width, height, jpegQuality);
 
     // Generate filename
     auto now = std::time(nullptr);
@@ -91,10 +133,19 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
     oss << "/sdcard/DCIM/IMG_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".jpg";
     std::string filename = oss.str();
 
-    media::ImageSnapParams params;
-    image_snap_->setParams(params);
+    bool ok;
+    if (width <= HW_ENCODER_MAX_W && height <= HW_ENCODER_MAX_H) {
+        // Hardware path: within sensor resolution, use hardware JPEG encoder
+        media::ImageSnapParams params;
+        params.setImageSize(width, height);
+        image_snap_->setParams(params);
+        ok = image_snap_->snap(filename);
+    } else {
+        // Software path: exceeds sensor resolution, use strip-based resize + software JPEG
+        ok = large_snap_->snapLarge(filename, width, height, jpegQuality);
+    }
 
-    if (image_snap_->snap(filename)) {
+    if (ok) {
         result.success = true;
         result.filePath = filename;
         result.timestamp = (long long)now;
@@ -109,8 +160,65 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
 }
 
 int CameraServiceT32::startBurstPhoto(int count, int interval, const std::string& jobId) {
-    elog_e(TAG, "Burst photo not implemented yet");
-    return -1;
+    (void)jobId;
+    if (count <= 0) {
+        elog_w(TAG, "Burst photo: invalid count=%d", count);
+        return -1;
+    }
+
+    // CAM_Mode guard: reject photo in video-only mode
+    uint8_t camMode = Settings::getInstance()->cameraMode;
+    if (camMode == 2) {
+        elog_w(TAG, "Burst photo rejected: cameraMode=%d (video only)", camMode);
+        return -1;
+    }
+
+    // Fallback to configured interval
+    if (interval <= 0) {
+        interval = static_cast<int>(Settings::getInstance()->shootingInterval) * 100;
+    }
+    if (interval < 100) interval = 100;
+
+    {
+        std::lock_guard<std::mutex> lock(burst_mutex_);
+        if (burst_thread_.joinable()) {
+            elog_w(TAG, "Burst photo already running");
+            return -1;
+        }
+    }
+
+    if (burst_thread_.joinable()) {
+        burst_thread_.join();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(burst_mutex_);
+        burst_stop_requested_ = false;
+        burst_completed_ = 0;
+        burst_total_ = count;
+    }
+
+    burst_thread_ = std::thread([this, count, interval]() {
+        for (int i = 0; i < count; i++) {
+            {
+                std::lock_guard<std::mutex> lock(burst_mutex_);
+                if (burst_stop_requested_) break;
+            }
+
+            PhotoResult result;
+            if (takePhoto(0, true, "jpg", 85, result) == 0) {
+                std::lock_guard<std::mutex> lock(burst_mutex_);
+                burst_completed_++;
+            }
+
+            if (i < count - 1) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+            }
+        }
+    });
+
+    elog_i(TAG, "Burst photo started: count=%d, interval=%dms", count, interval);
+    return 0;
 }
 
 PhotoStatus CameraServiceT32::getPhotoStatus() {
@@ -249,6 +357,13 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
         elog_w(TAG, "Already recording");
         return -1;
     }
+
+    // CAM_Mode guard: reject recording in photo-only mode
+    uint8_t camMode = Settings::getInstance()->cameraMode;
+    if (camMode == 0) {  // Mode 0: Photo only
+        elog_w(TAG, "Recording rejected: cameraMode=%d (photo only)", camMode);
+        return -1;
+    }
     is_recording_ = true;
 
     // Generate filename
@@ -267,13 +382,69 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
         audParam->setDeviceType(media::AudioDeviceType::AUDIO_IN);
         audParam->setDeviceId(1);
         audParam->setChannelId(0);
-        audParam->setVolume(80);
-        audParam->setGain(28);
+        audParam->setVolume(Settings::getInstance()->audioRecordVolume);
+        audParam->setGain(Settings::getInstance()->audioRecordGain);
         audParam->setCodecFormat(media::AudioCodecFormat::AAC);
         audParam->setSampleRate(media::AudioSampleRate::SR_16000);
         audParam->setChannelCount(1);
     }
     video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam);
+
+    // If duration not specified by API, read from settings
+    if (duration <= 0) {
+        duration = CameraPropertyService::getInstance().getVideoRecordLength();
+    }
+
+    // Disk space check and loop recording cleanup
+    {
+        int bitrateBps = 0;
+        vidParam->getBitrate(bitrateBps);
+        // Estimate space needed (bitrate * duration / 8) + 10% overhead, in MB
+        long long estimatedMB = 0;
+        if (duration > 0) {
+            estimatedMB = static_cast<long long>(bitrateBps) * duration / 8 / (1024 * 1024);
+        }
+        estimatedMB = estimatedMB * 11 / 10 + 10; // +10% overhead + 10MB safety
+
+        struct statvfs stat;
+        if (statvfs("/sdcard", &stat) == 0) {
+            unsigned long long blockSize = stat.f_frsize ? stat.f_frsize : stat.f_bsize;
+            long long freeMB = static_cast<long long>((stat.f_bavail * blockSize) >> 20);
+
+            if (freeMB < estimatedMB) {
+                bool autoCover = Settings::getInstance()->autoCover != 0;
+                if (autoCover) {
+                    // Delete oldest video(s) to make space
+                    MetadataDao dao;
+                    int attempts = 0;
+                    while (freeMB < estimatedMB && attempts < 50) {
+                        std::string oldest = dao.getOldestMediaPath(2); // type=2: video
+                        if (oldest.empty()) break;
+
+                        // Delete from DB and filesystem
+                        dao.deleteMedia(oldest);
+                        remove(oldest.c_str());
+                        elog_i(TAG, "Loop recording: deleted %s to free space", oldest.c_str());
+                        attempts++;
+
+                        // Re-read free space
+                        if (statvfs("/sdcard", &stat) == 0) {
+                            freeMB = static_cast<long long>((stat.f_bavail * blockSize) >> 20);
+                        }
+                    }
+                    if (freeMB < estimatedMB) {
+                        elog_w(TAG, "Insufficient space even after cleanup: need=%lld MB, free=%lld MB", estimatedMB, freeMB);
+                        is_recording_ = false;
+                        return -1;
+                    }
+                } else {
+                    elog_w(TAG, "Insufficient space: need=%lld MB, free=%lld MB", estimatedMB, freeMB);
+                    is_recording_ = false;
+                    return -1;
+                }
+            }
+        }
+    }
 
     elog_i(TAG, "Start recording: duration=%d", duration);
     bool ok = video_recorder_->record(current_record_file_, [this](bool) {
@@ -380,6 +551,101 @@ int CameraServiceT32::factoryReset() {
     elog_i(TAG, "Factory reset");
     // Remove db, reset config
     return 0;
+}
+
+void CameraServiceT32::initScheduler() {
+    Settings* settings = Settings::getInstance().get();
+    if (settings->timerEn == 0) {
+        elog_i(TAG, "Scheduler: timerEn=0, skipping init");
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(scheduler_mutex_);
+    if (scheduler_thread_.joinable()) {
+        elog_w(TAG, "Scheduler already running");
+        return;
+    }
+
+    scheduler_stop_requested_ = false;
+    scheduler_thread_ = std::thread([this]() {
+        elog_i(TAG, "Scheduler thread started");
+        while (true) {
+            {
+                std::unique_lock<std::mutex> lock(scheduler_mutex_);
+                if (scheduler_cv_.wait_for(lock, std::chrono::seconds(30),
+                    [this]() { return scheduler_stop_requested_; })) {
+                    break;
+                }
+            }
+
+            if (!isInTimeWindow()) continue;
+
+            // In time window: take a photo
+            PhotoResult result;
+            if (takePhoto(0, true, "jpg", 85, result) == 0) {
+                elog_i(TAG, "Scheduler: photo taken -> %s", result.filePath.c_str());
+            }
+
+            // Wait for Timer_Interval_Time before next shot within this window
+            Settings* settings = Settings::getInstance().get();
+            int lapseSeconds = static_cast<int>(settings->timerLapse_m) * 60 +
+                               static_cast<int>(settings->timerLapse_s);
+            if (lapseSeconds < 1) lapseSeconds = 60;
+
+            {
+                std::unique_lock<std::mutex> lock(scheduler_mutex_);
+                if (scheduler_cv_.wait_for(lock, std::chrono::seconds(lapseSeconds),
+                    [this]() { return scheduler_stop_requested_; })) {
+                    break;
+                }
+            }
+        }
+        elog_i(TAG, "Scheduler thread stopped");
+    });
+}
+
+void CameraServiceT32::stopScheduler() {
+    {
+        std::lock_guard<std::mutex> lock(scheduler_mutex_);
+        scheduler_stop_requested_ = true;
+    }
+    scheduler_cv_.notify_all();
+    if (scheduler_thread_.joinable()) {
+        scheduler_thread_.join();
+    }
+}
+
+bool CameraServiceT32::isInTimeWindow() {
+    Settings* settings = Settings::getInstance().get();
+
+    // Check weekRepeats: 7-bit bitmap, bit0=Sunday, bit6=Saturday
+    time_t now = time(nullptr);
+    struct tm* tm_now = localtime(&now);
+    int wday = tm_now->tm_wday; // 0=Sunday
+    int dayMask = 1 << wday;
+    if ((static_cast<int>(settings->weekRepeats) & dayMask) == 0) {
+        return false;
+    }
+
+    // Check time windows (timer1s/e, timer2s/e, timer3s/e)
+    int nowMinutes = tm_now->tm_hour * 60 + tm_now->tm_min;
+
+    auto inWindow = [&](uint8_t startH, uint8_t startM, uint8_t endH, uint8_t endM) -> bool {
+        int startMin = static_cast<int>(startH) * 60 + static_cast<int>(startM);
+        int endMin = static_cast<int>(endH) * 60 + static_cast<int>(endM);
+        if (startMin == endMin) return false; // disabled/zero window
+        if (startMin < endMin) {
+            return nowMinutes >= startMin && nowMinutes < endMin;
+        }
+        // Overnight window (e.g. 22:00 - 06:00)
+        return nowMinutes >= startMin || nowMinutes < endMin;
+    };
+
+    if (inWindow(settings->timer1s_h, settings->timer1s_m, settings->timer1e_h, settings->timer1e_m)) return true;
+    if (inWindow(settings->timer2s_h, settings->timer2s_m, settings->timer2e_h, settings->timer2e_m)) return true;
+    if (inWindow(settings->timer3s_h, settings->timer3s_m, settings->timer3e_h, settings->timer3e_m)) return true;
+
+    return false;
 }
 
 } // namespace service

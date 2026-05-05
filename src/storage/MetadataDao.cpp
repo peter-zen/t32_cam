@@ -214,6 +214,26 @@ bool MetadataDao::deleteMedia(const std::string& filePath) {
     return success;
 }
 
+std::string MetadataDao::getOldestMediaPath(int mediaType) {
+    sqlite3* db = DatabaseManager::getInstance().getMediaDb();
+    if (!db) return std::string();
+
+    const char* sql = "SELECT file_path FROM media_files WHERE type = ? ORDER BY timestamp ASC LIMIT 1;";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return std::string();
+    }
+
+    sqlite3_bind_int(stmt, 1, mediaType);
+    std::string path;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* val = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (val) path = val;
+    }
+    sqlite3_finalize(stmt);
+    return path;
+}
+
 std::vector<MediaItem> MetadataDao::getTimeline(int offset, int limit) {
     std::vector<MediaItem> list;
     sqlite3* db = DatabaseManager::getInstance().getMediaDb();

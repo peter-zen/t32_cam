@@ -85,6 +85,13 @@ public:
     bool deleteMedia(const std::string& filePath);
 
     /**
+     * @brief Get the oldest media file path for a given type.
+     * @param mediaType 1 for photo, 2 for video.
+     * @return File path, or empty string if none found.
+     */
+    std::string getOldestMediaPath(int mediaType);
+
+    /**
      * @brief Get timeline list (paginated).
      * @param offset Offset.
      * @param limit Limit.
