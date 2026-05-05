@@ -38,6 +38,10 @@ public:
 	uint8_t videoQuality;
 	uint8_t videoSeamless;
 	uint8_t videoStamp;
+	uint8_t videoCodec = 1;   // 1=H.264, 2=H.265 (registry value, needs -1 for VideoCodecFormat enum)
+	uint8_t videoRcMode = 1;  // 1=CBR, 2=VBR, 3=CVBR, 4=SMART (registry value)
+	uint8_t audioRecordVolume = 80;
+	uint8_t audioRecordGain = 28;
 
 	uint8_t metering;
 	uint8_t wb;
@@ -57,6 +61,7 @@ public:
 	uint8_t realCameraMode;
 	uint8_t burstNumber=1;
 	uint8_t shootingLimits;
+	uint8_t shootingInterval = 1;  // unit: 100ms (1=100ms, range 1-20 mapping 100ms-2000ms)
 	uint8_t videoLength_h;
 	uint8_t videoLength_l = 30;
 

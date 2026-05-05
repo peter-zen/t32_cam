@@ -706,13 +706,17 @@ Json::Value CameraPropertyService::readRegistryValue(const ParameterDefinition& 
     const std::string& member = definition.storage.member;
     if (member == "cameraMode") return settingByte(settings->cameraMode);
     if (member == "stillSize") {
-        static const char* imageSizes[] = {"2M", "4M", "6M", "8M", "16M", "24M", "32M", "42M"};
+        static const char* sizeNames[] = {
+            "2M", "4M", "5M", "6M", "8M", "16M", "24M", "32M", "42M"
+        };
         int index = static_cast<int>(settings->stillSize);
-        if (index >= 0 && index < static_cast<int>(sizeof(imageSizes) / sizeof(imageSizes[0]))) {
-            return Json::Value(imageSizes[index]);
+        if (index >= 0 && index < SNAP_IMG_SIZE_MAX) {
+            return Json::Value(sizeNames[index]);
         }
         return definition.defaultValue;
     }
+    if (member == "stillQuality") return settingByte(settings->stillQuality);
+    if (member == "shootingInterval") return (static_cast<int>(settings->shootingInterval) * 100);
     if (member == "burstNumber") return settingByte(settings->burstNumber);
     if (member == "videoSize") {
         const std::vector<VideoMode> modes = buildSupportedVideoModes();
@@ -722,11 +726,16 @@ Json::Value CameraPropertyService::readRegistryValue(const ParameterDefinition& 
         const std::vector<VideoMode> modes = buildSupportedVideoModes();
         return currentBitrateKbpsForMode(getCurrentVideoMode(modes));
     }
+    if (member == "videoCodec") return settingByte(settings->videoCodec);
+    if (member == "videoRcMode") return settingByte(settings->videoRcMode);
+    if (member == "audioRecordVolume") return settingByte(settings->audioRecordVolume);
+    if (member == "audioRecordGain") return settingByte(settings->audioRecordGain);
     if (member == "videoLength") return currentVideoLengthSeconds();
     if (member == "pirEn") return settingByte(settings->pirEn);
     if (member == "ckPirSensitivity") return settingByte(settings->ckPirSensitivity);
     if (member == "shootingLimits") return settingByte(settings->shootingLimits);
     if (member == "timerEn") return settingByte(settings->timerEn);
+    if (member == "timerLapse") return Json::Value(formatTime(settings->timerLapse_m, settings->timerLapse_s));
     if (member == "timer1s") return Json::Value(formatTime(settings->timer1s_h, settings->timer1s_m));
     if (member == "timer1e") return Json::Value(formatTime(settings->timer1e_h, settings->timer1e_m));
     if (member == "timer2s") return Json::Value(formatTime(settings->timer2s_h, settings->timer2s_m));
@@ -1253,23 +1262,41 @@ int CameraPropertyService::writeRegistryValue(const ParameterDefinition& definit
     if (member == "cameraMode") {
         settings->cameraMode = static_cast<uint8_t>(normalized.asInt());
     } else if (member == "stillSize") {
-        static const char* imageSizes[] = {"2M", "4M", "6M", "8M", "16M", "24M", "32M", "42M"};
-        int index = -1;
-        for (int i = 0; i < static_cast<int>(sizeof(imageSizes) / sizeof(imageSizes[0])); ++i) {
-            if (normalized.asString() == imageSizes[i]) {
-                index = i;
+        static const struct { const char* name; int index; } sizeMap[] = {
+            {"2M", SNAP_IMG_SIZE_2M}, {"4M", SNAP_IMG_SIZE_4M},
+            {"5M", SNAP_IMG_SIZE_5M}, {"6M", SNAP_IMG_SIZE_6M},
+            {"8M", SNAP_IMG_SIZE_8M}, {"16M", SNAP_IMG_SIZE_16M},
+            {"24M", SNAP_IMG_SIZE_24M}, {"32M", SNAP_IMG_SIZE_32M},
+            {"42M", SNAP_IMG_SIZE_42M},
+        };
+        std::string name = normalized.asString();
+        bool found = false;
+        for (const auto& entry : sizeMap) {
+            if (name == entry.name) {
+                settings->stillSize = static_cast<uint8_t>(entry.index);
+                found = true;
                 break;
             }
         }
-        if (index < 0) {
+        if (!found) {
             if (error) {
                 *error = "Unsupported image size";
             }
             return -1;
         }
-        settings->stillSize = static_cast<uint8_t>(index);
+    } else if (member == "stillQuality") {
+        int val = normalized.asInt();
+        if (val < 1 || val > 3) { if (error) *error = "Invalid image quality (1-3)"; return -1; }
+        settings->stillQuality = static_cast<uint8_t>(val);
     } else if (member == "burstNumber") {
         settings->burstNumber = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "shootingInterval") {
+        int val = normalized.asInt();
+        if (val < 100 || val > 2000 || (val % 100) != 0) {
+            if (error) *error = "Invalid shooting interval (100-2000, step 100)";
+            return -1;
+        }
+        settings->shootingInterval = static_cast<uint8_t>(val / 100);
     } else if (member == "videoSize") {
         int width = 0;
         int height = 0;
@@ -1292,6 +1319,18 @@ int CameraPropertyService::writeRegistryValue(const ParameterDefinition& definit
     } else if (member == "bitrate") {
         const std::vector<VideoMode> modes = buildSupportedVideoModes();
         writeBitrateForMode(getCurrentVideoMode(modes), normalized.asInt());
+    } else if (member == "videoCodec") {
+        int val = normalized.asInt();
+        if (val < 1 || val > 2) { if (error) *error = "Invalid codec value (1=H.264, 2=H.265)"; return -1; }
+        settings->videoCodec = static_cast<uint8_t>(val);
+    } else if (member == "videoRcMode") {
+        int val = normalized.asInt();
+        if (val < 1 || val > 4) { if (error) *error = "Invalid RC mode (1=CBR, 2=VBR, 3=CVBR, 4=SMART)"; return -1; }
+        settings->videoRcMode = static_cast<uint8_t>(val);
+    } else if (member == "audioRecordVolume") {
+        settings->audioRecordVolume = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "audioRecordGain") {
+        settings->audioRecordGain = static_cast<uint8_t>(normalized.asInt());
     } else if (member == "videoLength") {
         writeVideoLengthSeconds(normalized.asInt());
     } else if (member == "pirEn") {
@@ -1302,6 +1341,11 @@ int CameraPropertyService::writeRegistryValue(const ParameterDefinition& definit
         settings->shootingLimits = static_cast<uint8_t>(normalized.asInt());
     } else if (member == "timerEn") {
         settings->timerEn = static_cast<uint8_t>(normalized.asInt());
+    } else if (member == "timerLapse") {
+        if (!parseTimeValue(normalized, settings->timerLapse_m, settings->timerLapse_s)) {
+            if (error) *error = "Invalid time value (format: MM:SS)";
+            return -1;
+        }
     } else if (member == "timer1s") {
         if (!parseTimeValue(normalized, settings->timer1s_h, settings->timer1s_m)) {
             if (error) *error = "Invalid time value";
@@ -1661,6 +1705,34 @@ void CameraPropertyService::getVideoRecordConfig(int& width, int& height, int& f
     height = currentMode.height;
     fps = currentMode.fps;
     bitrateKbps = currentBitrateKbpsForMode(currentMode);
+}
+
+int CameraPropertyService::getVideoRecordLength() const {
+    return currentVideoLengthSeconds();
+}
+
+int CameraPropertyService::getVideoRecordCodec() const {
+    Settings* settings = Settings::getInstance().get();
+    int codec = static_cast<int>(settings->videoCodec);
+    if (codec < 1 || codec > 2) codec = 1;  // default H.264
+    return codec;
+}
+
+int CameraPropertyService::getVideoRecordRcMode() const {
+    Settings* settings = Settings::getInstance().get();
+    int mode = static_cast<int>(settings->videoRcMode);
+    if (mode < 1 || mode > 4) mode = 1;  // default CBR
+    return mode;
+}
+
+int CameraPropertyService::getStillQualityForJpeg() const {
+    int level = static_cast<int>(Settings::getInstance()->stillQuality);
+    switch (level) {
+        case 1:  return 60;   // Economy
+        case 2:  return 80;   // Normal
+        case 3:  return 95;   // Fine
+        default: return 85;   // fallback
+    }
 }
 
 } // namespace service

@@ -209,7 +209,10 @@ std::vector<ParameterDefinition> buildDefinitions() {
                                              settingsBinding("stillSize"), "照片大小");
     addOption(imageSize, "2M");
     addOption(imageSize, "4M");
+#if !defined(SENSOR_TYPE_GC4653) && !defined(SENSOR_TYPE_SC4336P)
+    addOption(imageSize, "5M");
     addOption(imageSize, "6M");
+#endif
     addOption(imageSize, "8M");
     addOption(imageSize, "16M");
     addOption(imageSize, "24M");
@@ -218,7 +221,7 @@ std::vector<ParameterDefinition> buildDefinitions() {
     defs.push_back(imageSize);
 
     ParameterDefinition imageQuality = property("Camera_Setting", "CAM_ImageQuality", ParameterValueType::NUMBER, 3,
-                                                placeholderBinding(), "照片质量");
+                                                settingsBinding("stillQuality"), "照片质量");
     dependsOn(imageQuality, "Photo_DS_EN", "Photo_DS_EN is disabled");
     setRange(imageQuality, 1, 3, 1);
     defs.push_back(imageQuality);
@@ -229,7 +232,7 @@ std::vector<ParameterDefinition> buildDefinitions() {
     defs.push_back(shootingP);
 
     ParameterDefinition shootingInt = property("Camera_Setting", "CAM_Shooting_INT", ParameterValueType::NUMBER, 100,
-                                               placeholderBinding(), "照片连拍间隔");
+                                               settingsBinding("shootingInterval"), "照片连拍间隔");
     dependsOn(shootingInt, "Photo_DS_EN", "Photo_DS_EN is disabled");
     setRange(shootingInt, 100, 2000, 100, "ms");
     defs.push_back(shootingInt);
@@ -264,28 +267,28 @@ std::vector<ParameterDefinition> buildDefinitions() {
     addOption(videoSize, "4K/30FPS");
     defs.push_back(videoSize);
 
-    ParameterDefinition videoEncoded = property("Camera_Setting", "Video_Encoded", ParameterValueType::NUMBER, 2,
-                                                placeholderBinding(), "视频编码");
+    ParameterDefinition videoEncoded = property("Camera_Setting", "Video_Encoded", ParameterValueType::NUMBER, 1,
+                                                settingsBinding("videoCodec"), "视频编码");
     dependsOn(videoEncoded, "Video_DS_EN", "Video_DS_EN is disabled");
     addOption(videoEncoded, 1);
     addOption(videoEncoded, 2);
     defs.push_back(videoEncoded);
 
-    ParameterDefinition bitrateType = property("Camera_Setting", "Video_Bitrate_Type", ParameterValueType::NUMBER, 2,
-                                               placeholderBinding(), "视频码率");
+    ParameterDefinition bitrateType = property("Camera_Setting", "Video_Bitrate_Type", ParameterValueType::NUMBER, 1,
+                                               settingsBinding("videoRcMode"), "视频码率");
     dependsOn(bitrateType, "Video_DS_EN", "Video_DS_EN is disabled");
     for (int value = 1; value <= 4; ++value) addOption(bitrateType, value);
     defs.push_back(bitrateType);
 
     ParameterDefinition bitrateValue = property("Camera_Setting", "Video_Bitrate_Value", ParameterValueType::NUMBER, 4000,
-                                                settingsBinding("bitrate"), "码率值");
+                                                placeholderBinding(), "码率值");
     bitrateValue.legacyAliases.push_back("bitrate");
     dependsOn(bitrateValue, "Video_DS_EN", "Video_DS_EN is disabled");
     setRange(bitrateValue, 100, 16000, 100, "Kbps");
     defs.push_back(bitrateValue);
 
     ParameterDefinition videoLength = property("Camera_Setting", "Video_Length", ParameterValueType::NUMBER, 10,
-                                               settingsBinding("videoLength"), "视频长度");
+                                               placeholderBinding(), "视频长度");
     videoLength.legacyAliases.push_back("max_record_duration");
     setRange(videoLength, 1, 600, 1, "s");
     defs.push_back(videoLength);
@@ -295,6 +298,16 @@ std::vector<ParameterDefinition> buildDefinitions() {
     dependsOn(audioVolume, "Audio_SPK_EN", "Audio_SPK_EN is disabled");
     setRange(audioVolume, 0, 100, 10);
     defs.push_back(audioVolume);
+
+    ParameterDefinition recordVolume = property("Audio_Setting", "Audio_Record_Volume", ParameterValueType::NUMBER, 80,
+                                                 settingsBinding("audioRecordVolume"), "录音音量");
+    setRange(recordVolume, 0, 100, 5);
+    defs.push_back(recordVolume);
+
+    ParameterDefinition recordGain = property("Audio_Setting", "Audio_Record_Gain", ParameterValueType::NUMBER, 28,
+                                               settingsBinding("audioRecordGain"), "录音增益");
+    setRange(recordGain, 0, 31, 1);
+    defs.push_back(recordGain);
 
     ParameterDefinition pirMode = property("PIR_Setting", "PIR_Mode", ParameterValueType::NUMBER, 0,
                                            settingsBinding("pirEn"), "PIR模式");
@@ -328,7 +341,7 @@ std::vector<ParameterDefinition> buildDefinitions() {
     defs.push_back(property("Timer_Setting", "Timer_PIR_Enable", ParameterValueType::NUMBER, 1,
                             placeholderBinding(), "PIR开关"));
     defs.push_back(property("Timer_Setting", "Timer_Interval_Time", ParameterValueType::STRING, "00:01",
-                            placeholderBinding(), "循环拍摄间隔"));
+                            settingsBinding("timerLapse"), "循环拍摄间隔"));
     defs.push_back(property("Timer_Setting", "Timer_1Start", ParameterValueType::STRING, "00:00",
                             settingsBinding("timer1s"), "时间段1-开始"));
     defs.push_back(property("Timer_Setting", "Timer_1End", ParameterValueType::STRING, "23:59",

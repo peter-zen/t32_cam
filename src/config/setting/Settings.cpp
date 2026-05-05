@@ -27,6 +27,10 @@ bool Settings::saveToJsonFile(const std::string& filePath)
 	root["videoQuality"] = static_cast<int>(this->videoQuality);
 	root["videoSeamless"] = static_cast<int>(this->videoSeamless);
 	root["videoStamp"] = static_cast<int>(this->videoStamp);
+	root["videoCodec"] = static_cast<int>(this->videoCodec);
+	root["videoRcMode"] = static_cast<int>(this->videoRcMode);
+	root["audioRecordVolume"] = static_cast<int>(this->audioRecordVolume);
+	root["audioRecordGain"] = static_cast<int>(this->audioRecordGain);
 
 	root["metering"] = static_cast<int>(this->metering);
 	root["wb"] = static_cast<int>(this->wb);
@@ -45,6 +49,7 @@ bool Settings::saveToJsonFile(const std::string& filePath)
 	root["realCameraMode"] = static_cast<int>(this->realCameraMode);
 	root["burstNumber"] = static_cast<int>(this->burstNumber);
 	root["shootingLimits"] = static_cast<int>(this->shootingLimits);
+	root["shootingInterval"] = static_cast<int>(this->shootingInterval);
 	root["videoLength_h"] = static_cast<int>(this->videoLength_h);
 	root["videoLength_l"] = static_cast<int>(this->videoLength_l);
 
@@ -181,6 +186,10 @@ bool Settings::loadFromJsonFile(const std::string& filePath)
 	if (root.isMember("videoQuality")) this->videoQuality = static_cast<uint8_t>(root["videoQuality"].asInt());
 	if (root.isMember("videoSeamless")) this->videoSeamless = static_cast<uint8_t>(root["videoSeamless"].asInt());
 	if (root.isMember("videoStamp")) this->videoStamp = static_cast<uint8_t>(root["videoStamp"].asInt());
+	if (root.isMember("videoCodec")) this->videoCodec = static_cast<uint8_t>(root["videoCodec"].asInt());
+	if (root.isMember("videoRcMode")) this->videoRcMode = static_cast<uint8_t>(root["videoRcMode"].asInt());
+	if (root.isMember("audioRecordVolume")) this->audioRecordVolume = static_cast<uint8_t>(root["audioRecordVolume"].asInt());
+	if (root.isMember("audioRecordGain")) this->audioRecordGain = static_cast<uint8_t>(root["audioRecordGain"].asInt());
 
 	if (root.isMember("metering")) this->metering = static_cast<uint8_t>(root["metering"].asInt());
 	if (root.isMember("wb")) this->wb = static_cast<uint8_t>(root["wb"].asInt());
@@ -199,6 +208,7 @@ bool Settings::loadFromJsonFile(const std::string& filePath)
 	if (root.isMember("realCameraMode")) this->realCameraMode = static_cast<uint8_t>(root["realCameraMode"].asInt());
 	if (root.isMember("burstNumber")) this->burstNumber = static_cast<uint8_t>(root["burstNumber"].asInt());
 	if (root.isMember("shootingLimits")) this->shootingLimits = static_cast<uint8_t>(root["shootingLimits"].asInt());
+	if (root.isMember("shootingInterval")) this->shootingInterval = static_cast<uint8_t>(root["shootingInterval"].asInt());
 	if (root.isMember("videoLength_h")) this->videoLength_h = static_cast<uint8_t>(root["videoLength_h"].asInt());
 	if (root.isMember("videoLength_l")) this->videoLength_l = static_cast<uint8_t>(root["videoLength_l"].asInt());
 

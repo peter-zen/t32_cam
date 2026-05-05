@@ -67,6 +67,10 @@ public:
                                std::string* error = nullptr);
 
     void getVideoRecordConfig(int& width, int& height, int& fps, int& bitrateKbps) const;
+    int getVideoRecordLength() const;
+    int getVideoRecordCodec() const;   // returns 1=H.264, 2=H.265 (registry value)
+    int getVideoRecordRcMode() const;  // returns 1=CBR, 2=VBR, 3=CVBR, 4=SMART (registry value)
+    int getStillQualityForJpeg() const; // maps registry 1-3 quality level to JPEG encoder 1-100 scale
 
 private:
     CameraPropertyService() = default;
