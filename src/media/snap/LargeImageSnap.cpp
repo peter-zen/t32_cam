@@ -17,17 +17,8 @@
 
 namespace media {
 
-// From libimp.a — SIMD bilinear resize (NV12)
-extern "C" void c_resize_simd(uint8_t* src, uint8_t* dst,
-    int src_w, int src_h, int dst_w, int dst_h,
-    bool is_clip, int clip_offset, int clip_w, int clip_h,
-    int format, uint16_t* resize_buf);
-
-// NV12 format enum (matches c_csp_t in header_set.h)
-static const int C_CSP_NV12 = 0x004;
-
 LargeImageSnap::LargeImageSnap()
-    : cropBuf_(nullptr), resizeBuf_(nullptr), jpegBuf_(nullptr), simdTmpBuf_(nullptr)
+    : cropBuf_(nullptr), resizeBuf_(nullptr), jpegBuf_(nullptr)
     , sensorW_(0), sensorH_(0) {}
 
 LargeImageSnap::~LargeImageSnap() {
@@ -67,15 +58,6 @@ bool LargeImageSnap::allocateBuffers(int src_w, int src_h, int dst_w, int dst_h)
         return false;
     }
 
-    // SIMD temporary buffer
-    int simdTmpSize = static_cast<int>(sizeof(uint16_t)) *
-        (dst_w * 5 + stripH * 6 + 2592);
-    simdTmpBuf_ = static_cast<uint16_t*>(malloc(simdTmpSize));
-    if (!simdTmpBuf_) {
-        freeBuffers();
-        return false;
-    }
-
     return true;
 }
 
@@ -83,7 +65,6 @@ void LargeImageSnap::freeBuffers() {
     if (cropBuf_) { free(cropBuf_); cropBuf_ = nullptr; }
     if (resizeBuf_) { IMP_Encoder_VbmFree(resizeBuf_); resizeBuf_ = nullptr; }
     if (jpegBuf_) { free(jpegBuf_); jpegBuf_ = nullptr; }
-    if (simdTmpBuf_) { free(simdTmpBuf_); simdTmpBuf_ = nullptr; }
 }
 
 void LargeImageSnap::cropStrip(uint8_t* dst, const uint8_t* src,
@@ -105,15 +86,9 @@ void LargeImageSnap::cropStrip(uint8_t* dst, const uint8_t* src,
 bool LargeImageSnap::resizeStrip(const uint8_t* cropBuf, uint8_t* resizeBuf,
     int src_w, int crop_h, int dst_w, int strip_h,
     int /*dst_w_total*/, int /*dst_h_total*/) {
-    if (dst_w <= 7680) {
-        c_resize_simd(const_cast<uint8_t*>(cropBuf), resizeBuf,
-                      src_w, crop_h, dst_w, strip_h,
-                      false, 0, 0, 0, C_CSP_NV12, simdTmpBuf_);
-    } else {
-        int ret = opencv_resize_crop_simd(const_cast<uint8_t*>(cropBuf), src_w, crop_h,
-                                           resizeBuf, dst_w, strip_h);
-        if (ret != 0) return false;
-    }
+    int ret = opencv_resize_crop_simd(const_cast<uint8_t*>(cropBuf), src_w, crop_h,
+                                       resizeBuf, dst_w, strip_h);
+    if (ret != 0) return false;
     return true;
 }
 
@@ -147,7 +122,7 @@ int LargeImageSnap::findSosDataOffset(const uint8_t* jpegData, int len) {
 
 bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h, int quality) {
     // Get sensor frame
-    IMPFrameInfo frame;
+    IMPFrameInfo *frame = nullptr;
     // Use channel 0 (HD stream) for source frame
     int sensorChn = 0;
     int ret = IMP_FrameSource_GetFrame(sensorChn, &frame);
@@ -155,9 +130,9 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
         return false;
     }
 
-    int src_w = frame.width;
-    int src_h = frame.height;
-    const uint8_t* srcData = reinterpret_cast<const uint8_t*>(frame.virAddr);
+    int src_w = frame->width;
+    int src_h = frame->height;
+    const uint8_t* srcData = reinterpret_cast<const uint8_t*>(frame->virAddr);
 
     // Calculate strip parameters
     int numStrips = src_h / kCropHeight;
@@ -168,14 +143,14 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
 
     // Allocate buffers
     if (!allocateBuffers(src_w, src_h, dst_w, dst_h)) {
-        IMP_FrameSource_ReleaseFrame(sensorChn, &frame);
+        IMP_FrameSource_ReleaseFrame(sensorChn, frame);
         return false;
     }
 
     // Open output file
     FILE* fp = fopen(filename.c_str(), "wb");
     if (!fp) {
-        IMP_FrameSource_ReleaseFrame(sensorChn, &frame);
+        IMP_FrameSource_ReleaseFrame(sensorChn, frame);
         freeBuffers();
         return false;
     }
@@ -243,7 +218,7 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
     }
 
     fclose(fp);
-    IMP_FrameSource_ReleaseFrame(sensorChn, &frame);
+    IMP_FrameSource_ReleaseFrame(sensorChn, frame);
     freeBuffers();
 
     return success;

@@ -33,10 +33,10 @@ std::string jsonValueToString(const Json::Value& value) {
         return value.asBool() ? "true" : "false";
     }
     if (value.isInt()) {
-        return std::to_string(value.asInt());
+        return to_string(value.asInt());
     }
     if (value.isUInt()) {
-        return std::to_string(value.asUInt());
+        return to_string(value.asUInt());
     }
     return "";
 }

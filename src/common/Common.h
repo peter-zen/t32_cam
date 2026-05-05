@@ -211,4 +211,17 @@ static struct {
 #ifdef __cplusplus
 }
 #endif
+
+#ifdef USE_UCLIBC
+#include <sstream>
+#include <string>
+
+template<typename T>
+inline std::string to_string(const T& val) {
+    std::ostringstream oss;
+    oss << val;
+    return oss.str();
+}
+#endif
+
 #endif

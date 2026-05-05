@@ -1,5 +1,5 @@
 # 设置项目根路径
-set(PROJECT_ROOT_DIR /home/zengping/t32)
+set(PROJECT_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 # 设置目标系统名称
 set(CMAKE_SYSTEM_NAME Linux)
 
@@ -7,7 +7,7 @@ set(USE_UCLIBC 1)
 
 # 设置目标系统处理器架构
 set(CMAKE_SYSTEM_PROCESSOR mips)
-set(TOOLCHAIN_PATH ${PROJECT_ROOT_DIR}/bsp/toolchain/mips-gcc540-glibc222-cmake3.16.3-r3.3.7.mxu2.cve)
+set(TOOLCHAIN_PATH ${PROJECT_ROOT_DIR}/toolchain/mips-gcc540-glibc222-r3.3.7.mxu2.cve)
 
 if (USE_UCLIBC)
 set(UCLIBC_TAG "-uclibc")
@@ -53,6 +53,6 @@ set(CMAKE_STRIP ${TOOLCHAIN_PATH}/bin/mips-linux${UCLIBC_TAG}-gnu-strip)
 # Set optimization flags to reduce executable size
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Os -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Os -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections -Wl,-s -Wl,--strip-all")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections -Wl,-s -Wl,--strip-all -latomic")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--gc-sections -Wl,-s -Wl,--strip-all")
 set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,--gc-sections -Wl,-s -Wl,--strip-all")

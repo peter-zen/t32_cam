@@ -82,6 +82,8 @@ if(NOT BUILD_FOR_SIMULATION)
         -O2
         -Wall
         -march=mips32r2
+        -mmxu2
+        -flax-vector-conversions
     )
 else()
     # PC模拟编译: 使用通用选项，并定义BUILD_FOR_SIMULATION宏

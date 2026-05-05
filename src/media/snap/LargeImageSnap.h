@@ -38,7 +38,6 @@ private:
     uint8_t* cropBuf_;
     uint8_t* resizeBuf_;
     uint8_t* jpegBuf_;
-    uint16_t* simdTmpBuf_;
 
     int sensorW_;
     int sensorH_;

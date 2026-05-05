@@ -397,8 +397,7 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
 
     // Disk space check and loop recording cleanup
     {
-        int bitrateBps = 0;
-        vidParam->getBitrate(bitrateBps);
+        int bitrateBps = vidParam->getBitrate();
         // Estimate space needed (bitrate * duration / 8) + 10% overhead, in MB
         long long estimatedMB = 0;
         if (duration > 0) {
