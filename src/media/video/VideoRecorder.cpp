@@ -755,7 +755,8 @@ bool VideoRecorder::initVideo()
     vidParam->getResolution(w, h);
     hal::VideoStreamConfig cfg;
     memset(&cfg, 0, sizeof(hal::VideoStreamConfig));
-    cfg.payload = hal::VideoPayloadType::H264;
+    cfg.payload = (vidParam && vidParam->getCodecFormat() == media::VideoCodecFormat::H265)
+        ? hal::VideoPayloadType::H265 : hal::VideoPayloadType::H264;
     cfg.channel.sensor_index = VIDEO_SENSOR_ID;
     cfg.channel.stream_index = VIDEO_STREAM_ID;
     cfg.width = w;
@@ -766,7 +767,8 @@ bool VideoRecorder::initVideo()
         if (cfg.gop <= 0) {
             cfg.gop = cfg.fps_num > 0 ? cfg.fps_num * 2 : 60;
         }
-	    cfg.rc_mode = hal::VideoRcMode::CBR;
+	    cfg.rc_mode = static_cast<hal::VideoRcMode>(
+	        vidParam ? static_cast<int>(vidParam->getRcMode()) : static_cast<int>(hal::VideoRcMode::CBR));
 	    cfg.enable_ivdc = true;
     if (!stream_->configure(cfg)) {
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
