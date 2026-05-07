@@ -16,6 +16,7 @@ int check_arguments(int argc, char *argv[]);
 int create_directory(const char *dir_path);
 int generate_wifi_config(const char *ssid, const char *password, const char *config_file);
 int load_wifi_driver(const char *driver_path);
+int wait_for_interface(const char *ifname, int timeout_s);
 int connect_wifi(const char *ifname, const char *config_file, int timeout);
 int configure_dhcp(const char *ifname, int retries);
 void print_ip_address(const char *ifname);
@@ -57,6 +58,12 @@ int main(int argc, char *argv[]) {
     // Load WiFi driver
     if (driver_loaded == 0 && load_wifi_driver("/system/bin/wifi/8189fs.ko") != 0) {
         printf("Error: Failed to load WiFi driver\n");
+        return -1;
+    }
+
+    // Wait for the interface to appear
+    if (wait_for_interface(WIFI_IFNAME, 10) != 0) {
+        printf("Error: WiFi interface %s not found\n", WIFI_IFNAME);
         return -1;
     }
 
@@ -119,10 +126,33 @@ int load_wifi_driver(const char *driver_path) {
     return result;
 }
 
+int wait_for_interface(const char *ifname, int timeout_s) {
+    char path[128];
+    sprintf(path, "/sys/class/net/%s", ifname);
+    
+    int wait_count = 0;
+    while (wait_count < timeout_s) {
+        if (access(path, F_OK) == 0) {
+            printf("Interface %s found after %d seconds\n", ifname, wait_count);
+            
+            // Try to bring the interface up to be sure it's ready
+            char cmd[256];
+            sprintf(cmd, "ifconfig %s up", ifname);
+            execute_command(cmd);
+            
+            return 0;
+        }
+        sleep(1);
+        wait_count++;
+    }
+    printf("Error: Interface %s not found after %d seconds\n", ifname, timeout_s);
+    return -1;
+}
+
 int connect_wifi(const char *ifname, const char *config_file, int timeout) {
-    // Start wpa_supplicant
+    // Start wpa_supplicant with both nl80211 and wext drivers for compatibility
     char cmd[256];
-    sprintf(cmd, "/system/bin/wifi/wpa_supplicant -i %s -c %s -C /tmp/wpa_supplicant &", ifname, config_file);
+    sprintf(cmd, "/system/bin/wifi/wpa_supplicant -Dnl80211,wext -i %s -c %s -C /tmp/wpa_supplicant &", ifname, config_file);
     
     int result = execute_command(cmd);
     if (result != 0) {

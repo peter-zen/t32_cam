@@ -241,10 +241,12 @@ bool MCU::waitFor(int seconds)
 	unsigned char buf[2] = { 0 };
 	buf[0] = (seconds >> 8) & 0xFF;
 	buf[1] = seconds & 0xFF;
-	if (iic->write(PARAM_UP_OUTTIME_H, &buf[0], 1) != 1) {
+	int reg_start = PARAM_UNPACK_START(PARAM_UP_OUTTIME_H);
+	if (iic->write(reg_start, &buf[0], 1) != 1) {
 		return false;
 	}
-	if (iic->write(PARAM_UP_OUTTIME, &buf[1], 1) != 1) {
+	reg_start = PARAM_UNPACK_START(PARAM_UP_OUTTIME);
+	if (iic->write(reg_start, &buf[1], 1) != 1) {
 		return false;
 	}
 	return true;
@@ -429,7 +431,8 @@ bool MCU::writeRemoteWakeup(int remote_wakeup)
 {
 	return true;
 	unsigned char buf[1] = { static_cast<unsigned char>(remote_wakeup) };
-	if (iic->write(PARAM_REMOTE_WAKE_EN, buf, 1) != 1) {
+	int reg_start = PARAM_UNPACK_START(PARAM_REMOTE_WAKE_EN);
+	if (iic->write(reg_start, buf, 1) != 1) {
 		return false;
 	}
 	return true;
@@ -763,8 +766,8 @@ bool MCU::writePID(const std::string &pid)
 
 	unsigned char *buf = (unsigned char *)pid.c_str();
 	int nbytes = pid.length();
-
-	if (iic->write(PARAM_MCU_PID, buf, nbytes) <= 0) {
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PID);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]write PID failed");
 	    return false;
 	}
@@ -779,8 +782,8 @@ bool MCU::writeUPID(const std::string &upid)
 	
 	unsigned char *buf = (unsigned char *)upid.c_str();
 	int nbytes = upid.length();
-
-	if (iic->write(PARAM_MCU_UPID, buf, nbytes) <= 0) {
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UPID);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]write UPID failed");
 	    return false;
 	}
@@ -795,8 +798,8 @@ bool MCU::writeUPWD(const std::string &password)
 	
 	unsigned char *buf = (unsigned char *)password.c_str();
 	int nbytes = password.length();
-
-	if (iic->write(PARAM_MCU_UPWD, buf, nbytes) <= 0) {
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UPWD);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]write UPWD failed");
 	    return false;
 	}
@@ -910,13 +913,14 @@ bool MCU::setDatetime(const struct tm *time)
 
 	unsigned char buf[32];
 	int nbytes = 0;
-
+	int reg_start = 0;
 	{//year
 		int year = (time->tm_year + YEAR_OFFSET);
+		reg_start = PARAM_UNPACK_START(PARAM_MCU_YEAR);
 		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_YEAR);
 		memset(&buf[0], 0, sizeof(buf));
 		memcpy(&buf[0], &year, nbytes);
-		if (iic->write(PARAM_MCU_YEAR, buf, nbytes) <= 0) {
+		if (iic->write(reg_start, buf, nbytes) <= 0) {
 			Logger::log(LogLevel::ERROR, "Failed to write year to MCU");
 			return false;
 		}
@@ -924,10 +928,11 @@ bool MCU::setDatetime(const struct tm *time)
 
 	{//month
 		int month = (time->tm_mon + MONTH_OFFSET);
+		reg_start = PARAM_UNPACK_START(PARAM_MCU_MONTH);
 		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_MONTH);
 		memset(&buf[0], 0, sizeof(buf));
 		memcpy(&buf[0], &month, nbytes);
-		if (iic->write(PARAM_MCU_MONTH, buf, nbytes) <= 0) {
+		if (iic->write(reg_start, buf, nbytes) <= 0) {
 			Logger::log(LogLevel::ERROR, "Failed to write month to MCU");
 			return false;
 		}
@@ -935,10 +940,11 @@ bool MCU::setDatetime(const struct tm *time)
 
 	{//day
 		int day = time->tm_mday;
+		reg_start = PARAM_UNPACK_START(PARAM_MCU_DAY);
 		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_DAY);
 		memset(&buf[0], 0, sizeof(buf));
 		memcpy(&buf[0], &day, nbytes);
-		if (iic->write(PARAM_MCU_DAY, buf, nbytes) <= 0) {
+		if (iic->write(reg_start, buf, nbytes) <= 0) {
 			Logger::log(LogLevel::ERROR, "Failed to write day to MCU");
 			return false;
 		}
@@ -946,10 +952,11 @@ bool MCU::setDatetime(const struct tm *time)
 	
 	{//hour
 		int hour = time->tm_hour;
+		reg_start = PARAM_UNPACK_START(PARAM_MCU_HOUR);
 		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_HOUR);
 		memset(&buf[0], 0, sizeof(buf));
 		memcpy(&buf[0], &hour, nbytes);
-		if (iic->write(PARAM_MCU_HOUR, buf, nbytes) <= 0) {
+		if (iic->write(reg_start, buf, nbytes) <= 0) {
 			Logger::log(LogLevel::ERROR, "Failed to write hour to MCU");
 			return false;
 		}
@@ -957,10 +964,11 @@ bool MCU::setDatetime(const struct tm *time)
 
 	{//minute
 		int minute = time->tm_min;
+		reg_start = PARAM_UNPACK_START(PARAM_MCU_MINUTE);
 		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_MINUTE);
 		memset(&buf[0], 0, sizeof(buf));
 		memcpy(&buf[0], &minute, nbytes);
-		if (iic->write(PARAM_MCU_MINUTE, buf, nbytes) <= 0) {
+		if (iic->write(reg_start, buf, nbytes) <= 0) {
 			Logger::log(LogLevel::ERROR, "Failed to write minute to MCU");
 			return false;
 		}
@@ -968,10 +976,11 @@ bool MCU::setDatetime(const struct tm *time)
 
 	{//second
 		int second = time->tm_sec;
+		reg_start = PARAM_UNPACK_START(PARAM_MCU_SECOND);
 		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SECOND);
 		memset(&buf[0], 0, sizeof(buf));
 		memcpy(&buf[0], &second, nbytes);
-		if (iic->write(PARAM_MCU_SECOND, buf, nbytes) <= 0) {
+		if (iic->write(reg_start, buf, nbytes) <= 0) {
 			Logger::log(LogLevel::ERROR, "Failed to write second to MCU");
 			return false;
 		}
@@ -1203,7 +1212,7 @@ bool MCU::writeGps(const std::string &gps)
 			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSL);
 			memset(buf, 0, sizeof(buf));
 			memcpy(buf, &longitude, nbytes);
-			if (iic->write(PARAM_MCU_GPSL, buf, nbytes) <= 0) {
+			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_GPSL), buf, nbytes) <= 0) {
 				Logger::log(LogLevel::ERROR, "Failed to write longitude to MCU");
 				success = false;
 			}
@@ -1216,7 +1225,7 @@ bool MCU::writeGps(const std::string &gps)
 			memcpy(buf, &latitude, nbytes);
 			// 注意：这里读取使用的是PARAM_MCU_GPSL地址，但根据函数名应该写入到PARAM_MCU_GPSA
 			// 为保持一致性，这里使用与readGps相同的地址
-			if (iic->write(PARAM_MCU_GPSL, buf, nbytes) <= 0) {
+			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_GPSL), buf, nbytes) <= 0) {
 				Logger::log(LogLevel::ERROR, "Failed to write latitude to MCU");
 				success = false;
 			}
@@ -1227,7 +1236,7 @@ bool MCU::writeGps(const std::string &gps)
 			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSH);
 			memset(buf, 0, sizeof(buf));
 			memcpy(buf, &altitude, nbytes);
-			if (iic->write(PARAM_MCU_GPSH, buf, nbytes) <= 0) {
+			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_GPSH), buf, nbytes) <= 0) {
 				Logger::log(LogLevel::ERROR, "Failed to write altitude to MCU");
 				success = false;
 			}
