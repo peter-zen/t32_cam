@@ -175,7 +175,7 @@ void test_timeline() {
     
     for (int i = 0; i < 20; i++) {
         MediaItem item;
-        item.filePath = "/sdcard/file_" + std::to_string(i) + ".jpg";
+        item.filePath = "/sdcard/file_" + to_string_custom(i) + ".jpg";
         item.type = 1;
         item.timestamp = 1000 + i; // ascending time
         item.fileSize = 100;
@@ -201,7 +201,7 @@ void test_timeline_by_type() {
 
     for (int i = 0; i < 6; i++) {
         MediaItem item;
-        item.filePath = "/sdcard/video_" + std::to_string(i) + ".mp4";
+        item.filePath = "/sdcard/video_" + to_string_custom(i) + ".mp4";
         item.type = 2;
         item.timestamp = 2000 + i;
         item.fileSize = 200;

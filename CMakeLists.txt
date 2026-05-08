@@ -52,6 +52,7 @@ if(NOT DEFINED CAMERA_BUILD_TIME)
 endif()
 
 #Set options
+add_definitions(-DPOWER_MANAGER_ON=0)
 add_definitions(-DRTC_EXIST=1)
 add_definitions(-DMCU_EXIST=1)
 add_definitions(-DDAEMON_ENABLE=0)

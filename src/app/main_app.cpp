@@ -864,9 +864,11 @@ static void signalHandler(int signal)
         } else {
             Logger::log(LogLevel::INFO, "Waiting 2 seconds before power off...");
             DeviceConfig::getInstance()->flush();
+            #if POWER_MANAGER_ON
             sleep(2);
             Misc::poweroff();
             while(1);
+            #endif 
         }
     }
 #endif
@@ -1697,8 +1699,10 @@ main_exit:
 #else
     syncWithMCU();
     config->flush();
-    //Misc::poweroff();
-    //while(1);
+#if POWER_MANAGER_ON
+    Misc::poweroff();
+    while(1);
+#endif
     return 0;
 #endif
 }

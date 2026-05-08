@@ -7,7 +7,7 @@ set(USE_UCLIBC 1)
 
 # 设置目标系统处理器架构
 set(CMAKE_SYSTEM_PROCESSOR mips)
-set(TOOLCHAIN_PATH ${PROJECT_ROOT_DIR}/toolchain/mips-gcc540-glibc222-r3.3.7.mxu2.cve)
+set(TOOLCHAIN_PATH ${PROJECT_ROOT_DIR}/../bsp/toolchain/mips-gcc540-glibc222-cmake3.16.3-r3.3.7.mxu2.cve)
 
 if (USE_UCLIBC)
 set(UCLIBC_TAG "-uclibc")
