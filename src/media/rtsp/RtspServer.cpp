@@ -409,16 +409,16 @@ int RtspServer::onSessionPlay(void **data, size_t *size, uint64_t *timestamp)
 
 bool RtspServer::initVideo()
 {
-    auto video = hal::HalProvider::createVideo();
-    if (!video) {
+    video_ = hal::HalProvider::createVideo();
+    if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
         return false;
     }
-    if (!video->init()) {
+    if (!video_->init()) {
         Logger::log(LogLevel::ERROR, "initialize: video init failed");
         return false;
     }
-    auto stream = video->createVideoStream();
+    auto stream = video_->createVideoStream();
     if (!stream) {
         Logger::log(LogLevel::ERROR, "initialize: createVideoStream failed");
         return false;
@@ -449,6 +449,10 @@ bool RtspServer::uninitVideo(void)
         if (videoSession_) {
             videoSession_->stop();
             videoSession_.reset();
+        }
+        if (video_) {
+            video_->exit();
+            video_.reset();
         }
     }
     return true;

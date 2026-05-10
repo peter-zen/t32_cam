@@ -61,6 +61,7 @@ class RtspServer {
         static std::function<void(void)> onSessionClosedCallback;
         static int onSessionClosed(void **data, size_t *size, uint64_t *timestamp);
         static int onSessionPlay(void **data, size_t *size, uint64_t *timestamp);
+        std::shared_ptr<hal::IVideo> video_;
         std::shared_ptr<MediaSession> videoSession_;
         std::shared_ptr<MediaSession> audioSession_;
         int audioSampleRate_;

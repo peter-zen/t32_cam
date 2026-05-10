@@ -393,21 +393,26 @@ static std::vector<ChannelConfig> buildChannels(const std::vector<SensorConfig>&
 }
 
 int OSDController::setPoolSize(int modeSel) {
+    int ret = 0;
     if(modeSel == 1) {
-        IMP_OSD_SetPoolSize(512*1024);
-        return 0;
+        ret = IMP_OSD_SetPoolSize(512*1024);
+        if (ret < 0) Logger::log(LogLevel::ERROR, "OSDController: IMP_OSD_SetPoolSize failed, ret=%d", ret);
     } else if(modeSel == 2) {
-        IMP_ISP_Tuning_SetOsdPoolSize(512 * 1024);
-        return 0;
+        ret = IMP_ISP_Tuning_SetOsdPoolSize(512 * 1024);
+        if (ret < 0) Logger::log(LogLevel::ERROR, "OSDController: IMP_ISP_Tuning_SetOsdPoolSize failed, ret=%d", ret);
     } else if(modeSel == 3) {
-        IMP_OSD_SetPoolSize(512*1024);
-        IMP_ISP_Tuning_SetOsdPoolSize(512 * 1024);
-        return 0;
+        ret = IMP_OSD_SetPoolSize(512*1024);
+        if (ret < 0) Logger::log(LogLevel::ERROR, "OSDController: IMP_OSD_SetPoolSize failed, ret=%d", ret);
+        ret = IMP_ISP_Tuning_SetOsdPoolSize(512 * 1024);
+        if (ret < 0) Logger::log(LogLevel::ERROR, "OSDController: IMP_ISP_Tuning_SetOsdPoolSize failed, ret=%d", ret);
     } else {
-        IMP_OSD_SetPoolSize(512*1024);
-        IMP_ISP_Tuning_SetOsdPoolSize(512 * 1024);
-        return 0;
+        ret = IMP_OSD_SetPoolSize(512*1024);
+        if (ret < 0) Logger::log(LogLevel::ERROR, "OSDController: IMP_OSD_SetPoolSize failed, ret=%d", ret);
+        ret = IMP_ISP_Tuning_SetOsdPoolSize(512 * 1024);
+        if (ret < 0) Logger::log(LogLevel::ERROR, "OSDController: IMP_ISP_Tuning_SetOsdPoolSize failed, ret=%d", ret);
     }
+    Logger::log(LogLevel::INFO, "OSDController: setPoolSize(%d) done", modeSel);
+    return 0;
 }
 int SensorController::openISP() {
     if (IMP_ISP_Open() < 0) return -1;
@@ -919,6 +924,9 @@ bool IngenicVideoStream::start() {
             Logger::log(LogLevel::ERROR, "[HAL] start: IMP_FrameSource_EnableChn(%d) failed", group_id_);
             return false;
         }
+        if (IspOsdManager::getInstance()) {
+            IspOsdManager::getInstance()->start();
+        }
         if (IMP_Encoder_StartRecvPic(channel_id_) < 0) {
             Logger::log(LogLevel::ERROR, "[HAL] start: IMP_Encoder_StartRecvPic(%d) failed", channel_id_);
             IMP_FrameSource_DisableChn(group_id_);
@@ -1032,10 +1040,14 @@ bool IngenicVideoStream::requestIDR() {
     std::lock_guard<std::mutex> lock(mtx_);
     return IMP_Encoder_RequestIDR(channel_id_) == 0;
 }
-IngenicVideo::IngenicVideo() : direct_switch_(0), gosd_enable_(0) {
+IngenicVideo::IngenicVideo() : direct_switch_(0), gosd_enable_(2), exitCalled_(false) {
 
 }
-IngenicVideo::~IngenicVideo() {}
+IngenicVideo::~IngenicVideo() {
+    if (!exitCalled_) {
+        exit();
+    }
+}
 
 bool IngenicVideo::init() {
     if (g_video_init_ref_count.fetch_add(1) > 0) {
@@ -1071,12 +1083,22 @@ bool IngenicVideo::init() {
     fsMgr.init(buildChannels(sensors));
     if (fsMgr.create() < 0) return false;
     if (fsMgr.setAttr() < 0) return false;
+    ispOsdMgr_.reset(new IspOsdManager());
+    if (!ispOsdMgr_->init(SENSOR_NUM)) {
+        Logger::log(LogLevel::WARNING, "IngenicVideo: IspOsdManager init failed");
+    }
     return true;
 }
 bool IngenicVideo::exit() {
+    if (exitCalled_) return true;
+    exitCalled_ = true;
     if (g_video_init_ref_count.fetch_sub(1) > 1) {
         Logger::log(LogLevel::INFO, "IngenicVideo still in use, ref=%d", g_video_init_ref_count.load());
         return true;
+    }
+    if (ispOsdMgr_) {
+        ispOsdMgr_->exit();
+        ispOsdMgr_.reset();
     }
     if (fsMgr.destroy() < 0) return false;
     IMP_System_Exit();

@@ -11,6 +11,8 @@ include_directories(
     ${SDK_INC_PATH}/imp
     ${SDK_INC_PATH}/sysutils
     ${THIRD_PARTY_PATH}/faac/include
+    ${THIRD_PARTY_PATH}/jsoncpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../config/setting
 )
 
 if(BUILD_FOR_SIMULATION)
@@ -19,7 +21,10 @@ if(BUILD_FOR_SIMULATION)
     set(HAL_GPIO_SRC  ${CMAKE_CURRENT_SOURCE_DIR}/simu/SimGpio.cpp)
 else()
     set(HAL_AUDIO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/ingenic/IngenicAudio.cpp)
-    set(HAL_VIDEO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/ingenic/IngenicVideo.cpp)
+    set(HAL_VIDEO_SRC
+        ${CMAKE_CURRENT_SOURCE_DIR}/ingenic/IngenicVideo.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/ingenic/IspOsdManager.cpp
+    )
     set(HAL_GPIO_SRC  ${CMAKE_CURRENT_SOURCE_DIR}/ingenic/IngenicGpio.cpp)
 endif()
 
@@ -46,6 +51,7 @@ else()
     target_link_libraries(hal_audio imp alog sysutils faac logger)
     target_link_libraries(hal_gpio  imp alog sysutils logger)
     target_link_libraries(hal_video PUBLIC hal_audio hal_gpio imp alog sysutils logger)
+    target_link_libraries(hal_video PRIVATE setting)
 endif()
 
 set_target_properties(hal_audio PROPERTIES

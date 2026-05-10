@@ -7,6 +7,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include "IspOsdManager.h"
 namespace hal {
 
 #define FS_CHN_NUM 12
@@ -116,6 +117,8 @@ private:
     chn_conf chn_[FS_CHN_NUM];
     int direct_switch_;
     int gosd_enable_;
+    bool exitCalled_;
+    std::unique_ptr<IspOsdManager> ispOsdMgr_;
 };
 
 class IngenicVideoControl : public IVideoControl {
