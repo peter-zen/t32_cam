@@ -9,7 +9,7 @@ namespace service {
 StorageInfo StorageServiceT32::getStorageInfo() {
     StorageInfo info;
     struct statvfs stat;
-    if (statvfs("/sdcard", &stat) == 0) {
+    if (statvfs("/mnt/sdcard", &stat) == 0) {
         unsigned long long blockSize = stat.f_frsize ? stat.f_frsize : stat.f_bsize;
         info.total = static_cast<long long>((stat.f_blocks * blockSize) >> 20);
         info.free = static_cast<long long>((stat.f_bavail * blockSize) >> 20);

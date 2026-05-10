@@ -90,7 +90,6 @@ CameraServiceT32::CameraServiceT32() {
     elog_i(TAG, "CameraServiceT32 created");
     image_snap_ = std::make_shared<media::ImageSnap>();
     large_snap_ = std::make_shared<media::LargeImageSnap>();
-    video_recorder_ = std::make_shared<media::VideoRecorder>();
     initScheduler();
 }
 
@@ -105,13 +104,6 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
     std::lock_guard<std::mutex> status_lock(status_mutex_);
     if (is_capturing_) {
         elog_w(TAG, "Already capturing");
-        return -1;
-    }
-
-    // CAM_Mode guard: reject photo in video-only mode
-    uint8_t camMode = Settings::getInstance()->cameraMode;
-    if (camMode == 2) {  // Mode 2: Video only
-        elog_w(TAG, "Photo rejected: cameraMode=%d (video only)", camMode);
         return -1;
     }
 
@@ -130,7 +122,7 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
     auto now = std::time(nullptr);
     auto tm = *std::localtime(&now);
     std::ostringstream oss;
-    oss << "/sdcard/DCIM/IMG_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".jpg";
+    oss << "/mnt/sdcard/DCIM/IMG_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".jpg";
     std::string filename = oss.str();
 
     bool ok;
@@ -163,13 +155,6 @@ int CameraServiceT32::startBurstPhoto(int count, int interval, const std::string
     (void)jobId;
     if (count <= 0) {
         elog_w(TAG, "Burst photo: invalid count=%d", count);
-        return -1;
-    }
-
-    // CAM_Mode guard: reject photo in video-only mode
-    uint8_t camMode = Settings::getInstance()->cameraMode;
-    if (camMode == 2) {
-        elog_w(TAG, "Burst photo rejected: cameraMode=%d (video only)", camMode);
         return -1;
     }
 
@@ -329,7 +314,7 @@ int CameraServiceT32::capturePreviewFrame(int channel, int width, int height, st
 
     std::lock_guard<std::mutex> lock(op_mutex_);
 
-    const std::string base_dir = "/sdcard/.preview/";
+    const std::string base_dir = "/mnt/sdcard/.preview/";
     if (!Misc::createDirectory(base_dir)) {
         return -1;
     }
@@ -358,19 +343,13 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
         return -1;
     }
 
-    // CAM_Mode guard: reject recording in photo-only mode
-    uint8_t camMode = Settings::getInstance()->cameraMode;
-    if (camMode == 0) {  // Mode 0: Photo only
-        elog_w(TAG, "Recording rejected: cameraMode=%d (photo only)", camMode);
-        return -1;
-    }
     is_recording_ = true;
 
     // Generate filename
     auto now = std::time(nullptr);
     auto tm = *std::localtime(&now);
     std::ostringstream oss;
-    oss << "/sdcard/DCIM/VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
+    oss << "/mnt/sdcard/DCIM/VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
     std::string filename = oss.str();
     current_record_file_ = filename;
 
@@ -406,7 +385,7 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
         estimatedMB = estimatedMB * 11 / 10 + 10; // +10% overhead + 10MB safety
 
         struct statvfs stat;
-        if (statvfs("/sdcard", &stat) == 0) {
+        if (statvfs("/mnt/sdcard", &stat) == 0) {
             unsigned long long blockSize = stat.f_frsize ? stat.f_frsize : stat.f_bsize;
             long long freeMB = static_cast<long long>((stat.f_bavail * blockSize) >> 20);
 
@@ -427,7 +406,7 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
                         attempts++;
 
                         // Re-read free space
-                        if (statvfs("/sdcard", &stat) == 0) {
+                        if (statvfs("/mnt/sdcard", &stat) == 0) {
                             freeMB = static_cast<long long>((stat.f_bavail * blockSize) >> 20);
                         }
                     }
@@ -508,11 +487,11 @@ std::string CameraServiceT32::getAllPropertiesJson() {
 }
 
 std::string CameraServiceT32::getMediaDatabasePath() {
-    return "/sdcard/data/db/media_file.db";
+    return "/mnt/sdcard/data/db/media_file.db";
 }
 
 std::string CameraServiceT32::getThumbnailDatabasePath() {
-    return "/sdcard/data/db/media_thumb.db";
+    return "/mnt/sdcard/data/db/media_thumb.db";
 }
 
 std::string CameraServiceT32::getMediaList(int offset, int limit) {
@@ -578,6 +557,13 @@ void CameraServiceT32::initScheduler() {
             }
 
             if (!isInTimeWindow()) continue;
+
+            // CAM_Mode guard: scheduler auto-trigger respects cameraMode
+            uint8_t camMode = Settings::getInstance()->cameraMode;
+            if (camMode == 2) {  // Mode 2: Video only, skip scheduled photo
+                elog_w(TAG, "Scheduler: skipped photo, cameraMode=%d (video only)", camMode);
+                continue;
+            }
 
             // In time window: take a photo
             PhotoResult result;

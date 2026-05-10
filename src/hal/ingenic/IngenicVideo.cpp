@@ -6,9 +6,86 @@
 #include <string.h>
 #include <sys/time.h>
 #include <stdio.h>
+#include <atomic>
+#include <mutex>
+#include <map>
 #include "Logger.h"
 #include "sensor-config.h"
 namespace hal {
+
+static std::atomic<int> g_video_init_ref_count{0};
+
+static std::mutex g_group_mutex;
+static std::map<int, int> g_group_ref_count;
+
+static bool acquireGroup(int group_id) {
+    std::lock_guard<std::mutex> lock(g_group_mutex);
+    auto it = g_group_ref_count.find(group_id);
+    if (it != g_group_ref_count.end()) {
+        it->second++;
+        Logger::log(LogLevel::DEBUG, "[HAL] acquireGroup(%d): shared, ref=%d", group_id, it->second);
+        return true;
+    }
+    if (IMP_Encoder_CreateGroup(group_id) < 0) {
+        Logger::log(LogLevel::WARNING, "[HAL] acquireGroup(%d): CreateGroup failed, assuming already exists", group_id);
+    }
+    g_group_ref_count[group_id] = 1;
+    Logger::log(LogLevel::DEBUG, "[HAL] acquireGroup(%d): acquired, ref=1", group_id);
+    return true;
+}
+
+static void releaseGroup(int group_id) {
+    std::lock_guard<std::mutex> lock(g_group_mutex);
+    auto it = g_group_ref_count.find(group_id);
+    if (it == g_group_ref_count.end()) {
+        Logger::log(LogLevel::WARNING, "[HAL] releaseGroup(%d): not found", group_id);
+        return;
+    }
+    it->second--;
+    if (it->second <= 0) {
+        IMP_Encoder_DestroyGroup(group_id);
+        g_group_ref_count.erase(it);
+        Logger::log(LogLevel::DEBUG, "[HAL] releaseGroup(%d): destroyed", group_id);
+    } else {
+        Logger::log(LogLevel::DEBUG, "[HAL] releaseGroup(%d): shared, ref=%d", group_id, it->second);
+    }
+}
+
+static std::mutex g_bind_mutex;
+static std::map<int, int> g_bind_ref_count;
+
+static bool acquireBind(int group_id, IMPCell* fs_cell, IMPCell* enc_cell) {
+    std::lock_guard<std::mutex> lock(g_bind_mutex);
+    auto it = g_bind_ref_count.find(group_id);
+    if (it != g_bind_ref_count.end()) {
+        it->second++;
+        Logger::log(LogLevel::DEBUG, "[HAL] acquireBind(%d): shared, ref=%d", group_id, it->second);
+        return true;
+    }
+    if (IMP_System_Bind(fs_cell, enc_cell) < 0) {
+        Logger::log(LogLevel::WARNING, "[HAL] acquireBind(%d): Bind failed, assuming already bound", group_id);
+    }
+    g_bind_ref_count[group_id] = 1;
+    Logger::log(LogLevel::DEBUG, "[HAL] acquireBind(%d): bound, ref=1", group_id);
+    return true;
+}
+
+static void releaseBind(int group_id, IMPCell* fs_cell, IMPCell* enc_cell) {
+    std::lock_guard<std::mutex> lock(g_bind_mutex);
+    auto it = g_bind_ref_count.find(group_id);
+    if (it == g_bind_ref_count.end()) {
+        Logger::log(LogLevel::WARNING, "[HAL] releaseBind(%d): not found", group_id);
+        return;
+    }
+    it->second--;
+    if (it->second <= 0) {
+        IMP_System_UnBind(fs_cell, enc_cell);
+        g_bind_ref_count.erase(it);
+        Logger::log(LogLevel::DEBUG, "[HAL] releaseBind(%d): unbound", group_id);
+    } else {
+        Logger::log(LogLevel::DEBUG, "[HAL] releaseBind(%d): shared, ref=%d", group_id, it->second);
+    }
+}
 
 static std::vector<SensorConfig> loadSensors() {
     std::vector<SensorConfig> s;
@@ -758,9 +835,9 @@ IngenicVideoStream::~IngenicVideoStream() {
         if (IMP_Encoder_Query(channel_id_, &st) >= 0) {
             if (st.registered) { IMP_Encoder_UnRegisterChn(channel_id_); }
         }
-        IMP_System_UnBind(&fs_cell_, &enc_cell_);
+        releaseBind(group_id_, &fs_cell_, &enc_cell_);
         IMP_Encoder_DestroyChn(channel_id_);
-        IMP_Encoder_DestroyGroup(group_id_);
+        releaseGroup(group_id_);
         configured_ = false;
     }
 }
@@ -792,27 +869,27 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
         return false;
     }
 
-    if (IMP_Encoder_CreateGroup(group_id_) < 0) {
-        Logger::log(LogLevel::ERROR, "[HAL] configure: IMP_Encoder_CreateGroup(%d) failed", group_id_);
+    if (!acquireGroup(group_id_)) {
+        Logger::log(LogLevel::ERROR, "[HAL] configure: acquireGroup(%d) failed", group_id_);
         return false;
     }
 
     IMPEncoderCHNAttr chn_attr;
     if (!configureEncoderAttr(cfg, &chn_attr)) {
         Logger::log(LogLevel::ERROR, "[HAL] configureEncoderAttr failed");
-        IMP_Encoder_DestroyGroup(group_id_);
+        releaseGroup(group_id_);
         return false;
     }
-    
+
     if (IMP_Encoder_CreateChn(channel_id_, &chn_attr) < 0) {
         Logger::log(LogLevel::ERROR, "[HAL] configure: IMP_Encoder_CreateChn(%d) failed", channel_id_);
-        IMP_Encoder_DestroyGroup(group_id_);
+        releaseGroup(group_id_);
         return false;
     }
     if (IMP_Encoder_RegisterChn(group_id_, channel_id_) < 0) {
         Logger::log(LogLevel::ERROR, "[HAL] configure: IMP_Encoder_RegisterChn(g=%d,c=%d) failed", group_id_, channel_id_);
         IMP_Encoder_DestroyChn(channel_id_);
-        IMP_Encoder_DestroyGroup(group_id_);
+        releaseGroup(group_id_);
         return false;
     }
     fs_cell_.deviceID = DEV_ID_FS;
@@ -821,11 +898,11 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
     enc_cell_.deviceID = DEV_ID_ENC;
     enc_cell_.groupID = group_id_;
     enc_cell_.outputID = 0;
-    if (IMP_System_Bind(&fs_cell_, &enc_cell_) < 0) {
-        Logger::log(LogLevel::ERROR, "[HAL] configure: IMP_System_Bind(fs=%d,enc=%d) failed", fs_cell_.groupID, enc_cell_.groupID);
+    if (!acquireBind(group_id_, &fs_cell_, &enc_cell_)) {
+        Logger::log(LogLevel::ERROR, "[HAL] configure: acquireBind(fs=%d,enc=%d) failed", fs_cell_.groupID, enc_cell_.groupID);
         IMP_Encoder_UnRegisterChn(channel_id_);
         IMP_Encoder_DestroyChn(channel_id_);
-        IMP_Encoder_DestroyGroup(group_id_);
+        releaseGroup(group_id_);
         return false;
     }
     configured_ = true;
@@ -961,6 +1038,10 @@ IngenicVideo::IngenicVideo() : direct_switch_(0), gosd_enable_(0) {
 IngenicVideo::~IngenicVideo() {}
 
 bool IngenicVideo::init() {
+    if (g_video_init_ref_count.fetch_add(1) > 0) {
+        Logger::log(LogLevel::INFO, "IngenicVideo already initialized, ref=%d", g_video_init_ref_count.load());
+        return true;
+    }
     OSDController osd;
     if (osd.setPoolSize(gosd_enable_) < 0) return false;
 	if (IMP_Encoder_SetJpegBsSize(500 * 1024) < 0) {
@@ -993,6 +1074,10 @@ bool IngenicVideo::init() {
     return true;
 }
 bool IngenicVideo::exit() {
+    if (g_video_init_ref_count.fetch_sub(1) > 1) {
+        Logger::log(LogLevel::INFO, "IngenicVideo still in use, ref=%d", g_video_init_ref_count.load());
+        return true;
+    }
     if (fsMgr.destroy() < 0) return false;
     IMP_System_Exit();
     auto sensors = loadSensors();

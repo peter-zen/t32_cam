@@ -352,3 +352,15 @@ if(NOT BUILD_FOR_SIMULATION AND SDK_LIB_PATH)
         install(FILES ${SO_FILES} DESTINATION "${CMAKE_BINARY_DIR}/lib")
     endif()
 endif()
+
+# ============================================================================
+# Flatten symlinks in lib/ directory after build
+# Symlinks are not supported on FAT32/exFAT SD cards used on target hardware.
+# Copy the real file in place of each symlink so deployment works correctly.
+# ============================================================================
+if(NOT BUILD_FOR_SIMULATION)
+    add_custom_command(TARGET htc_main_app POST_BUILD
+        COMMAND bash "${CMAKE_SOURCE_DIR}/script/flatten_lib_symlinks.sh" "${CMAKE_BINARY_DIR}/lib"
+        COMMENT "Flattening library symlinks for target deployment"
+    )
+endif()

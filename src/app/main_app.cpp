@@ -914,9 +914,9 @@ int main(int argc, char* argv[])
                            : (simRootPath + "/logs");
     std::string log_file = log_root + "/app.log";
 #else
-    std::string db_path = EnvManager::getInstance()->getEnv("DB_PATH", "/sdcard/data/db");
-    std::string media_root = "/sdcard/DCIM";
-    std::string log_root = "/sdcard/logs";
+    std::string db_path = EnvManager::getInstance()->getEnv("DB_PATH", "/mnt/sdcard/data/db");
+    std::string media_root = "/mnt/sdcard/DCIM";
+    std::string log_root = "/mnt/sdcard/logs";
     std::string log_file = log_root + "/app.log";
 #endif
 

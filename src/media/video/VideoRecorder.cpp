@@ -161,9 +161,9 @@ static int addPrivateAudioTrack(MP4E_mux_t* muxer, int sampleRate, int channels,
 }
 
 VideoRecorder::VideoRecorder()
-    : stopRecording(false)
-    , vidParam(nullptr)
+    : vidParam(nullptr)
     , audParam(nullptr)
+    , stopRecording(false)
     , audio_track_id(-1)
     , audioRecording(false)
     , audioThreadId(0)
@@ -185,6 +185,7 @@ VideoRecorder::VideoRecorder()
 VideoRecorder::VideoRecorder(const std::shared_ptr<VideoParams> vidParam, const std::shared_ptr<AudioParams> audParam)
     : vidParam(vidParam)
     , audParam(audParam)
+    , stopRecording(false)
     , audio_track_id(-1)
     , audioRecording(false)
     , audioThreadId(0)
@@ -752,7 +753,12 @@ bool VideoRecorder::initVideo()
         return false;
     }
     int w = 0, h = 0;
-    vidParam->getResolution(w, h);
+    if (vidParam) {
+        vidParam->getResolution(w, h);
+    } else {
+        w = 1920;
+        h = 1080;
+    }
     hal::VideoStreamConfig cfg;
     memset(&cfg, 0, sizeof(hal::VideoStreamConfig));
     cfg.payload = (vidParam && vidParam->getCodecFormat() == media::VideoCodecFormat::H265)
