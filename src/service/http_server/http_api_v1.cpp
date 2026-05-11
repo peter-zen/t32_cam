@@ -30,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <time.h>
@@ -42,6 +43,13 @@ namespace {
 using PropertyMap = std::map<std::string, Json::Value>;
 
 static int api_v1_camera_photo_timer(struct mg_connection* conn, void* cbdata);
+
+template<typename T>
+std::string numberToString(T value) {
+    std::ostringstream oss;
+    oss << value;
+    return oss.str();
+}
 
 static int read_post_body(struct mg_connection* conn, std::string& body) {
     const char* content_len_str = mg_get_header(conn, "Content-Length");
@@ -413,7 +421,7 @@ static Json::UInt64 get_file_size(const std::string& path) {
 
 static Json::Value build_photo_json(const service::PhotoResult& result) {
     Json::Value photo(Json::objectValue);
-    photo["photo_id"] = "photo_" + std::to_string(result.timestamp);
+    photo["photo_id"] = "photo_" + numberToString(result.timestamp);
     photo["filename"] = get_filename(result.filePath);
     photo["filepath"] = result.filePath;
     photo["size"] = get_file_size(result.filePath);
@@ -472,9 +480,9 @@ static Json::Value build_sensor_data_json(const service::SensorData& s) {
     data["sdcard_capacity"] = s.sdcardCapacity;
     data["sdcard_used"] = s.sdcardUsed;
     data["cds"] = s.cds;
-    data["temp"] = std::to_string(s.temperature);
-    data["press"] = std::to_string(s.pressure);
-    data["rh"] = std::to_string(s.humidity);
+    data["temp"] = numberToString(s.temperature);
+    data["press"] = numberToString(s.pressure);
+    data["rh"] = numberToString(s.humidity);
     data["datetime"] = s.datetime;
     return data;
 }
@@ -541,10 +549,10 @@ static Json::Value build_media_item_json(const MediaItem& item) {
     jItem["effective_gop_frames"] = item.effectiveGopFrames;
     jItem["effective_gop_ms"] = item.effectiveGopMs;
     if (item.type == 1 || item.type == 2) {
-        jItem["download_url"] = "/api/v1/camera/files/download?id=" + std::to_string(item.id);
+        jItem["download_url"] = "/api/v1/camera/files/download?id=" + numberToString(item.id);
     }
     if (item.playbackCapable && item.type == 2) {
-        jItem["playback_url"] = "/api/v1/camera/video/playback?id=" + std::to_string(item.id);
+        jItem["playback_url"] = "/api/v1/camera/video/playback?id=" + numberToString(item.id);
     }
     return jItem;
 }
@@ -839,7 +847,7 @@ static int api_v1_camera_photo_burst(struct mg_connection* conn, void* cbdata) {
 
     int count = req_json.get("count", 3).asInt();
     int interval = req_json.get("interval", 1000).asInt();
-    std::string job_id = "burst_" + std::to_string(time(NULL));
+    std::string job_id = "burst_" + numberToString(time(NULL));
 
     int ret = get_camera_service()->startBurstPhoto(count, interval, job_id);
     if (ret == 0) {
@@ -920,7 +928,7 @@ static int api_v1_camera_photo_timer(struct mg_connection* conn, void* cbdata) {
             return 400;
         }
 
-        const std::string timer_id = "timer_" + std::to_string(time(NULL));
+        const std::string timer_id = "timer_" + numberToString(time(NULL));
         if (get_camera_service()->startTimerPhoto(channel, interval, count, timer_id) != 0) {
             send_error_response(conn, 1002, "Timer photo already running or failed to start");
             return 200;

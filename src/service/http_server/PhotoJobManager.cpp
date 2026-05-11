@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 
@@ -26,13 +27,20 @@ long long nowSeconds() {
     return static_cast<long long>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
 }
 
+template<typename T>
+std::string numberToString(T value) {
+    std::ostringstream oss;
+    oss << value;
+    return oss.str();
+}
+
 std::string makeJobId(uint64_t sequence) {
-    return "photo_job_" + std::to_string(nowSeconds()) + "_" + std::to_string(sequence);
+    return "photo_job_" + numberToString(nowSeconds()) + "_" + numberToString(sequence);
 }
 
 Json::Value buildPhotoJson(const PhotoResult& result) {
     Json::Value photo(Json::objectValue);
-    photo["photo_id"] = "photo_" + std::to_string(result.timestamp);
+    photo["photo_id"] = "photo_" + numberToString(result.timestamp);
     photo["filename"] = Misc::getFilename(result.filePath);
     photo["filepath"] = result.filePath;
     photo["size"] = static_cast<Json::UInt64>(Misc::getFileSize(result.filePath));

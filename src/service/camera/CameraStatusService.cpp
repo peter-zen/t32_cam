@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <sstream>
 
 namespace service {
 
@@ -25,6 +26,13 @@ bool groupMatches(const std::string& actual, const std::string& requested) {
     return requested.empty() || requested == "all" || toLowerCopy(actual) == toLowerCopy(requested);
 }
 
+template<typename T>
+std::string numberToString(T value) {
+    std::ostringstream oss;
+    oss << value;
+    return oss.str();
+}
+
 std::string jsonValueToString(const Json::Value& value) {
     if (value.isString()) {
         return value.asString();
@@ -33,10 +41,10 @@ std::string jsonValueToString(const Json::Value& value) {
         return value.asBool() ? "true" : "false";
     }
     if (value.isInt()) {
-        return std::to_string(value.asInt());
+        return numberToString(value.asInt());
     }
     if (value.isUInt()) {
-        return std::to_string(value.asUInt());
+        return numberToString(value.asUInt());
     }
     return "";
 }

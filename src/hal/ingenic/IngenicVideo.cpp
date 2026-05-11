@@ -910,6 +910,9 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
         releaseGroup(group_id_);
         return false;
     }
+    if (group_id_ == 0 && IspOsdManager::getInstance()) {
+        IspOsdManager::getInstance()->prepare();
+    }
     configured_ = true;
     started_ = false;
     Logger::log(LogLevel::DEBUG, "[HAL] configure: success (group_id=%d, channel_id=%d)", group_id_, channel_id_);
@@ -924,13 +927,13 @@ bool IngenicVideoStream::start() {
             Logger::log(LogLevel::ERROR, "[HAL] start: IMP_FrameSource_EnableChn(%d) failed", group_id_);
             return false;
         }
-        if (IspOsdManager::getInstance()) {
-            IspOsdManager::getInstance()->start();
-        }
         if (IMP_Encoder_StartRecvPic(channel_id_) < 0) {
             Logger::log(LogLevel::ERROR, "[HAL] start: IMP_Encoder_StartRecvPic(%d) failed", channel_id_);
             IMP_FrameSource_DisableChn(group_id_);
             return false;
+        }
+        if (group_id_ == 0 && IspOsdManager::getInstance()) {
+            IspOsdManager::getInstance()->start();
         }
         started_ = true;
         Logger::log(LogLevel::DEBUG, "[HAL] start: success (group_id=%d, channel_id=%d)", group_id_, channel_id_);
@@ -949,6 +952,9 @@ bool IngenicVideoStream::stop() {
     if (ref_count_ == 0 && started_) {
         Logger::log(LogLevel::DEBUG, "[HAL] stop: stopping recv pic channel_id=%d", channel_id_);
         IMP_Encoder_StopRecvPic(channel_id_);
+        if (group_id_ == 0 && IspOsdManager::getInstance()) {
+            IspOsdManager::getInstance()->stop();
+        }
         Logger::log(LogLevel::DEBUG, "[HAL] stop: disabling framesource group_id=%d", group_id_);
         IMP_FrameSource_DisableChn(group_id_);
         started_ = false;

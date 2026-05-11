@@ -73,6 +73,9 @@ bool MediaSession::start()
 bool MediaSession::stop()
 {
     if (!running_) {
+        if (source_) {
+            source_->close();
+        }
         return true;
     }
 

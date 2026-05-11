@@ -12,18 +12,26 @@ public:
     ~IspOsdManager();
 
     bool init(int sensorCount);
+    bool prepare();
     void start();
+    void stop();
     void exit();
 
     static IspOsdManager* getInstance() { return s_instance; }
 
 private:
     void updateLoop();
+    bool ensureRegion();
     void renderTimestamp(const char* str, uint32_t* data);
+    bool applyTimestamp(bool show);
+    bool applyTimestampLegacy();
+    bool hideLegacy();
+    bool hide();
 
-    int sensorCount_;
-    std::vector<int> handles_;
-    std::vector<uint32_t*> buffers_;
+    int timeHandle_;
+    int reservedHandle_;
+    bool useLegacyBlock_;
+    std::vector<uint32_t> buffer_;
     std::atomic<bool> running_;
     std::atomic<bool> started_;
     std::thread thread_;

@@ -16,7 +16,7 @@ bool VideoSource::open() {
 }
 
 void VideoSource::close() {
-    if (stream_) {
+    if (open_ && stream_) {
         stream_->stop();
     }
     open_ = false;
