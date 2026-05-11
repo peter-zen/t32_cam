@@ -29,6 +29,8 @@ const char* kTestDir = "/tmp/t32_camera_property_test";
 const char* kConfigPath = "/tmp/t32_camera_property_test/config.ini";
 const char* kSettingPath = "/tmp/t32_camera_property_test/setting.json";
 
+void normalizeSettingsFileForTest(const std::string& path);
+
 bool copyFile(const std::string& from, const std::string& to) {
     std::ifstream input(from, std::ios::binary);
     std::ofstream output(to, std::ios::binary);
@@ -70,6 +72,7 @@ void prepareFiles() {
     mkdir(kTestDir, 0777);
     CHECK(writeConfigFile(kConfigPath));
     CHECK(copyFile(std::string(TEST_PROJECT_ROOT) + "/res/setting.json", kSettingPath));
+    normalizeSettingsFileForTest(kSettingPath);
 }
 
 Json::Value loadJson(const std::string& path) {
@@ -93,6 +96,13 @@ void writeJson(const std::string& path, const Json::Value& root) {
     std::unique_ptr<Json::StreamWriter> jsonWriter(writer.newStreamWriter());
     jsonWriter->write(root, &file);
     CHECK(file.good());
+}
+
+void normalizeSettingsFileForTest(const std::string& path) {
+    Json::Value root = loadJson(path);
+    root["videoSize"] = VIDEO_SIZE_FHD_30FPS;
+    root["bitRate_1080p"] = 16;
+    writeJson(path, root);
 }
 
 void test_property_schema_and_values() {

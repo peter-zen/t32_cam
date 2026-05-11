@@ -115,7 +115,7 @@ bool isWritableRegistryStorage(const ParameterDefinition& definition) {
 }
 
 std::string resolutionToString(int width, int height) {
-    return to_string(width) + "x" + to_string(height);
+    return std::to_string(width) + "x" + std::to_string(height);
 }
 
 bool parseIntString(const std::string& input, int& value) {
@@ -193,10 +193,10 @@ std::string jsonValueToString(const Json::Value& value) {
         return value.asBool() ? "true" : "false";
     }
     if (value.isInt()) {
-        return to_string(value.asInt());
+        return std::to_string(value.asInt());
     }
     if (value.isUInt()) {
-        return to_string(value.asUInt());
+        return std::to_string(value.asUInt());
     }
 
     Json::StreamWriterBuilder writer;
@@ -410,15 +410,15 @@ void writeVideoLengthSeconds(int seconds) {
 
 std::string videoModeToSpecString(const VideoMode& mode) {
     if (mode.width >= 3840 || mode.height >= 2160) {
-        return "4K/" + to_string(mode.fps) + "FPS";
+        return "4K/" + std::to_string(mode.fps) + "FPS";
     }
     if (mode.width >= 2560 || mode.height >= 1440) {
-        return "2K/" + to_string(mode.fps) + "FPS";
+        return "2K/" + std::to_string(mode.fps) + "FPS";
     }
     if (mode.width >= 1920 || mode.height >= 1080) {
-        return "1080P/" + to_string(mode.fps) + "FPS";
+        return "1080P/" + std::to_string(mode.fps) + "FPS";
     }
-    return "720P/" + to_string(mode.fps) + "FPS";
+    return "720P/" + std::to_string(mode.fps) + "FPS";
 }
 
 bool parseSpecVideoMode(const std::string& value, int& width, int& height, int& fps) {
@@ -742,7 +742,7 @@ Json::Value CameraPropertyService::readRegistryValue(const ParameterDefinition& 
     if (member == "timer2e") return Json::Value(formatTime(settings->timer2e_h, settings->timer2e_m));
     if (member == "timer3s") return Json::Value(formatTime(settings->timer3s_h, settings->timer3s_m));
     if (member == "timer3e") return Json::Value(formatTime(settings->timer3e_h, settings->timer3e_m));
-    if (member == "weekRepeats") return Json::Value(to_string(static_cast<int>(settings->weekRepeats)));
+    if (member == "weekRepeats") return Json::Value(std::to_string(static_cast<int>(settings->weekRepeats)));
     if (member == "stampEn") return settingByte(settings->stampEn);
     if (member == "autoCover") return settingByte(settings->autoCover);
     if (member == "heartRate") {

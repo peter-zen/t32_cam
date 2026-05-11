@@ -11,6 +11,7 @@ target_link_libraries(test_database
 
 target_include_directories(test_database PRIVATE
     ${CMAKE_SOURCE_DIR}/src/storage
+    ${CMAKE_SOURCE_DIR}/src/common/utils/string
     ${CMAKE_SOURCE_DIR}/third_party/sqlite
     ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
 )

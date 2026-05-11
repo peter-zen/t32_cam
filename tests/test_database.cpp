@@ -1,6 +1,7 @@
 #include "DatabaseManager.h"
 #include "MetadataDao.h"
 #include "MediaScanner.h"
+#include "StringConvert.h"
 #include <iostream>
 #include <vector>
 #include <fstream>

@@ -27,12 +27,12 @@ long long nowSeconds() {
 }
 
 std::string makeJobId(uint64_t sequence) {
-    return "photo_job_" + to_string(nowSeconds()) + "_" + to_string(sequence);
+    return "photo_job_" + std::to_string(nowSeconds()) + "_" + std::to_string(sequence);
 }
 
 Json::Value buildPhotoJson(const PhotoResult& result) {
     Json::Value photo(Json::objectValue);
-    photo["photo_id"] = "photo_" + to_string(result.timestamp);
+    photo["photo_id"] = "photo_" + std::to_string(result.timestamp);
     photo["filename"] = Misc::getFilename(result.filePath);
     photo["filepath"] = result.filePath;
     photo["size"] = static_cast<Json::UInt64>(Misc::getFileSize(result.filePath));

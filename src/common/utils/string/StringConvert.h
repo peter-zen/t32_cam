@@ -108,7 +108,7 @@ static int stoi_custom(const std::string& str, size_t* idx = nullptr, int base =
 
 template <typename T>
 std::string to_string_custom(T value) {
-    return to_string(value);
+    return std::to_string(value);
 }
 #endif
 
