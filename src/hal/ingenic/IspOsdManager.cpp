@@ -37,7 +37,17 @@ void IspOsdManager::start() {
     if (started_.exchange(true)) {
         return;
     }
+    if (Settings::getInstance()->stampEn == 0) {
+        hide();
+        started_ = false;
+        Logger::log(LogLevel::INFO, "IspOsdManager: stamp disabled for this stream");
+        return;
+    }
     if (!ensureRegion()) {
+        started_ = false;
+        return;
+    }
+    if (!applyTimestamp(true)) {
         started_ = false;
         return;
     }
@@ -114,22 +124,11 @@ bool IspOsdManager::ensureRegion() {
 }
 
 void IspOsdManager::updateLoop() {
-    bool lastEnabled = false;
-
     while (running_) {
-        bool enabled = (Settings::getInstance()->stampEn != 0);
-
-        if (enabled) {
-            if (applyTimestamp(!lastEnabled)) {
-                lastEnabled = true;
-            }
-        } else {
-            if (lastEnabled) {
-                hide();
-            }
-            lastEnabled = false;
-        }
         sleep(1);
+        if (running_) {
+            applyTimestamp(false);
+        }
     }
 }
 
