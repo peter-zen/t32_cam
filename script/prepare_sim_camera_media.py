@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-Prepare a diverse simulation camera dataset and rebuild the runtime media DBs.
+Prepare simulation camera media from a real source video and rebuild the runtime media DBs.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import random
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from functools import lru_cache
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -25,40 +26,37 @@ VIDEO_EXTS = {".mp4", ".mov"}
 PHOTO_TYPE = 1
 VIDEO_TYPE = 2
 THUMB_SCALE_FILTER = "scale=320:-1:force_original_aspect_ratio=decrease"
-DEFAULT_FONT_FILE = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
-BASE_START_TIME = datetime(2026, 4, 13, 8, 0, 0)
-TIMESTAMP_STEP_SECONDS = 91
-COLOR_PALETTE = [
-    "0xE85D04",
-    "0x2A9D8F",
-    "0xE63946",
-    "0x264653",
-    "0xFFB703",
-    "0x457B9D",
-    "0xD62828",
-    "0x6A4C93",
-    "0x1D3557",
-    "0x3A86FF",
-    "0x43AA8B",
-    "0xF72585",
-]
+VIDEO_SCALE_FILTER = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720"
+DEFAULT_SEED = 20260427
+DEFAULT_VIDEO_SEGMENT_SECONDS = 60
+DEFAULT_PHOTO_INTERVAL_SECONDS = 30
+DEFAULT_VIDEO_WINDOW_DAYS = 5
+DEFAULT_PHOTO_WINDOW_DAYS = 7
+DEFAULT_VIDEO_FPS = 30
+DEFAULT_VIDEO_GOP_FRAMES = 60
+DEFAULT_VIDEO_GOP_MS = int(round(DEFAULT_VIDEO_GOP_FRAMES * 1000 / DEFAULT_VIDEO_FPS))
 SOURCE_VIDEO_CANDIDATES = [
+    "res/Transformers： Optimus Prime & Bumblebee Vs Pacific Rim Robot War (Filme 2023) [AIRXV99OQmY].mp4",
+    "res/剪映Agent终于来了！AI自动剪辑～【小白必备】 [IdylAyrQxl0] 2160p.mp4",
     "build_sim/bin/res/full_frame_camera_no_b_30s.h264",
     "tests/assets/video/full_frame_camera.h264",
     "build_sim/bin/res/sample_video.h264",
 ]
-SOURCE_IMAGE_CANDIDATES = [
-    "build_sim/bin/res/sample_image.jpeg",
-    "src/hal/simu/res/sample_image.jpeg",
-]
 
 
 @dataclass
-class MediaPlanItem:
-    kind: str
+class VideoPlanItem:
     sequence: int
-    global_index: int
     timestamp_dt: datetime
+    start_seconds: int
+    duration_seconds: int
+
+
+@dataclass
+class PhotoPlanItem:
+    sequence: int
+    timestamp_dt: datetime
+    capture_seconds: int
 
 
 @dataclass
@@ -71,6 +69,16 @@ class MediaRecord:
     width: int
     height: int
     thumbnail: bytes
+    container_type: str = ""
+    playback_capable: int = 0
+    playback_reason: str = ""
+    playback_token: str = ""
+    range_supported: int = 0
+    seek_support: str = ""
+    seek_granularity_ms: int = 0
+    effective_gop_frames: int = 0
+    effective_gop_ms: int = 0
+    fragment_index_path: str = ""
 
 
 def ensure_tool(name: str) -> None:
@@ -89,22 +97,6 @@ def ensure_file(path: Path, description: str) -> Path:
 
 def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=True)
-
-
-@lru_cache(maxsize=None)
-def ffmpeg_has_filter(filter_name: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-filters"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError:
-        return False
-
-    token = f" {filter_name} "
-    return token in result.stdout or token in result.stderr
 
 
 def ffprobe_json(path: Path) -> dict:
@@ -145,6 +137,19 @@ def parse_media_probe(path: Path) -> tuple[int, int, int]:
         duration = 0
 
     return width, height, duration
+
+
+def parse_source_duration_seconds(path: Path) -> float:
+    try:
+        data = ffprobe_json(path)
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        print(f"Failed to probe source video {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        return float(data.get("format", {}).get("duration") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def is_valid_photo(path: Path) -> bool:
@@ -207,13 +212,17 @@ def choose_target_root(project_root: Path, raw_path: str) -> Path:
     sys.exit(1)
 
 
-def choose_existing(project_root: Path, candidates: list[str], description: str) -> Path:
-    for candidate in candidates:
-        path = resolve_path(project_root, candidate)
-        if path.exists():
-            return path
-    print(f"Unable to locate {description}", file=sys.stderr)
-    for candidate in candidates:
+def choose_source_video(project_root: Path, raw_path: Optional[str]) -> Path:
+    if raw_path:
+        return ensure_file(resolve_path(project_root, raw_path), "source video")
+
+    for candidate in SOURCE_VIDEO_CANDIDATES:
+        candidate_path = resolve_path(project_root, candidate)
+        if candidate_path.exists():
+            return candidate_path
+
+    print("Unable to locate source video", file=sys.stderr)
+    for candidate in SOURCE_VIDEO_CANDIDATES:
         print(f"  - {resolve_path(project_root, candidate)}", file=sys.stderr)
     sys.exit(1)
 
@@ -236,170 +245,93 @@ def reset_runtime_tree(target_dcim: Path, db_dir: Path) -> None:
             db_path.unlink()
 
 
-def build_media_plan(photo_count: int, video_count: int) -> list[MediaPlanItem]:
-    plan: list[MediaPlanItem] = []
-    pattern = ("photo", "photo", "video", "photo", "video")
-    photo_index = 0
-    video_index = 0
-    current_dt = BASE_START_TIME
-    global_index = 0
-
-    while photo_index < photo_count or video_index < video_count:
-        kind = pattern[global_index % len(pattern)]
-        if kind == "photo" and photo_index >= photo_count:
-            kind = "video"
-        elif kind == "video" and video_index >= video_count:
-            kind = "photo"
-
-        current_dt += timedelta(seconds=TIMESTAMP_STEP_SECONDS)
-        if kind == "photo":
-            photo_index += 1
-            sequence = photo_index
-        else:
-            video_index += 1
-            sequence = video_index
-
-        plan.append(MediaPlanItem(kind=kind, sequence=sequence, global_index=global_index, timestamp_dt=current_dt))
-        global_index += 1
-
-    return plan
+def day_start(day: date) -> datetime:
+    return datetime.combine(day, time.min, tzinfo=timezone.utc)
 
 
-def choose_color(index: int) -> str:
-    return COLOR_PALETTE[index % len(COLOR_PALETTE)]
+def day_end(day: date) -> datetime:
+    return datetime.combine(day, time.max.replace(microsecond=0), tzinfo=timezone.utc)
 
 
-def drawtext_filter(text: str, x: int, y: int, fontsize: int) -> str:
-    return (
-        "drawtext="
-        f"fontfile={DEFAULT_FONT_FILE}:"
-        f"text='{text}':"
-        f"x={x}:y={y}:"
-        f"fontsize={fontsize}:"
-        "fontcolor=white:borderw=2:bordercolor=black"
-    )
+def default_today(raw_value: Optional[str]) -> date:
+    if raw_value:
+        return date.fromisoformat(raw_value)
+    return datetime.now(timezone.utc).date()
 
 
-def common_overlay_filters(label: str, subtitle: str, index: int) -> list[str]:
-    accent_x = 40 + (index * 83) % 920
-    accent_y = 130 + (index * 47) % 320
-    filters = [
-        f"drawbox=x=0:y=0:w=iw:h=96:color={choose_color(index)}@0.55:t=fill",
-        f"drawbox=x={accent_x}:y={accent_y}:w=280:h=160:color={choose_color(index + 4)}@0.38:t=fill",
-        "drawbox=x=18:y=622:w=1244:h=74:color=black@0.28:t=fill",
-    ]
-    if ffmpeg_has_filter("drawtext"):
-        filters += [
-            drawtext_filter(label, 46, 26, 42),
-            drawtext_filter(subtitle, 34, 644, 26),
-        ]
-    else:
-        stripe_w = 70 + (index * 19) % 110
-        stripe_h = 18 + (index * 7) % 16
-        stripe_x = 48 + (index * 29) % 980
-        filters += [
-            f"drawbox=x={stripe_x}:y=42:w={stripe_w}:h={stripe_h}:color={choose_color(index + 7)}@0.88:t=fill",
-            f"drawbox=x=34:y=642:w={220 + (index * 13) % 180}:h=22:color={choose_color(index + 9)}@0.65:t=fill",
-            f"drawbox=x=1202:y={146 + (index * 23) % 420}:w=22:h={96 + (index * 17) % 140}:color={choose_color(index + 2)}@0.72:t=fill",
-        ]
-    return filters
+def build_time_window(today: date, days_before_today: int) -> tuple[datetime, datetime]:
+    if days_before_today <= 0:
+        raise ValueError("window days must be > 0")
+    start_day = today - timedelta(days=days_before_today)
+    end_day = today - timedelta(days=1)
+    return day_start(start_day), day_end(end_day)
 
 
-def build_photo_filter(photo_index: int, global_index: int, timestamp_dt: datetime) -> str:
-    crop_x = (global_index * 97) % 160
-    crop_y = (global_index * 61) % 80
-    crop_x_wide = (global_index * 53) % 320
-    crop_y_wide = (global_index * 37) % 180
-    style = global_index % 8
-    filters = [
-        "scale=1280:720:force_original_aspect_ratio=increase",
-        "crop=1280:720",
+def random_timestamps(start_dt: datetime, end_dt: datetime, count: int, seed: int) -> list[datetime]:
+    if count <= 0:
+        return []
+    span_seconds = int((end_dt - start_dt).total_seconds())
+    if span_seconds < 0:
+        raise ValueError("invalid time window: end before start")
+    if count > span_seconds + 1:
+        raise ValueError("time window is too small for unique timestamps")
+
+    offsets = sorted(random.Random(seed).sample(range(span_seconds + 1), count))
+    return [start_dt + timedelta(seconds=offset) for offset in offsets]
+
+
+def clamp_requested_count(requested_count: int, available_count: int, label: str) -> int:
+    if available_count <= 0:
+        print(f"No {label} can be generated from the source video", file=sys.stderr)
+        sys.exit(1)
+    if requested_count <= 0:
+        return available_count
+    return min(requested_count, available_count)
+
+
+def build_video_plan(
+    source_duration_seconds: float,
+    segment_seconds: int,
+    requested_count: int,
+    window_start: datetime,
+    window_end: datetime,
+    seed: int,
+) -> list[VideoPlanItem]:
+    available_count = int(math.floor(source_duration_seconds / segment_seconds))
+    video_count = clamp_requested_count(requested_count, available_count, "video fragments")
+    timestamps = random_timestamps(window_start, window_end, video_count, seed)
+
+    return [
+        VideoPlanItem(
+            sequence=index + 1,
+            timestamp_dt=timestamps[index],
+            start_seconds=index * segment_seconds,
+            duration_seconds=segment_seconds,
+        )
+        for index in range(video_count)
     ]
 
-    if style == 0:
-        filters += [
-            f"crop=1120:630:{crop_x}:{crop_y}",
-            "scale=1280:720",
-            "eq=contrast=1.10:saturation=1.20:brightness=-0.02",
-        ]
-    elif style == 1:
-        filters += ["hflip", f"hue=h={(global_index * 27) % 180 - 90}:s=1.25"]
-    elif style == 2:
-        filters += ["vflip", "curves=preset=cross_process"]
-    elif style == 3:
-        filters += [
-            f"crop=960:540:{crop_x_wide}:{crop_y_wide}",
-            "scale=1280:720",
-            "unsharp=5:5:0.8:5:5:0.0",
-        ]
-    elif style == 4:
-        filters += [
-            "transpose=1",
-            "scale=1280:720:force_original_aspect_ratio=increase",
-            "crop=1280:720",
-            "eq=brightness=0.05:contrast=1.08",
-        ]
-    elif style == 5:
-        filters += [
-            "transpose=2",
-            "scale=1280:720:force_original_aspect_ratio=increase",
-            "crop=1280:720",
-            "vignette",
-        ]
-    elif style == 6:
-        filters += ["hue=h=55:s=0.82", "boxblur=1:1", "eq=contrast=1.16"]
-    else:
-        filters += ["curves=preset=lighter", "eq=saturation=1.40:gamma=1.04", "vignette"]
 
-    label = f"PHOTO-{photo_index:02d}"
-    subtitle = f"SIM-{timestamp_dt.strftime('%Y%m%d-%H%M%S')}"
-    filters += common_overlay_filters(label, subtitle, global_index)
-    return ",".join(filters)
+def build_photo_plan(
+    source_duration_seconds: float,
+    interval_seconds: int,
+    requested_count: int,
+    window_start: datetime,
+    window_end: datetime,
+    seed: int,
+) -> list[PhotoPlanItem]:
+    available_offsets = list(range(0, int(source_duration_seconds), interval_seconds))
+    photo_count = clamp_requested_count(requested_count, len(available_offsets), "photos")
+    timestamps = random_timestamps(window_start, window_end, photo_count, seed)
 
-
-def build_video_filter(video_index: int, global_index: int, timestamp_dt: datetime) -> str:
-    crop_x = (global_index * 41) % 256
-    crop_y = (global_index * 29) % 144
-    style = global_index % 8
-    filters = [
-        "scale=1280:720:force_original_aspect_ratio=increase",
-        "crop=1280:720",
+    return [
+        PhotoPlanItem(
+            sequence=index + 1,
+            timestamp_dt=timestamps[index],
+            capture_seconds=available_offsets[index],
+        )
+        for index in range(photo_count)
     ]
-
-    if style == 0:
-        filters += [
-            f"crop=1152:648:{crop_x // 2}:{crop_y // 2}",
-            "scale=1280:720",
-            "eq=contrast=1.08:saturation=1.22:brightness=-0.01",
-        ]
-    elif style == 1:
-        filters += ["hflip", f"hue=h={(global_index * 19) % 180 - 90}:s=1.18"]
-    elif style == 2:
-        filters += ["curves=preset=cross_process", "vignette"]
-    elif style == 3:
-        filters += [
-            "transpose=1",
-            "scale=1280:720:force_original_aspect_ratio=increase",
-            "crop=1280:720",
-            "eq=brightness=0.04:contrast=1.06",
-        ]
-    elif style == 4:
-        filters += [
-            f"crop=1024:576:{crop_x}:{crop_y}",
-            "scale=1280:720",
-            "unsharp=5:5:0.7:5:5:0.0",
-        ]
-    elif style == 5:
-        filters += ["boxblur=1:1", "eq=contrast=1.18:saturation=1.25"]
-    elif style == 6:
-        filters += ["vflip", "hue=h=-45:s=1.10"]
-    else:
-        filters += ["curves=preset=lighter", "eq=gamma=1.08:saturation=1.35", "vignette"]
-
-    label = f"VIDEO-{video_index:02d}"
-    subtitle = f"SIM-{timestamp_dt.strftime('%Y%m%d-%H%M%S')}"
-    filters += common_overlay_filters(label, subtitle, global_index + 100)
-    return ",".join(filters)
 
 
 def make_photo_name(dt: datetime) -> str:
@@ -415,101 +347,8 @@ def apply_timestamp(path: Path, timestamp_dt: datetime) -> None:
     os.utime(path, (ts, ts))
 
 
-def prepare_source_video(project_root: Path, temp_dir: Path) -> Path:
-    source_video = choose_existing(project_root, SOURCE_VIDEO_CANDIDATES, "simulation source video")
-    source_mp4 = temp_dir / "source_video.mp4"
-    input_args: list[str] = []
-    if source_video.suffix.lower() in {".h264", ".264", ".h265", ".hevc"}:
-        input_args += ["-framerate", "30"]
-
-    run_cmd(
-        [
-            "ffmpeg",
-            "-y",
-            "-loglevel",
-            "error",
-            *input_args,
-            "-i",
-            str(source_video),
-            "-vf",
-            "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "20",
-            "-pix_fmt",
-            "yuv420p",
-            "-an",
-            "-movflags",
-            "+faststart",
-            str(source_mp4),
-        ]
-    )
-    return ensure_file(source_mp4, "prepared simulation source video")
-
-
-def prepare_source_image(project_root: Path) -> Path:
-    source_image = choose_existing(project_root, SOURCE_IMAGE_CANDIDATES, "simulation source image")
-    return ensure_file(source_image, "simulation source image")
-
-
-def render_photo(source_video: Path, source_image: Path, item: MediaPlanItem, target_dcim: Path) -> Path:
+def render_photo(source_video: Path, item: PhotoPlanItem, target_dcim: Path) -> Path:
     output_path = target_dcim / make_photo_name(item.timestamp_dt)
-    filter_chain = build_photo_filter(item.sequence, item.global_index, item.timestamp_dt)
-    use_image = item.sequence % 4 == 0
-
-    if use_image:
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-loglevel",
-            "error",
-            "-loop",
-            "1",
-            "-i",
-            str(source_image),
-            "-frames:v",
-            "1",
-            "-vf",
-            filter_chain,
-            "-q:v",
-            "2",
-            str(output_path),
-        ]
-    else:
-        frame_ts = 0.65 + ((item.global_index * 1.37) % 28.2)
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-loglevel",
-            "error",
-            "-ss",
-            f"{frame_ts:.2f}",
-            "-i",
-            str(source_video),
-            "-frames:v",
-            "1",
-            "-vf",
-            filter_chain,
-            "-q:v",
-            "2",
-            str(output_path),
-        ]
-
-    run_cmd(cmd)
-    apply_timestamp(output_path, item.timestamp_dt)
-    return output_path
-
-
-def render_video(source_video: Path, item: MediaPlanItem, target_dcim: Path) -> Path:
-    output_path = target_dcim / make_video_name(item.timestamp_dt)
-    filter_chain = build_video_filter(item.sequence, item.global_index, item.timestamp_dt)
-    duration = 4 + (item.sequence % 5)
-    max_start = max(0.5, 29.2 - duration)
-    start_ts = 0.40 + ((item.global_index * 1.71) % max_start)
-
     run_cmd(
         [
             "ffmpeg",
@@ -517,26 +356,15 @@ def render_video(source_video: Path, item: MediaPlanItem, target_dcim: Path) -> 
             "-loglevel",
             "error",
             "-ss",
-            f"{start_ts:.2f}",
-            "-t",
-            f"{duration:.2f}",
+            str(item.capture_seconds),
             "-i",
             str(source_video),
+            "-frames:v",
+            "1",
             "-vf",
-            filter_chain,
-            "-r",
-            "30",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "24",
-            "-pix_fmt",
-            "yuv420p",
-            "-an",
-            "-movflags",
-            "+faststart",
+            VIDEO_SCALE_FILTER,
+            "-q:v",
+            "2",
             str(output_path),
         ]
     )
@@ -544,22 +372,56 @@ def render_video(source_video: Path, item: MediaPlanItem, target_dcim: Path) -> 
     return output_path
 
 
-def generate_media_set(project_root: Path, target_dcim: Path, photo_count: int, video_count: int) -> tuple[list[Path], list[Path]]:
-    plan = build_media_plan(photo_count, video_count)
-    generated_photos: list[Path] = []
-    generated_videos: list[Path] = []
+def render_video(source_video: Path, item: VideoPlanItem, target_dcim: Path) -> Path:
+    output_path = target_dcim / make_video_name(item.timestamp_dt)
+    run_cmd(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(item.start_seconds),
+            "-t",
+            str(item.duration_seconds),
+            "-i",
+            str(source_video),
+            "-vf",
+            VIDEO_SCALE_FILTER,
+            "-r",
+            str(DEFAULT_VIDEO_FPS),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "22",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            str(DEFAULT_VIDEO_GOP_FRAMES),
+            "-keyint_min",
+            str(DEFAULT_VIDEO_GOP_FRAMES),
+            "-sc_threshold",
+            "0",
+            "-an",
+            "-movflags",
+            "frag_keyframe+empty_moov+default_base_moof",
+            str(output_path),
+        ]
+    )
+    apply_timestamp(output_path, item.timestamp_dt)
+    return output_path
 
-    with tempfile.TemporaryDirectory(prefix="sim_camera_media_") as tmp_dir:
-        temp_dir = Path(tmp_dir)
-        source_video = prepare_source_video(project_root, temp_dir)
-        source_image = prepare_source_image(project_root)
 
-        for item in plan:
-            if item.kind == "photo":
-                generated_photos.append(render_photo(source_video, source_image, item, target_dcim))
-            else:
-                generated_videos.append(render_video(source_video, item, target_dcim))
-
+def generate_media_set(
+    source_video: Path,
+    target_dcim: Path,
+    video_plan: list[VideoPlanItem],
+    photo_plan: list[PhotoPlanItem],
+) -> tuple[list[Path], list[Path]]:
+    generated_videos = [render_video(source_video, item, target_dcim) for item in video_plan]
+    generated_photos = [render_photo(source_video, item, target_dcim) for item in photo_plan]
     return generated_photos, generated_videos
 
 
@@ -620,7 +482,7 @@ def build_record(path: Path) -> Optional[MediaRecord]:
 
     width, height, duration = parse_media_probe(path)
     stat_result = path.stat()
-    return MediaRecord(
+    record = MediaRecord(
         file_path=str(path.resolve()),
         media_type=media_type,
         timestamp=int(stat_result.st_mtime),
@@ -630,6 +492,15 @@ def build_record(path: Path) -> Optional[MediaRecord]:
         height=height,
         thumbnail=make_thumbnail_bytes(path, media_type),
     )
+    if media_type == VIDEO_TYPE and suffix == ".mp4":
+        record.container_type = "fmp4"
+        record.playback_capable = 1
+        record.range_supported = 1
+        record.seek_support = "keyframe"
+        record.seek_granularity_ms = DEFAULT_VIDEO_GOP_MS
+        record.effective_gop_frames = DEFAULT_VIDEO_GOP_FRAMES
+        record.effective_gop_ms = DEFAULT_VIDEO_GOP_MS
+    return record
 
 
 def rebuild_databases(db_dir: Path, target_dcim: Path) -> tuple[int, int, list[MediaRecord]]:
@@ -651,11 +522,24 @@ def rebuild_databases(db_dir: Path, target_dcim: Path) -> tuple[int, int, list[M
                 width INTEGER DEFAULT 0,
                 height INTEGER DEFAULT 0,
                 is_favorite INTEGER DEFAULT 0,
-                is_locked INTEGER DEFAULT 0
+                is_locked INTEGER DEFAULT 0,
+                container_type TEXT DEFAULT '',
+                playback_capable INTEGER DEFAULT 0,
+                playback_reason TEXT DEFAULT '',
+                playback_token TEXT DEFAULT '',
+                range_supported INTEGER DEFAULT 0,
+                seek_support TEXT DEFAULT '',
+                seek_granularity_ms INTEGER DEFAULT 0,
+                effective_gop_frames INTEGER DEFAULT 0,
+                effective_gop_ms INTEGER DEFAULT 0,
+                fragment_index_path TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_media_time ON media_files(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_media_type ON media_files(type);
             CREATE INDEX IF NOT EXISTS idx_media_type_time ON media_files(type, timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_media_playback ON media_files(type, playback_capable);
+            CREATE INDEX IF NOT EXISTS idx_media_playback_token ON media_files(playback_token);
+            PRAGMA user_version = 2;
             """
         )
         thumb_conn.executescript(
@@ -680,9 +564,11 @@ def rebuild_databases(db_dir: Path, target_dcim: Path) -> tuple[int, int, list[M
         for record in records:
             media_conn.execute(
                 """
-                INSERT OR REPLACE INTO media_files
-                    (file_path, type, timestamp, file_size, duration, width, height, is_favorite, is_locked)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+                INSERT OR REPLACE INTO media_files (
+                    file_path, type, timestamp, file_size, duration, width, height, is_favorite, is_locked,
+                    container_type, playback_capable, playback_reason, playback_token, range_supported,
+                    seek_support, seek_granularity_ms, effective_gop_frames, effective_gop_ms, fragment_index_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.file_path,
@@ -692,6 +578,16 @@ def rebuild_databases(db_dir: Path, target_dcim: Path) -> tuple[int, int, list[M
                     record.duration,
                     record.width,
                     record.height,
+                    record.container_type,
+                    record.playback_capable,
+                    record.playback_reason,
+                    record.playback_token,
+                    record.range_supported,
+                    record.seek_support,
+                    record.seek_granularity_ms,
+                    record.effective_gop_frames,
+                    record.effective_gop_ms,
+                    record.fragment_index_path,
                 ),
             )
             if record.thumbnail:
@@ -710,10 +606,25 @@ def rebuild_databases(db_dir: Path, target_dcim: Path) -> tuple[int, int, list[M
         thumb_conn.close()
 
 
-def print_summary(generated_photos: list[Path], generated_videos: list[Path], records: list[MediaRecord], target_root: Path) -> None:
+def print_summary(
+    source_video: Path,
+    source_duration_seconds: float,
+    generated_photos: list[Path],
+    generated_videos: list[Path],
+    records: list[MediaRecord],
+    target_root: Path,
+    today: date,
+    video_window: tuple[datetime, datetime],
+    photo_window: tuple[datetime, datetime],
+) -> None:
     photo_records = [record for record in records if record.media_type == PHOTO_TYPE]
     video_records = [record for record in records if record.media_type == VIDEO_TYPE]
 
+    print(f"Source video: {source_video}")
+    print(f"Source duration seconds: {source_duration_seconds:.3f}")
+    print(f"Reference today: {today.isoformat()}")
+    print(f"Video time window: {video_window[0].isoformat()} -> {video_window[1].isoformat()}")
+    print(f"Photo time window: {photo_window[0].isoformat()} -> {photo_window[1].isoformat()}")
     print(f"Target runtime root: {target_root}")
     print(f"Generated photos: {len(generated_photos)}")
     print(f"Generated videos: {len(generated_videos)}")
@@ -726,27 +637,100 @@ def print_summary(generated_photos: list[Path], generated_videos: list[Path], re
         print(
             f"  {kind} {Path(record.file_path).name} "
             f"size={record.file_size} ts={record.timestamp} "
-            f"duration={record.duration} wh={record.width}x{record.height}"
+            f"duration={record.duration} wh={record.width}x{record.height} "
+            f"container={record.container_type or '-'} playback={record.playback_capable}"
         )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare simulation camera media and rebuild media DBs")
     parser.add_argument("--target-root", default="sim_sdcard_runtime", help="runtime simulation sdcard root")
-    parser.add_argument("--photo-count", type=int, default=30, help="number of photo files to generate")
-    parser.add_argument("--video-count", type=int, default=20, help="number of video files to generate")
+    parser.add_argument("--source-video", default="", help="source video path relative to project root or absolute")
+    parser.add_argument("--today", default="", help="reference date in YYYY-MM-DD, default is current UTC date")
+    parser.add_argument(
+        "--video-segment-seconds",
+        type=int,
+        default=DEFAULT_VIDEO_SEGMENT_SECONDS,
+        help="video fragment duration in seconds",
+    )
+    parser.add_argument(
+        "--photo-interval-seconds",
+        type=int,
+        default=DEFAULT_PHOTO_INTERVAL_SECONDS,
+        help="capture one photo every N seconds from the source video",
+    )
+    parser.add_argument(
+        "--video-window-days",
+        type=int,
+        default=DEFAULT_VIDEO_WINDOW_DAYS,
+        help="spread video timestamps across the N days before today",
+    )
+    parser.add_argument(
+        "--photo-window-days",
+        type=int,
+        default=DEFAULT_PHOTO_WINDOW_DAYS,
+        help="spread photo timestamps across the N days before today",
+    )
+    parser.add_argument(
+        "--video-count",
+        type=int,
+        default=0,
+        help="optional cap on generated video fragments, 0 means use all full segments",
+    )
+    parser.add_argument(
+        "--photo-count",
+        type=int,
+        default=0,
+        help="optional cap on generated photos, 0 means use all capture points",
+    )
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for timestamp distribution")
     args = parser.parse_args()
 
-    if args.photo_count < 0 or args.video_count < 0 or (args.photo_count + args.video_count) == 0:
-        print("photo-count and video-count must produce at least one media file", file=sys.stderr)
+    if args.video_segment_seconds <= 0 or args.photo_interval_seconds <= 0:
+        print("video-segment-seconds and photo-interval-seconds must be > 0", file=sys.stderr)
+        return 1
+    if args.video_window_days <= 0 or args.photo_window_days <= 0:
+        print("video-window-days and photo-window-days must be > 0", file=sys.stderr)
+        return 1
+    if args.video_count < 0 or args.photo_count < 0:
+        print("video-count and photo-count must be >= 0", file=sys.stderr)
         return 1
 
     ensure_tool("ffprobe")
     ensure_tool("ffmpeg")
-    ensure_file(DEFAULT_FONT_FILE, "drawtext font file")
 
     project_root = Path(__file__).resolve().parent.parent
     target_root = choose_target_root(project_root, args.target_root)
+    source_video = choose_source_video(project_root, args.source_video or None)
+    source_duration_seconds = parse_source_duration_seconds(source_video)
+    if source_duration_seconds <= 0:
+        print(f"Source video has invalid duration: {source_video}", file=sys.stderr)
+        return 1
+
+    today = default_today(args.today or None)
+    try:
+        video_window = build_time_window(today, args.video_window_days)
+        photo_window = build_time_window(today, args.photo_window_days)
+        video_plan = build_video_plan(
+            source_duration_seconds=source_duration_seconds,
+            segment_seconds=args.video_segment_seconds,
+            requested_count=args.video_count,
+            window_start=video_window[0],
+            window_end=video_window[1],
+            seed=args.seed,
+        )
+        photo_plan = build_photo_plan(
+            source_duration_seconds=source_duration_seconds,
+            interval_seconds=args.photo_interval_seconds,
+            requested_count=args.photo_count,
+            window_start=photo_window[0],
+            window_end=photo_window[1],
+            seed=args.seed + 1,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     target_dcim = target_root / "DCIM"
     db_dir = target_root / "data" / "db"
 
@@ -756,14 +740,24 @@ def main() -> int:
     reset_runtime_tree(target_dcim, db_dir)
 
     generated_photos, generated_videos = generate_media_set(
-        project_root,
-        target_dcim,
-        photo_count=args.photo_count,
-        video_count=args.video_count,
+        source_video=source_video,
+        target_dcim=target_dcim,
+        video_plan=video_plan,
+        photo_plan=photo_plan,
     )
     media_count, thumb_count, records = rebuild_databases(db_dir, target_dcim)
 
-    print_summary(generated_photos, generated_videos, records, target_root)
+    print_summary(
+        source_video=source_video,
+        source_duration_seconds=source_duration_seconds,
+        generated_photos=generated_photos,
+        generated_videos=generated_videos,
+        records=records,
+        target_root=target_root,
+        today=today,
+        video_window=video_window,
+        photo_window=photo_window,
+    )
     print("")
     print(f"media_file.db rows: {media_count}")
     print(f"media_thumb.db rows: {thumb_count}")

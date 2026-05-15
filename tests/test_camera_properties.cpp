@@ -5,6 +5,7 @@
 #include "../src/service/camera/CameraParameterRegistry.h"
 #include "../src/service/camera/CameraPropertyService.h"
 #include "../src/service/camera/CameraStatusService.h"
+#include "../src/media/video/VideoParams.h"
 
 #include <cstdlib>
 #include <fstream>
@@ -364,6 +365,14 @@ void test_set_and_reset_properties() {
     CHECK(savedSettings["bitRate_1080p"].asInt() == 16);
 }
 
+void test_video_params_bitrate_unit_is_kbps() {
+    media::VideoParams params;
+    CHECK(params.getBitrate() == 2000);
+
+    params.setBitrate(12288);
+    CHECK(params.getBitrate() == 12288);
+}
+
 } // namespace
 
 int main() {
@@ -383,6 +392,7 @@ int main() {
     test_registry_factory_reset();
     test_status_projection();
     test_set_and_reset_properties();
+    test_video_params_bitrate_unit_is_kbps();
 
     std::cout << "All camera property tests passed!" << std::endl;
     return 0;

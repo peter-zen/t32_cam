@@ -626,7 +626,7 @@ static void printUsage(char *argv[])
     std::cout << "  -u, --upload\t\tUpload a file to the storage server" << std::endl;
     std::cout << "  -ar, --audio-record\tRecord audio" << std::endl;
     std::cout << "  -vr, --video-record\tRecord video" << std::endl;
-    std::cout << "  -m, --mobile\t\tConnect to the mobile network" << std::endl;
+    std::cout << "  -m, --mobile\t\tConnect to the mobile network (use --no-rtsp, --force-day, --record-stream1 for FPS debug)" << std::endl;
     std::cout << "  -rs, --rtsp-server\tStart the RTSP server (use --no-audio to disable audio)" << std::endl;
     std::cout << "  -grtc, --get-rtc\tGet RTC time" << std::endl;
     std::cout << "  -srtc, --set-rtc\tSet RTC time" << std::endl;
@@ -650,6 +650,7 @@ static void printUsage(char *argv[])
 
 static bool already_in_exit_flow = false;
 static bool rtsp_audio_enabled = true;  // RTSP 音频默认开启
+static bool mobile_rtsp_enabled = true; // Mobile 模式默认启动 RTSP，调试录像 FPS 时可关闭
 static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
 static std::shared_ptr<StorageServClient> storageServClient = nullptr;
 // Signal handler for CTRL+C
@@ -1015,7 +1016,8 @@ int main(int argc, char* argv[])
     // 启动信号处理工作线程
     signalHandlerThread = std::thread(signalHandlerThreadFunc);
 
-    if (argc != 5) {
+    const bool is_work_mode_cmd = (std::string(argv[1]) == "-wm" || std::string(argv[1]) == "--work-mode");
+    if (!is_work_mode_cmd) {
         if (std::string(argv[1]) == "-w" || std::string(argv[1]) == "--wifi") {
             command = CMD_CONN_NET;
         } else if (std::string(argv[1]) == "-d" || std::string(argv[1]) == "--dhcp") { 
@@ -1036,6 +1038,17 @@ int main(int argc, char* argv[])
             command = CMD_CONN_NET | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
         } else if (std::string(argv[1]) == "-m" || std::string(argv[1]) == "--mobile") {
             command = CMD_MOBILE;
+            for (int i = 2; i < argc; i++) {
+                if (std::string(argv[i]) == "--no-rtsp") {
+                    mobile_rtsp_enabled = false;
+                } else if (std::string(argv[i]) == "--no-audio") {
+                    rtsp_audio_enabled = false;
+                } else if (std::string(argv[i]) == "--force-day") {
+                    setenv("HTC_FORCE_RECORD_DAY_MODE", "1", 1);
+                } else if (std::string(argv[i]) == "--record-stream1") {
+                    setenv("HTC_RECORD_STREAM_ID", "1", 1);
+                }
+            }
         } else if (std::string(argv[1]) == "-n" || std::string(argv[1]) == "--ntp") {
             command = CMD_CONN_NET | CMD_NTP;
         } else if (std::string(argv[1]) == "-rs" || std::string(argv[1]) == "--rtsp-server") {
@@ -1055,7 +1068,7 @@ int main(int argc, char* argv[])
             return -1;
         }
     } else {
-        if ((std::string(argv[1]) == "-wm" || std::string(argv[1]) == "--work-mode") && (std::string(argv[3]) == "-rtc" || std::string(argv[3]) == "--rtc-status")) {
+        if (argc == 5 && (std::string(argv[3]) == "-rtc" || std::string(argv[3]) == "--rtc-status")) {
             working_mode = (enum workingMode)stoi_custom(argv[2]);
             is_rtc_work_well = (bool)stoi_custom(argv[4]);
             Logger::log(LogLevel::INFO, "%s working mode %d, rtc status %d", __func__, working_mode, is_rtc_work_well);
@@ -1373,7 +1386,7 @@ int main(int argc, char* argv[])
         auto videoParam = std::make_shared<VideoParams>();
         videoParam->setResolution(1920, 1080);
         videoParam->setFrameRate(30);
-        videoParam->setBitrate(4000000);
+        videoParam->setBitrate(4000);
 
         // 配置音频参数
         auto audioParam = std::make_shared<AudioParams>();
@@ -1461,19 +1474,23 @@ int main(int argc, char* argv[])
         elog_i("MDNS", "HTTP server started on port %u for interface %s (%s)",
                http_port, interface_name.c_str(), ip_address.c_str());
         
-        RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
-            Logger::log(LogLevel::INFO, "RTSP session closed in mobile mode, waiting for new connection...");
-        });
-        RtspServer::getInstance()->setPort(static_cast<int>(rtsp_port));
-        if (!RtspServer::getInstance()->start()) {
-            Logger::log(LogLevel::ERROR, "Failed to start RTSP server");
-            if (http_server_is_running()) {
-                http_server_stop();
-                http_server_deinit();
+        if (mobile_rtsp_enabled) {
+            RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
+                Logger::log(LogLevel::INFO, "RTSP session closed in mobile mode, waiting for new connection...");
+            });
+            RtspServer::getInstance()->setPort(static_cast<int>(rtsp_port));
+            if (!RtspServer::getInstance()->start()) {
+                Logger::log(LogLevel::ERROR, "Failed to start RTSP server");
+                if (http_server_is_running()) {
+                    http_server_stop();
+                    http_server_deinit();
+                }
+                service::TcpEventService::getInstance()->stop();
+                service::MdnsService::getInstance()->stop();
+                goto main_exit;
             }
-            service::TcpEventService::getInstance()->stop();
-            service::MdnsService::getInstance()->stop();
-            goto main_exit;
+        } else {
+            Logger::log(LogLevel::INFO, "RTSP server disabled in mobile mode");
         }
 
         while (!already_in_exit_flow) {
@@ -1483,7 +1500,9 @@ int main(int argc, char* argv[])
         service::MdnsService::getInstance()->stop();
         
         // 停止 RTSP Server
-        RtspServer::getInstance()->stop();
+        if (mobile_rtsp_enabled) {
+            RtspServer::getInstance()->stop();
+        }
         
         // 停止 HTTP Server
         if (http_server_is_running()) {

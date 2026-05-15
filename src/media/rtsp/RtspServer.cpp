@@ -23,6 +23,25 @@
 
 using namespace media;
 
+namespace {
+
+void logRtspStreamInfo(const char* label, const hal::VideoStreamInfo& info) {
+    Logger::log(LogLevel::INFO,
+                "%s: index=%d sensor=%d stream=%d enabled=%d size=%dx%d fps=%d/%d payload=%d",
+                label,
+                info.index,
+                info.sensor_index,
+                info.output_index,
+                info.enabled,
+                info.width,
+                info.height,
+                info.fps_num,
+                info.fps_den,
+                static_cast<int>(info.payload));
+}
+
+}
+
 bool RtspServer::extractSpsPps(const uint8_t* h264Data, size_t dataSize, std::vector<uint8_t>& sps, std::vector<uint8_t>& pps)
 {
     if (!h264Data || dataSize < 4) {
@@ -434,9 +453,25 @@ bool RtspServer::initVideo()
     cfg.fps_den = 1;
     cfg.rc_mode = hal::VideoRcMode::CBR;
     cfg.enable_ivdc = true;
+    Logger::log(LogLevel::INFO,
+                "rtsp config: sensor=%d stream=%d requested_size=%dx%d requested_fps=%d/%d codec=%d rc=%d",
+                cfg.channel.sensor_index,
+                cfg.channel.stream_index,
+                cfg.width,
+                cfg.height,
+                cfg.fps_num,
+                cfg.fps_den,
+                static_cast<int>(cfg.payload),
+                static_cast<int>(cfg.rc_mode));
     if (!stream->configure(cfg)) {
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
         return false;
+    }
+    hal::VideoStreamInfo info{};
+    if (stream->getInfo(info)) {
+        logRtspStreamInfo("rtsp stream info", info);
+    } else {
+        Logger::log(LogLevel::WARNING, "rtsp stream info: query failed");
     }
     auto videoSource = std::make_shared<VideoSource>(stream);
     videoSession_ = std::make_shared<MediaSession>(videoSource, 60);

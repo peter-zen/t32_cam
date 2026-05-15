@@ -6,7 +6,7 @@ VideoParams::VideoParams()
     : width(1920)
     , height(1080)
     , fps(30)
-    , bitrate(2000000)  // 默认2Mbps
+    , bitrate(2000)
     , gop(0)
     , codecFormat(VideoCodecFormat::H265)
     , rcMode(VideoRcMode::CBR) {
@@ -30,8 +30,8 @@ int VideoParams::getFrameRate() const {
     return fps;
 }
 
-void VideoParams::setBitrate(int bitrate) {
-    this->bitrate = bitrate;
+void VideoParams::setBitrate(int bitrateKbps) {
+    this->bitrate = bitrateKbps;
 }
 
 int VideoParams::getBitrate() const {

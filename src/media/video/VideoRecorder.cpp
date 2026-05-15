@@ -3,12 +3,15 @@
 #include <string.h>
 #include <mutex>
 #include <fstream>
+#include <limits>
+#include <chrono>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <cstdlib>
 #include "Common.h"
 #include "Logger.h"
 #include "minimp4.h"
@@ -18,6 +21,42 @@
 #include "Misc.h"
 
 using namespace media;
+
+namespace {
+
+const char* codecName(VideoCodecFormat format) {
+    return format == VideoCodecFormat::H265 ? "H265" : "H264";
+}
+
+const char* rcModeName(VideoRcMode mode) {
+    switch (mode) {
+        case VideoRcMode::VBR: return "VBR";
+        case VideoRcMode::CVBR: return "CVBR";
+        case VideoRcMode::AVBR: return "AVBR";
+        case VideoRcMode::SMART: return "SMART";
+        case VideoRcMode::FIXQP: return "FIXQP";
+        case VideoRcMode::CBR:
+        default:
+            return "CBR";
+    }
+}
+
+void logStreamInfo(const char* label, const hal::VideoStreamInfo& info) {
+    Logger::log(LogLevel::INFO,
+                "%s: index=%d sensor=%d stream=%d enabled=%d size=%dx%d fps=%d/%d payload=%d",
+                label,
+                info.index,
+                info.sensor_index,
+                info.output_index,
+                info.enabled,
+                info.width,
+                info.height,
+                info.fps_num,
+                info.fps_den,
+                static_cast<int>(info.payload));
+}
+
+}
 
 void VideoRecorder::audioCaptureLoop()
 {
@@ -274,7 +313,28 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
     if (stream_) {
         if (!stream_->getInfo(preInfo)) {
             Logger::log(LogLevel::WARNING, "snap: pre-start info query failed");
+        } else {
+            logStreamInfo("record stream info pre-start", preInfo);
         }
+    }
+
+    if (vidParam) {
+        int reqWidth = 0;
+        int reqHeight = 0;
+        vidParam->getResolution(reqWidth, reqHeight);
+        Logger::log(LogLevel::INFO,
+                    "record config: file=%s sensor=%d stream=%d requested_size=%dx%d requested_fps=%d bitrate=%dKbps gop=%d codec=%s rc=%s duration=%d",
+                    filename.c_str(),
+                    VIDEO_SENSOR_ID,
+                    preInfo.output_index,
+                    reqWidth,
+                    reqHeight,
+                    vidParam->getFrameRate(),
+                    vidParam->getBitrate(),
+                    vidParam->getGop(),
+                    codecName(vidParam->getCodecFormat()),
+                    rcModeName(vidParam->getRcMode()),
+                    duration);
     }
     
     daynight_switch(true);
@@ -283,6 +343,13 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
         Logger::log(LogLevel::ERROR, "snap: stream start failed");
         if (onRecordDone) onRecordDone(false);
         return false;
+    }
+
+    hal::VideoStreamInfo startedInfo{};
+    if (stream_ && stream_->getInfo(startedInfo)) {
+        logStreamInfo("record stream info started", startedInfo);
+    } else {
+        Logger::log(LogLevel::WARNING, "record stream info started: query failed");
     }
 
     /* Step.6 Get stream */
@@ -326,7 +393,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     hal::VideoStreamInfo info{};
     if (stream_) {
         if (stream_->getInfo(info)) {
-            
+            logStreamInfo("record stream info active", info);
         } else {
             Logger::log(LogLevel::WARNING, "stream info: query failed");
         }
@@ -425,6 +492,23 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     int effectiveGopMs = (fps > 0) ? (effectiveGopFrames * 1000 / fps) : 2000;
     int frameCount = duration * fps;
     Logger::log(LogLevel::INFO, "%s: duration:%d, frameCount:%d, fps:%d", __func__, duration, frameCount, fps);
+
+    int videoFrameCount = 0;
+    int nalWriteCount = 0;
+    uint64_t videoBytes = 0;
+    int64_t firstVideoTimestamp = 0;
+    int64_t prevVideoTimestamp = 0;
+    int64_t lastObservedVideoTimestamp = 0;
+    int64_t timestampDeltaSum = 0;
+    int64_t timestampDeltaMin = std::numeric_limits<int64_t>::max();
+    int64_t timestampDeltaMax = 0;
+    auto recordWallStart = std::chrono::steady_clock::now();
+    int64_t loopWallUsSum = 0;
+    int64_t loopWallUsMax = 0;
+    int64_t pollWallUsSum = 0;
+    int64_t writeWallUsSum = 0;
+    int64_t audioWallUsSum = 0;
+
     auto checkRecordCondition = [&frameCount, duration, this]() {
         if (this->stopRecording) {
             return false;
@@ -456,7 +540,9 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     
     bool audioAdtsLogged = false;
     while (checkRecordCondition()) {
+        auto loopWallStart = std::chrono::steady_clock::now();
         /* Polling stream, set timeout as 1000msec */
+        auto pollWallStart = std::chrono::steady_clock::now();
         if (!stream_->polling(1000)) {
             Logger::log(LogLevel::ERROR, "stream_->polling(1000) timeout");
             MP4E_close(muxer);
@@ -465,6 +551,8 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
             fclose(fp);
             return false;
         }
+        pollWallUsSum += std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - pollWallStart).count();
 
         hal::VideoEncodedFrame frame;
         if (!stream_->getFrame(frame)) {
@@ -474,9 +562,29 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
             fclose(fp);
             return false;
         }
+
+        videoFrameCount++;
+        if (firstVideoTimestamp == 0) {
+            firstVideoTimestamp = static_cast<int64_t>(frame.pts);
+        }
+        if (prevVideoTimestamp > 0 && static_cast<int64_t>(frame.pts) > prevVideoTimestamp) {
+            int64_t delta = static_cast<int64_t>(frame.pts) - prevVideoTimestamp;
+            timestampDeltaSum += delta;
+            if (delta < timestampDeltaMin) {
+                timestampDeltaMin = delta;
+            }
+            if (delta > timestampDeltaMax) {
+                timestampDeltaMax = delta;
+            }
+        }
+        prevVideoTimestamp = static_cast<int64_t>(frame.pts);
+        lastObservedVideoTimestamp = static_cast<int64_t>(frame.pts);
+
+        auto writeWallStart = std::chrono::steady_clock::now();
         for (i = 0; i < frame.piece_count; i++) {
             // 处理视频数据
             size_t datasize = frame.pieces[i].size;
+            videoBytes += datasize;
             uint8_t *inputData = (uint8_t*)frame.pieces[i].data;
             size_t pos = 0;
             
@@ -505,11 +613,32 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                     fclose(fp);
                     return false;
                 }
+                nalWriteCount++;
                 pos += nal_size;
             }
         }
+        writeWallUsSum += std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - writeWallStart).count();
+
+        if (fps > 0 && (videoFrameCount % (fps * 5)) == 0 && lastObservedVideoTimestamp > firstVideoTimestamp) {
+            double observedSec = (lastObservedVideoTimestamp - firstVideoTimestamp) / 1000000.0;
+            double observedFps = observedSec > 0.0 ? ((videoFrameCount - 1) / observedSec) : 0.0;
+            double avgDeltaMs = videoFrameCount > 1
+                ? (timestampDeltaSum / 1000.0 / (videoFrameCount - 1))
+                : 0.0;
+            Logger::log(LogLevel::INFO,
+                        "record stats: frames=%d nal=%d bytes=%llu observed_fps=%.2f avg_delta_ms=%.2f min_delta_ms=%.2f max_delta_ms=%.2f",
+                        videoFrameCount,
+                        nalWriteCount,
+                        (unsigned long long)videoBytes,
+                        observedFps,
+                        avgDeltaMs,
+                        timestampDeltaMin == std::numeric_limits<int64_t>::max() ? 0.0 : timestampDeltaMin / 1000.0,
+                        timestampDeltaMax / 1000.0);
+        }
 
         if (audioRecording) {
+            auto audioWallStart = std::chrono::steady_clock::now();
             while (true) {
                 QueuedAudioSample audioSample;
                 bool popped = false;
@@ -586,9 +715,36 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
                     MP4E_put_sample(muxer, audio_track_id, audioData.data(), static_cast<int>(audioData.size()), audioFrameDuration, MP4E_SAMPLE_DEFAULT);
                 }
             }
+            audioWallUsSum += std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - audioWallStart).count();
         }
         
         stream_->releaseFrame(frame);
+
+        int64_t loopWallUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - loopWallStart).count();
+        loopWallUsSum += loopWallUs;
+        if (loopWallUs > loopWallUsMax) {
+            loopWallUsMax = loopWallUs;
+        }
+        if (fps > 0 && (videoFrameCount % (fps * 5)) == 0) {
+            double wallSec = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - recordWallStart).count() / 1000000.0;
+            double wallFps = wallSec > 0.0 ? (videoFrameCount / wallSec) : 0.0;
+            double avgLoopMs = videoFrameCount > 0 ? (loopWallUsSum / 1000.0 / videoFrameCount) : 0.0;
+            double avgPollMs = videoFrameCount > 0 ? (pollWallUsSum / 1000.0 / videoFrameCount) : 0.0;
+            double avgWriteMs = videoFrameCount > 0 ? (writeWallUsSum / 1000.0 / videoFrameCount) : 0.0;
+            double avgAudioMs = videoFrameCount > 0 ? (audioWallUsSum / 1000.0 / videoFrameCount) : 0.0;
+            Logger::log(LogLevel::INFO,
+                        "record wall: frames=%d wall_fps=%.2f avg_loop_ms=%.2f max_loop_ms=%.2f avg_poll_ms=%.2f avg_write_ms=%.2f avg_audio_ms=%.2f",
+                        videoFrameCount,
+                        wallFps,
+                        avgLoopMs,
+                        loopWallUsMax / 1000.0,
+                        avgPollMs,
+                        avgWriteMs,
+                        avgAudioMs);
+        }
     }
 
     if (audioRecording) {
@@ -678,6 +834,38 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
             }
         }
     }
+    if (videoFrameCount > 0) {
+        double observedSec = (lastObservedVideoTimestamp > firstVideoTimestamp)
+            ? ((lastObservedVideoTimestamp - firstVideoTimestamp) / 1000000.0)
+            : 0.0;
+        double observedFps = observedSec > 0.0 ? ((videoFrameCount - 1) / observedSec) : 0.0;
+        double avgDeltaMs = videoFrameCount > 1
+            ? (timestampDeltaSum / 1000.0 / (videoFrameCount - 1))
+            : 0.0;
+        double wallSec = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - recordWallStart).count() / 1000000.0;
+        double wallFps = wallSec > 0.0 ? (videoFrameCount / wallSec) : 0.0;
+        double avgLoopMs = videoFrameCount > 0 ? (loopWallUsSum / 1000.0 / videoFrameCount) : 0.0;
+        double avgPollMs = videoFrameCount > 0 ? (pollWallUsSum / 1000.0 / videoFrameCount) : 0.0;
+        double avgWriteMs = videoFrameCount > 0 ? (writeWallUsSum / 1000.0 / videoFrameCount) : 0.0;
+        double avgAudioMs = videoFrameCount > 0 ? (audioWallUsSum / 1000.0 / videoFrameCount) : 0.0;
+        Logger::log(LogLevel::INFO,
+                    "record summary: frames=%d nal=%d bytes=%llu requested_fps=%d observed_fps=%.2f wall_fps=%.2f avg_delta_ms=%.2f avg_loop_ms=%.2f max_loop_ms=%.2f avg_poll_ms=%.2f avg_write_ms=%.2f avg_audio_ms=%.2f min_delta_ms=%.2f max_delta_ms=%.2f",
+                    videoFrameCount,
+                    nalWriteCount,
+                    (unsigned long long)videoBytes,
+                    fps,
+                    observedFps,
+                    wallFps,
+                    avgDeltaMs,
+                    avgLoopMs,
+                    loopWallUsMax / 1000.0,
+                    avgPollMs,
+                    avgWriteMs,
+                    avgAudioMs,
+                    timestampDeltaMin == std::numeric_limits<int64_t>::max() ? 0.0 : timestampDeltaMin / 1000.0,
+                    timestampDeltaMax / 1000.0);
+    }
     MP4E_close(muxer);
     mp4_h26x_write_close(&mp4wr);
     fflush(fp);
@@ -765,17 +953,34 @@ bool VideoRecorder::initVideo()
         ? hal::VideoPayloadType::H265 : hal::VideoPayloadType::H264;
     cfg.channel.sensor_index = VIDEO_SENSOR_ID;
     cfg.channel.stream_index = VIDEO_STREAM_ID;
+    const char* recordStreamId = std::getenv("HTC_RECORD_STREAM_ID");
+    if (recordStreamId && strcmp(recordStreamId, "1") == 0) {
+        cfg.channel.stream_index = 1;
+    }
     cfg.width = w;
 	    cfg.height = h;
 	    cfg.fps_num = vidParam ? vidParam->getFrameRate() : 30;
 	    cfg.fps_den = 1;
-        cfg.gop = vidParam ? vidParam->getGop() : 0;
+        cfg.bitrate = vidParam ? vidParam->getBitrate() : 0;
+	        cfg.gop = vidParam ? vidParam->getGop() : 0;
         if (cfg.gop <= 0) {
             cfg.gop = cfg.fps_num > 0 ? cfg.fps_num * 2 : 60;
         }
 	    cfg.rc_mode = static_cast<hal::VideoRcMode>(
 	        vidParam ? static_cast<int>(vidParam->getRcMode()) : static_cast<int>(hal::VideoRcMode::CBR));
 	    cfg.enable_ivdc = true;
+    Logger::log(LogLevel::INFO,
+                "initVideo: sensor=%d stream=%d size=%dx%d fps=%d/%d bitrate=%dKbps gop=%d rc=%d codec=%d",
+                cfg.channel.sensor_index,
+                cfg.channel.stream_index,
+                cfg.width,
+                cfg.height,
+                cfg.fps_num,
+                cfg.fps_den,
+                cfg.bitrate,
+                cfg.gop,
+                static_cast<int>(cfg.rc_mode),
+                static_cast<int>(cfg.payload));
     if (!stream_->configure(cfg)) {
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
         return false;
@@ -828,8 +1033,19 @@ bool VideoRecorder::daynight_switch(bool on)
     daynight_controller->setIRLedPins(IR_LED_PIN);
     daynight_controller->setIRCutPins(IR_CUT_ENABLE_PIN, IR_CUT_CTRL_PIN);
 
+    const char* forceDay = std::getenv("HTC_FORCE_RECORD_DAY_MODE");
+    if (forceDay && strcmp(forceDay, "1") == 0) {
+        Logger::log(LogLevel::INFO, "daynight_switch: force DAY mode for recording FPS debug");
+        daynight_controller->controlISP(DayNightState::DAY);
+        daynight_controller->controlIRCut(DayNightState::DAY);
+        daynight_controller->controlIRLed(DayNightState::DAY);
+        daynight_controller->suspendAutoSwitch();
+        return true;
+    }
+
     if (on) {
         auto daynight_state = daynight_controller->getDayNightState();
+        Logger::log(LogLevel::INFO, "daynight_switch: detected state=%d", static_cast<int>(daynight_state));
         daynight_controller->controlISP(daynight_state);
         daynight_controller->controlIRCut(daynight_state);
         daynight_controller->controlIRLed(daynight_state);

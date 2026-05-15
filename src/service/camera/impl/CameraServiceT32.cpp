@@ -5,6 +5,8 @@
 
 #include <elog.h>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <sstream>
@@ -15,6 +17,7 @@
 #include "../../../common/misc/Misc.h"
 #include "../../../common/Common.h"
 #include "../../../config/setting/Settings.h"
+#include "../../../hal/ingenic/sensor-config.h"
 #include "../../../storage/MetadataDao.h"
 #include <sys/statvfs.h>
 
@@ -66,7 +69,7 @@ void applyConfiguredVideoParams(const std::shared_ptr<media::VideoParams>& video
 
     videoParams->setResolution(width, height);
     videoParams->setFrameRate(fps);
-    videoParams->setBitrate(bitrateKbps * 1024);
+    videoParams->setBitrate(bitrateKbps);
 
     // Convert registry codec value (1=H.264, 2=H.265) to VideoCodecFormat enum (0=H264, 1=H265)
     int codec = props.getVideoRecordCodec();
@@ -84,12 +87,53 @@ void applyConfiguredVideoParams(const std::shared_ptr<media::VideoParams>& video
     videoParams->setRcMode(rcMode);
 }
 
+const char* sensorTypeName() {
+#if defined(SENSOR_TYPE_SC4336P)
+    return "sc4336p";
+#elif defined(SENSOR_TYPE_GC4653)
+    return "gc4653";
+#else
+    return "gc5613";
+#endif
+}
+
+void logDefaultStreamProfiles() {
+    elog_i(TAG,
+           "stream default profile: sensor=%s stream0={enable=%d size=%dx%d fps=%d/%d} stream1={enable=%d size=%dx%d fps=%d/%d}",
+           sensorTypeName(),
+           CHN0_EN,
+           FIRST_SENSOR_WIDTH,
+           FIRST_SENSOR_HEIGHT,
+           FIRST_SENSOR_FRAME_RATE_NUM,
+           FIRST_SENSOR_FRAME_RATE_DEN,
+           CHN1_EN,
+           FIRST_SENSOR_WIDTH_SECOND,
+           FIRST_SENSOR_HEIGHT_SECOND,
+           FIRST_SENSOR_FRAME_RATE_NUM,
+           FIRST_SENSOR_FRAME_RATE_DEN);
+}
+
+const char* videoCodecName(media::VideoCodecFormat format) {
+    return format == media::VideoCodecFormat::H265 ? "H265" : "H264";
+}
+
+const char* videoRcModeName(media::VideoRcMode mode) {
+    switch (mode) {
+        case media::VideoRcMode::VBR: return "VBR";
+        case media::VideoRcMode::CVBR: return "CVBR";
+        case media::VideoRcMode::AVBR: return "AVBR";
+        case media::VideoRcMode::SMART: return "SMART";
+        case media::VideoRcMode::FIXQP: return "FIXQP";
+        case media::VideoRcMode::CBR:
+        default:
+            return "CBR";
+    }
+}
+
 } // namespace
 
 CameraServiceT32::CameraServiceT32() {
     elog_i(TAG, "CameraServiceT32 created");
-    image_snap_ = std::make_shared<media::ImageSnap>();
-    large_snap_ = std::make_shared<media::LargeImageSnap>();
     initScheduler();
 }
 
@@ -128,12 +172,18 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
     bool ok;
     if (width <= HW_ENCODER_MAX_W && height <= HW_ENCODER_MAX_H) {
         // Hardware path: within sensor resolution, use hardware JPEG encoder
+        if (!image_snap_) {
+            image_snap_ = std::make_shared<media::ImageSnap>();
+        }
         media::ImageSnapParams params;
         params.setImageSize(width, height);
         image_snap_->setParams(params);
         ok = image_snap_->snap(filename);
     } else {
         // Software path: exceeds sensor resolution, use strip-based resize + software JPEG
+        if (!large_snap_) {
+            large_snap_ = std::make_shared<media::LargeImageSnap>();
+        }
         ok = large_snap_->snapLarge(filename, width, height, jpegQuality);
     }
 
@@ -322,6 +372,9 @@ int CameraServiceT32::capturePreviewFrame(int channel, int width, int height, st
     const std::string path = build_capture_path(base_dir);
     media::ImageSnapParams params;
     params.setImageSize(width, height);
+    if (!image_snap_) {
+        image_snap_ = std::make_shared<media::ImageSnap>();
+    }
     image_snap_->setParams(params);
 
     if (!image_snap_->snap(path)) {
@@ -374,13 +427,35 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
         duration = CameraPropertyService::getInstance().getVideoRecordLength();
     }
 
+    logDefaultStreamProfiles();
+    int recordStreamId = 0;
+    const char* recordStreamEnv = std::getenv("HTC_RECORD_STREAM_ID");
+    if (recordStreamEnv && strcmp(recordStreamEnv, "1") == 0) {
+        recordStreamId = 1;
+    }
+    int width = 0;
+    int height = 0;
+    vidParam->getResolution(width, height);
+    elog_i(TAG,
+           "record config: file=%s sensor=0 stream=%d size=%dx%d fps=%d bitrate=%dKbps codec=%s rc=%s duration=%d audio=%d",
+           current_record_file_.c_str(),
+           recordStreamId,
+           width,
+           height,
+           vidParam->getFrameRate(),
+           vidParam->getBitrate(),
+           videoCodecName(vidParam->getCodecFormat()),
+           videoRcModeName(vidParam->getRcMode()),
+           duration,
+           audio ? 1 : 0);
+
     // Disk space check and loop recording cleanup
     {
-        int bitrateBps = vidParam->getBitrate();
-        // Estimate space needed (bitrate * duration / 8) + 10% overhead, in MB
+        int bitrateKbps = vidParam->getBitrate();
+        // Estimate space needed (Kbps * 1000 / 8) + 10% overhead, in MB
         long long estimatedMB = 0;
         if (duration > 0) {
-            estimatedMB = static_cast<long long>(bitrateBps) * duration / 8 / (1024 * 1024);
+            estimatedMB = static_cast<long long>(bitrateKbps) * 1000 * duration / 8 / (1024 * 1024);
         }
         estimatedMB = estimatedMB * 11 / 10 + 10; // +10% overhead + 10MB safety
 

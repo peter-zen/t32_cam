@@ -138,7 +138,7 @@ void applyConfiguredVideoParams(const std::shared_ptr<media::VideoParams>& video
 
     videoParams->setResolution(width, height);
     videoParams->setFrameRate(fps);
-    videoParams->setBitrate(bitrateKbps * 1024);
+    videoParams->setBitrate(bitrateKbps);
 }
 
 } // namespace

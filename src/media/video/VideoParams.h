@@ -45,9 +45,9 @@ public:
     int getFrameRate() const;
 
     /**
-     * 设置视频比特率
+     * 设置视频比特率，单位 Kbps。
      */
-    void setBitrate(int bitrate);
+    void setBitrate(int bitrateKbps);
     int getBitrate() const;
 
     /**
