@@ -224,16 +224,16 @@ static void fillFsAttrForOutput(IMPFSChnAttr* a, int sensorIndex, int outputInde
         } else if (outputIndex == 1) {
             a->outFrmRateNum = FIRST_SENSOR_FRAME_RATE_NUM;
             a->outFrmRateDen = FIRST_SENSOR_FRAME_RATE_DEN;
-            a->crop.enable = 1;
+            a->crop.enable = 0;
             a->crop.top = 0;
             a->crop.left = 0;
-            a->crop.width = FIRST_SENSOR_WIDTH_SECOND;
-            a->crop.height = FIRST_SENSOR_HEIGHT_SECOND;
+            a->crop.width = FIRST_SENSOR_WIDTH;
+            a->crop.height = FIRST_SENSOR_HEIGHT;
             a->scaler.enable = 1;
             a->scaler.outwidth = FIRST_SENSOR_WIDTH_SECOND;
             a->scaler.outheight = FIRST_SENSOR_HEIGHT_SECOND;
-            a->picWidth = FIRST_SENSOR_WIDTH_SECOND;
-            a->picHeight = FIRST_SENSOR_HEIGHT_SECOND;
+            a->picWidth = FIRST_SENSOR_WIDTH;
+            a->picHeight = FIRST_SENSOR_HEIGHT;
         } else {
             a->outFrmRateNum = FIRST_SENSOR_FRAME_RATE_NUM;
             a->outFrmRateDen = FIRST_SENSOR_FRAME_RATE_DEN;
@@ -265,16 +265,16 @@ static void fillFsAttrForOutput(IMPFSChnAttr* a, int sensorIndex, int outputInde
         } else if (outputIndex == 1) {
             a->outFrmRateNum = SECOND_SENSOR_FRAME_RATE_NUM;
             a->outFrmRateDen = SECOND_SENSOR_FRAME_RATE_DEN;
-            a->crop.enable = 1;
+            a->crop.enable = 0;
             a->crop.top = 0;
             a->crop.left = 0;
-            a->crop.width = SECOND_SENSOR_WIDTH_SECOND;
-            a->crop.height = SECOND_SENSOR_HEIGHT_SECOND;
+            a->crop.width = SECOND_SENSOR_WIDTH;
+            a->crop.height = SECOND_SENSOR_HEIGHT;
             a->scaler.enable = 1;
             a->scaler.outwidth = SECOND_SENSOR_WIDTH_SECOND;
             a->scaler.outheight = SECOND_SENSOR_HEIGHT_SECOND;
-            a->picWidth = SECOND_SENSOR_WIDTH_SECOND;
-            a->picHeight = SECOND_SENSOR_HEIGHT_SECOND;
+            a->picWidth = SECOND_SENSOR_WIDTH;
+            a->picHeight = SECOND_SENSOR_HEIGHT;
         } else {
             a->outFrmRateNum = SECOND_SENSOR_FRAME_RATE_NUM;
             a->outFrmRateDen = SECOND_SENSOR_FRAME_RATE_DEN;
@@ -306,16 +306,16 @@ static void fillFsAttrForOutput(IMPFSChnAttr* a, int sensorIndex, int outputInde
         } else if (outputIndex == 1) {
             a->outFrmRateNum = THIRD_SENSOR_FRAME_RATE_NUM;
             a->outFrmRateDen = THIRD_SENSOR_FRAME_RATE_DEN;
-            a->crop.enable = 1;
+            a->crop.enable = 0;
             a->crop.top = 0;
             a->crop.left = 0;
-            a->crop.width = THIRD_SENSOR_WIDTH_SECOND;
-            a->crop.height = THIRD_SENSOR_HEIGHT_SECOND;
+            a->crop.width = THIRD_SENSOR_WIDTH;
+            a->crop.height = THIRD_SENSOR_HEIGHT;
             a->scaler.enable = 1;
             a->scaler.outwidth = THIRD_SENSOR_WIDTH_SECOND;
             a->scaler.outheight = THIRD_SENSOR_HEIGHT_SECOND;
-            a->picWidth = THIRD_SENSOR_WIDTH_SECOND;
-            a->picHeight = THIRD_SENSOR_HEIGHT_SECOND;
+            a->picWidth = THIRD_SENSOR_WIDTH;
+            a->picHeight = THIRD_SENSOR_HEIGHT;
         } else {
             a->outFrmRateNum = THIRD_SENSOR_FRAME_RATE_NUM;
             a->outFrmRateDen = THIRD_SENSOR_FRAME_RATE_DEN;
@@ -347,16 +347,16 @@ static void fillFsAttrForOutput(IMPFSChnAttr* a, int sensorIndex, int outputInde
         } else if (outputIndex == 1) {
             a->outFrmRateNum = FOURTH_SENSOR_FRAME_RATE_NUM;
             a->outFrmRateDen = FOURTH_SENSOR_FRAME_RATE_DEN;
-            a->crop.enable = 1;
+            a->crop.enable = 0;
             a->crop.top = 0;
             a->crop.left = 0;
-            a->crop.width = FOURTH_SENSOR_WIDTH_SECOND;
-            a->crop.height = FOURTH_SENSOR_HEIGHT_SECOND;
+            a->crop.width = FOURTH_SENSOR_WIDTH;
+            a->crop.height = FOURTH_SENSOR_HEIGHT;
             a->scaler.enable = 1;
             a->scaler.outwidth = FOURTH_SENSOR_WIDTH_SECOND;
             a->scaler.outheight = FOURTH_SENSOR_HEIGHT_SECOND;
-            a->picWidth = FOURTH_SENSOR_WIDTH_SECOND;
-            a->picHeight = FOURTH_SENSOR_HEIGHT_SECOND;
+            a->picWidth = FOURTH_SENSOR_WIDTH;
+            a->picHeight = FOURTH_SENSOR_HEIGHT;
         } else {
             a->outFrmRateNum = FOURTH_SENSOR_FRAME_RATE_NUM;
             a->outFrmRateDen = FOURTH_SENSOR_FRAME_RATE_DEN;
@@ -862,11 +862,19 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
         return false;
     }
 
+    int sensor_width = fs_chn_attr.picWidth;
+    int sensor_height = fs_chn_attr.picHeight;
     fs_chn_attr.scaler.enable = 1;
     fs_chn_attr.scaler.outwidth = cfg.width;
     fs_chn_attr.scaler.outheight = cfg.height;
     fs_chn_attr.picWidth = cfg.width;
     fs_chn_attr.picHeight = cfg.height;
+    // Enable crop to full sensor frame so scaler works on entire image instead of top-left corner
+    fs_chn_attr.crop.enable = 1;
+    fs_chn_attr.crop.top = 0;
+    fs_chn_attr.crop.left = 0;
+    fs_chn_attr.crop.width = sensor_width;
+    fs_chn_attr.crop.height = sensor_height;
     fs_chn_attr.outFrmRateNum = cfg.fps_num;
     fs_chn_attr.outFrmRateDen = cfg.fps_den;
     if(IMP_FrameSource_SetChnAttr(group_id_, &fs_chn_attr) != 0) {

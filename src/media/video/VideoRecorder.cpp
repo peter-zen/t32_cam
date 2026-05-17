@@ -359,7 +359,7 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
         this->threads.emplace_back([this, duration, filename, onRecordDone]() {
             bool nonBlockingResult = true;
 
-            if (!this->record(VideoCodecFormat::H264, filename, duration)) {
+            if (!this->record(vidParam ? vidParam->getCodecFormat() : VideoCodecFormat::H264, filename, duration)) {
                 nonBlockingResult = false;
             }
 
@@ -370,7 +370,7 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
         });
         return true;
     } else {
-        if (!record(VideoCodecFormat::H264, filename, duration)) {
+        if (!record(vidParam ? vidParam->getCodecFormat() : VideoCodecFormat::H264, filename, duration)) {
             result = false;
         }
 

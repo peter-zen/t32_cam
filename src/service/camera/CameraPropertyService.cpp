@@ -258,38 +258,22 @@ void appendVideoMode(std::vector<VideoMode>& modes, int width, int height, int f
 
 std::vector<VideoMode> buildSupportedVideoModes() {
     std::vector<VideoMode> modes;
-    int vidMaxSize = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_MVIDEO, 8);
 
-    auto appendHdAndFhd = [&modes]() {
-        appendVideoMode(modes, 1280, 720, 30);
-        appendVideoMode(modes, 1280, 720, 60);
+    appendVideoMode(modes, 1280, 720, 30);
+    appendVideoMode(modes, 1280, 720, 60);
 #ifdef VIDEO_SIZE_HD_120FPS
-        appendVideoMode(modes, 1280, 720, 120);
+    appendVideoMode(modes, 1280, 720, 120);
 #endif
 #ifdef VIDEO_SIZE_HD_240FPS
-        appendVideoMode(modes, 1280, 720, 240);
+    appendVideoMode(modes, 1280, 720, 240);
 #endif
-        appendVideoMode(modes, 1920, 1080, 30);
-        appendVideoMode(modes, 1920, 1080, 60);
+    appendVideoMode(modes, 1920, 1080, 30);
+    appendVideoMode(modes, 1920, 1080, 60);
 #ifdef VIDEO_SIZE_FHD_120FPS
-        appendVideoMode(modes, 1920, 1080, 120);
+    appendVideoMode(modes, 1920, 1080, 120);
 #endif
-    };
-
-    if (vidMaxSize == 8 || vidMaxSize == 4) {
-        appendHdAndFhd();
-        appendVideoMode(modes, 2560, 1440, 30);
-        appendVideoMode(modes, 3840, 2160, 30);
-    } else if (vidMaxSize == 2) {
-        appendHdAndFhd();
-        appendVideoMode(modes, 2560, 1440, 30);
-    } else if (vidMaxSize == 1) {
-        appendHdAndFhd();
-    } else {
-        appendHdAndFhd();
-        appendVideoMode(modes, 2560, 1440, 30);
-        appendVideoMode(modes, 3840, 2160, 30);
-    }
+    appendVideoMode(modes, 2560, 1440, 30);
+    appendVideoMode(modes, 3840, 2160, 30);
 
     if (modes.empty()) {
         appendVideoMode(modes, 1920, 1080, 30);
