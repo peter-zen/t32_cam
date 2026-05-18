@@ -16,10 +16,72 @@ int S_RC_METHOD = ENC_RC_MODE_CBR;
 int direct_switch = 0;
 int gosd_enable = 0; /* 1: ipu osd, 2: isp osd, 3: ipu osd and isp osd */
 int kerenc_enable[FS_CHN_NUM] = {0};
+int g_fs_nvbufs = 0; /* 0: use default, >0: override nrVBs for frame source */
+
+static int g_fs_fps_monitor_run = 0;
+static pthread_t g_fs_fps_tid[FS_CHN_NUM];
+
+static void *fs_fps_monitor_thread(void *args)
+{
+	int chnNum = (int)(intptr_t)args;
+	IMPFrameInfo *frame = NULL;
+	int ret = 0;
+	int64_t last_ts = 0;
+	int frame_count = 0;
+	int64_t stat_start_ts = 0;
+	int log_count = 0;
+
+	printf("[FS_CH%d] monitor thread started\n", chnNum);
+	ret = IMP_FrameSource_SetFrameDepth(chnNum, 1);
+	if (ret < 0) {
+		printf("[FS_CH%d] monitor SetFrameDepth failed, ret=%d\n", chnNum, ret);
+		return NULL;
+	}
+
+	stat_start_ts = IMP_System_GetTimeStamp();
+	while (g_fs_fps_monitor_run) {
+		ret = IMP_FrameSource_GetFrame(chnNum, &frame);
+		if (ret < 0) {
+			usleep(1000);
+			continue;
+		}
+
+		int64_t now = IMP_System_GetTimeStamp();
+		int64_t interval_ms = (last_ts > 0) ? (now - last_ts) / 1000 : 0;
+
+		/* Log first 120 frames and any anomalous intervals (>50ms deviation from 33ms) */
+		if (log_count < 120 || interval_ms > 50 || interval_ms < 15) {
+			printf("[FS_CH%d] frame=%d ts=%lld interval=%lldms pool_idx=%d size=%d w=%d h=%d\n",
+				chnNum, log_count, (long long)frame->timeStamp, (long long)interval_ms,
+				frame->pool_idx, frame->size, frame->width, frame->height);
+		}
+		log_count++;
+		last_ts = now;
+		frame_count++;
+
+		ret = IMP_FrameSource_ReleaseFrame(chnNum, frame);
+		if (ret < 0) {
+			printf("[FS_CH%d] monitor ReleaseFrame failed, ret=%d\n", chnNum, ret);
+		}
+
+		/* Print FPS stats every 2 seconds */
+		if ((now - stat_start_ts) >= 2000000) {
+			double fps = (double)frame_count * 1000000.0 / (now - stat_start_ts);
+			printf("===== [FS_CH%d] FPS STAT: frames=%d, elapsed=%.1fs, fps=%.2f =====\n",
+				chnNum, frame_count, (now - stat_start_ts) / 1000000.0, fps);
+			frame_count = 0;
+			stat_start_ts = now;
+		}
+	}
+
+	IMP_FrameSource_SetFrameDepth(chnNum, 0);
+	printf("[FS_CH%d] monitor thread exiting\n", chnNum);
+	return NULL;
+}
 
 #define SAVE_STREAM
 #define MULTI_ENCODE /* Multi process encode, Can be enabled based on your's demand */
-//#define SHOW_FRM_BITRATE
+#define SHOW_FRM_BITRATE
 #ifdef SHOW_FRM_BITRATE
 #define FRM_BIT_RATE_TIME 2
 #define STREAM_TYPE_NUM 16
@@ -371,7 +433,7 @@ IMPSensorInfo Def_Sensor_Info[4] = {
 		.video_interface = FIRST_VIDEO_INTERFACE,
 		.mclk = FIRST_MCLK,
 		.default_boot = FIRST_DEFAULT_BOOT,
-		.fps = {15, 0}
+		.fps = {FIRST_SENSOR_FRAME_RATE_NUM, FIRST_SENSOR_FRAME_RATE_DEN}
 	},
 	{
 		.name = SECOND_SNESOR_NAME,
@@ -596,6 +658,11 @@ int sample_system_init()
 		}
 	}
 
+	IMP_LOG_INFO(TAG, "===== Sensor Config: name=%s, res=%dx%d, fps=%d/%d, nrVBs=%d =====\n",
+		sensor_info[0].name, FIRST_SENSOR_WIDTH, FIRST_SENSOR_HEIGHT,
+		FIRST_SENSOR_FRAME_RATE_NUM, FIRST_SENSOR_FRAME_RATE_DEN,
+		chn[0].fs_chn_attr.nrVBs);
+
 	IMP_LOG_DBG(TAG, "ImpSystemInit success\n");
 
 	return 0;
@@ -771,6 +838,38 @@ int sample_get_frame()
 	return 0;
 }
 
+int sample_start_fs_fps_monitor()
+{
+	int i = 0;
+	int ret = 0;
+
+	g_fs_fps_monitor_run = 1;
+	for (i = 0; i < FS_CHN_NUM; i++) {
+		if (chn[i].enable) {
+			printf("Starting FS FPS monitor for chn%d\n", chn[i].index);
+			ret = pthread_create(&g_fs_fps_tid[i], NULL, fs_fps_monitor_thread, (void *)(intptr_t)chn[i].index);
+			if (ret < 0) {
+				printf("Create FS FPS monitor thread for chn%d failed, ret=%d\n", chn[i].index, ret);
+			}
+		}
+	}
+	return 0;
+}
+
+void sample_stop_fs_fps_monitor()
+{
+	int i = 0;
+
+	printf("Stopping FS FPS monitor...\n");
+	g_fs_fps_monitor_run = 0;
+	for (i = 0; i < FS_CHN_NUM; i++) {
+		if (chn[i].enable) {
+			pthread_join(g_fs_fps_tid[i], NULL);
+		}
+	}
+	printf("FS FPS monitor stopped\n");
+}
+
 int sample_framesource_init()
 {
 	int i = 0;
@@ -778,6 +877,10 @@ int sample_framesource_init()
 
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
+			if (g_fs_nvbufs > 0) {
+				chn[i].fs_chn_attr.nrVBs = g_fs_nvbufs;
+				IMP_LOG_INFO(TAG, "Override chn[%d] nrVBs to %d\n", chn[i].index, g_fs_nvbufs);
+			}
 			ret = IMP_FrameSource_CreateChn(chn[i].index, &chn[i].fs_chn_attr);
 			if(ret < 0){
 				IMP_LOG_ERR(TAG, "IMP_FrameSource_CreateChn(%d) failed\n", chn[i].index);
@@ -1475,6 +1578,7 @@ static void *get_video_stream(void *args)
 #endif
 
 	int totalSaveStreamCnt = NR_FRAMES_TO_SAVE;
+	int64_t enc_last_ts = 0;
 	for (i = 0; i < totalSaveStreamCnt; i++) {
 		ret = IMP_Encoder_PollingStream(chnNum, 1000);
 		if (ret < 0) {
@@ -1509,6 +1613,15 @@ static void *get_video_stream(void *args)
 		if (ret < 0) {
 			IMP_LOG_ERR(TAG, "IMP_Encoder_GetStream(%d) failed\n", chnNum);
 			return NULL;
+		}
+
+		/* Log per-frame encoder timestamp and interval for first 120 frames */
+		if (i < 120) {
+			int64_t enc_now = IMP_System_GetTimeStamp();
+			int64_t enc_interval_ms = (enc_last_ts > 0) ? (enc_now - enc_last_ts) / 1000 : 0;
+			IMP_LOG_INFO(TAG, "[ENC_CH%d] frame=%d packCount=%d interval=%lldms\n",
+				chnNum, i, stream.packCount, (long long)enc_interval_ms);
+			enc_last_ts = enc_now;
 		}
 
 #ifdef SAVE_STREAM

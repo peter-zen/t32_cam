@@ -63,8 +63,8 @@ extern "C"
 
 /************************************ first sensor *************************************************/
 #if 1
-#define FIRST_SNESOR_NAME           		"sc4336p"            //sensor name (match with snesor driver name)
-#define FIRST_I2C_ADDR              		0x30                //sensor i2c address
+#define FIRST_SNESOR_NAME           		"gc4653"            //sensor name (match with snesor driver name)
+#define FIRST_I2C_ADDR              		0x29                //sensor i2c address
 #define FIRST_I2C_ADAPTER_ID                0                           //sensor controller number used (0/1/2/3)
 #define FIRST_SENSOR_WIDTH                  2560                      //sensor width
 #define FIRST_SENSOR_HEIGHT                 1440                     //sensor height
@@ -80,7 +80,7 @@ extern "C"
 #define CHN1_EN                             0                           //sensor0，output1
 #define CHN2_EN                             0                           //sensor0, output2
 #define FIRST_CROP_EN                       0
-#define FIRST_SENSOR_FRAME_RATE_NUM         15
+#define FIRST_SENSOR_FRAME_RATE_NUM         30
 #define FIRST_SENSOR_FRAME_RATE_DEN         1
 #define FIRST_SENSOR_WIDTH_SECOND           720
 #define FIRST_SENSOR_HEIGHT_SECOND          576
@@ -263,6 +263,9 @@ void sample_stop_kernvideo_stream();
 int sample_start_get_jpeg_stream();
 void sample_stop_get_jpeg_stream();
 int sample_get_video_stream_byfd();
+
+int sample_start_fs_fps_monitor();
+void sample_stop_fs_fps_monitor();
 
 extern int IMP_Encoder_KernEnc_Stop();
 extern int IMP_Encoder_KernEnc_GetStream(int encChn, IMPEncoderKernEncOut *encOut);

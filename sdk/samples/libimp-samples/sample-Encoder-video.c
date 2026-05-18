@@ -33,8 +33,10 @@
 
 extern struct chn_conf chn[];
 extern int direct_switch;
+extern int g_fs_nvbufs;
 
 static int byGetFd = 0;
+static int sleep_sec = SLEEP_TIME;
 
 int main(int argc, char *argv[])
 {
@@ -44,6 +46,15 @@ int main(int argc, char *argv[])
 	if (argc >= 2) {
 		byGetFd = atoi(argv[1]);
 	}
+	if (argc >= 3) {
+		g_fs_nvbufs = atoi(argv[2]);
+		IMP_LOG_INFO(TAG, "Command line set g_fs_nvbufs=%d\n", g_fs_nvbufs);
+	}
+	if (argc >= 4) {
+		sleep_sec = atoi(argv[3]);
+	}
+
+	IMP_LOG_INFO(TAG, "Usage: %s [byGetFd=0] [nvbufs=0] [sleep_sec=%d]\n", argv[0], SLEEP_TIME);
 
 	/* Step.1 System init */
 	ret = sample_system_init();
@@ -94,7 +105,18 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-	sleep(SLEEP_TIME);
+	/* Start FrameSource FPS monitor before sleep/get stream */
+	ret = sample_start_fs_fps_monitor();
+	if (ret < 0) {
+		IMP_LOG_ERR(TAG, "Start FS FPS monitor failed\n");
+		return -1;
+	}
+
+	IMP_LOG_INFO(TAG, "Stream on, sleep %d seconds before capture...\n", sleep_sec);
+	sleep(sleep_sec);
+
+	/* Stop FrameSource FPS monitor before encoder capture to avoid frame competition */
+	sample_stop_fs_fps_monitor();
 
 	/* Step.6 Get stream */
 	if (byGetFd) {
