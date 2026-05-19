@@ -469,11 +469,11 @@ int SensorController::enableAll(const std::vector<SensorConfig>& sensors) {
     return 0;
 }
 int SensorController::setAllFps(const std::vector<SensorConfig>& sensors) {
-    IMPISPSensorFps f0 = { (uint32_t)sensors[0].fps.num, (uint32_t)sensors[0].fps.den };
-    if (IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &f0) < 0) return -1;
-    if (sensors.size() > 1) { IMPISPSensorFps f1 = { (uint32_t)sensors[1].fps.num, (uint32_t)sensors[1].fps.den }; if (IMP_ISP_Tuning_SetSensorFPS(IMPVI_SEC, &f1) < 0) return -1; }
-    if (sensors.size() > 2) { IMPISPSensorFps f2 = { (uint32_t)sensors[2].fps.num, (uint32_t)sensors[2].fps.den }; if (IMP_ISP_Tuning_SetSensorFPS(IMPVI_THR, &f2) < 0) return -1; }
-    if (sensors.size() > 3) { IMPISPSensorFps f3 = { (uint32_t)sensors[3].fps.num, (uint32_t)sensors[3].fps.den }; if (IMP_ISP_Tuning_SetSensorFPS(IMPVI_FOUR, &f3) < 0) return -1; }
+    /* Disabled: IMP_ISP_Tuning_SetSensorFPS triggers gc4653_set_fps bug
+     * which miscalculates VTS=3000, dropping actual fps to ~17.
+     * SDK default init already configures correct VTS=1680 for 30fps.
+     */
+    (void)sensors;
     return 0;
 }
 int SensorController::disableAll(const std::vector<SensorConfig>& sensors) {
@@ -1093,7 +1093,11 @@ bool IngenicVideo::init() {
     IMP_ISP_Tuning_SetBrightness(IMPVI_MAIN, &v);
     IMPISPRunningMode rmode = IMPISP_RUNNING_MODE_DAY;
     if (IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN, &rmode) < 0) return false;
-    if (sensorMgr.setAllFps(sensors) < 0) return false;
+    /* Skip SetSensorFPS: SDK default init already sets correct VTS=1680 for 30fps.
+     * Calling it triggers gc4653_set_fps bug which overwrites VTS=3000, dropping fps to ~17.
+     * See doc/knowledge/bugs/T32-recording-fps-17-investigation.md
+     */
+    // if (sensorMgr.setAllFps(sensors) < 0) return false;
     fsMgr.init(buildChannels(sensors));
     if (fsMgr.create() < 0) return false;
     if (fsMgr.setAttr() < 0) return false;
