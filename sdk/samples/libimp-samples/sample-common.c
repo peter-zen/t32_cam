@@ -49,8 +49,8 @@ static void *fs_fps_monitor_thread(void *args)
 		int64_t now = IMP_System_GetTimeStamp();
 		int64_t interval_ms = (last_ts > 0) ? (now - last_ts) / 1000 : 0;
 
-		/* Log first 120 frames and any anomalous intervals (>50ms deviation from 33ms) */
-		if (log_count < 120 || interval_ms > 50 || interval_ms < 15) {
+		/* Only log anomalous intervals (>10ms deviation from expected 33ms for 30fps) */
+		if (interval_ms > 43 || interval_ms < 23) {
 			printf("[FS_CH%d] frame=%d ts=%lld interval=%lldms pool_idx=%d size=%d w=%d h=%d\n",
 				chnNum, log_count, (long long)frame->timeStamp, (long long)interval_ms,
 				frame->pool_idx, frame->size, frame->width, frame->height);
@@ -67,8 +67,26 @@ static void *fs_fps_monitor_thread(void *args)
 		/* Print FPS stats every 2 seconds */
 		if ((now - stat_start_ts) >= 2000000) {
 			double fps = (double)frame_count * 1000000.0 / (now - stat_start_ts);
-			printf("===== [FS_CH%d] FPS STAT: frames=%d, elapsed=%.1fs, fps=%.2f =====\n",
-				chnNum, frame_count, (now - stat_start_ts) / 1000000.0, fps);
+			IMPISPSensorFps sensorFps = {0};
+			IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &sensorFps);
+
+			uint32_t reg_vals[6] = {0};
+			uint32_t reg_addrs[6] = {0x0103, 0x0104, 0x0340, 0x0341, 0x0342, 0x0343};
+			int reg_ok[6] = {0};
+			for (int ri = 0; ri < 6; ri++) {
+				IMPISPSensorRegister r = {0};
+				r.addr = reg_addrs[ri];
+				if (IMP_ISP_GetSensorRegister(IMPVI_MAIN, &r) == 0) {
+					reg_vals[ri] = r.value;
+					reg_ok[ri] = 1;
+				}
+			}
+			printf("===== [FS_CH%d] FPS STAT: frames=%d, elapsed=%.1fs, fps=%.2f, sensor_fps=%d/%d, regs[0x0103]=0x%x[0x0104]=0x%x[0x0340]=0x%x[0x0341]=0x%x[0x0342]=0x%x[0x0343]=0x%x =====\n",
+				chnNum, frame_count, (now - stat_start_ts) / 1000000.0, fps,
+				sensorFps.num, sensorFps.den,
+				reg_ok[0] ? reg_vals[0] : 0xFFFF, reg_ok[1] ? reg_vals[1] : 0xFFFF,
+				reg_ok[2] ? reg_vals[2] : 0xFFFF, reg_ok[3] ? reg_vals[3] : 0xFFFF,
+				reg_ok[4] ? reg_vals[4] : 0xFFFF, reg_ok[5] ? reg_vals[5] : 0xFFFF);
 			frame_count = 0;
 			stat_start_ts = now;
 		}
@@ -624,6 +642,8 @@ int sample_system_init()
 		IMP_LOG_ERR(TAG, "failed to set running mode\n");
 		return -1;
 	}
+	/* Skip SetSensorFPS to verify if init VTS=1500 is sufficient for 30fps */
+#if 0
 	IMPISPSensorFps setFps = { FIRST_SENSOR_FRAME_RATE_NUM, FIRST_SENSOR_FRAME_RATE_DEN };
 	ret = IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &setFps);
 	if (ret < 0){
@@ -657,6 +677,7 @@ int sample_system_init()
 			return -1;
 		}
 	}
+#endif
 
 	IMP_LOG_INFO(TAG, "===== Sensor Config: name=%s, res=%dx%d, fps=%d/%d, nrVBs=%d =====\n",
 		sensor_info[0].name, FIRST_SENSOR_WIDTH, FIRST_SENSOR_HEIGHT,
@@ -1615,12 +1636,14 @@ static void *get_video_stream(void *args)
 			return NULL;
 		}
 
-		/* Log per-frame encoder timestamp and interval for first 120 frames */
-		if (i < 120) {
+		/* Log encoder timestamp and interval only for anomalous frames */
+		{
 			int64_t enc_now = IMP_System_GetTimeStamp();
 			int64_t enc_interval_ms = (enc_last_ts > 0) ? (enc_now - enc_last_ts) / 1000 : 0;
-			IMP_LOG_INFO(TAG, "[ENC_CH%d] frame=%d packCount=%d interval=%lldms\n",
-				chnNum, i, stream.packCount, (long long)enc_interval_ms);
+			if (enc_interval_ms > 43 || enc_interval_ms < 23) {
+				IMP_LOG_INFO(TAG, "[ENC_CH%d] frame=%d packCount=%d interval=%lldms\n",
+					chnNum, i, stream.packCount, (long long)enc_interval_ms);
+			}
 			enc_last_ts = enc_now;
 		}
 

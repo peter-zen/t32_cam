@@ -105,6 +105,42 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	/*
+	 * VTS workaround removed for root-cause verification.
+	 * If SetSensorFPS is skipped, init VTS=1500 should yield ~30fps.
+	 */
+#if 0
+	{
+		IMPISPSensorRegister reg = {0};
+
+		reg.addr = 0x0340;
+		reg.value = 0x06;
+		ret = IMP_ISP_SetSensorRegister(IMPVI_MAIN, &reg);
+		if (ret < 0) {
+			IMP_LOG_ERR(TAG, "Set VTS high byte failed\n");
+		}
+
+		reg.addr = 0x0341;
+		reg.value = 0x90;
+		ret = IMP_ISP_SetSensorRegister(IMPVI_MAIN, &reg);
+		if (ret < 0) {
+			IMP_LOG_ERR(TAG, "Set VTS low byte failed\n");
+		}
+
+		reg.addr = 0x0340; reg.value = 0;
+		IMP_ISP_GetSensorRegister(IMPVI_MAIN, &reg);
+		uint32_t vts_high = reg.value;
+
+		reg.addr = 0x0341; reg.value = 0;
+		IMP_ISP_GetSensorRegister(IMPVI_MAIN, &reg);
+		uint32_t vts_low = reg.value;
+
+		uint32_t vts = (vts_high << 8) | vts_low;
+		IMP_LOG_INFO(TAG, "===== VTS forced to 1680, readback: high=0x%x low=0x%x vts=%d =====\n",
+			vts_high, vts_low, vts);
+	}
+#endif
+
 	/* Start FrameSource FPS monitor before sleep/get stream */
 	ret = sample_start_fs_fps_monitor();
 	if (ret < 0) {
