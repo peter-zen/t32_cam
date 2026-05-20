@@ -202,6 +202,7 @@ std::vector<ParameterDefinition> buildDefinitions() {
     ParameterDefinition camMode = property("Camera_Setting", "CAM_Mode", ParameterValueType::NUMBER, 0,
                                            settingsBinding("cameraMode"), "拍摄模式");
     camMode.legacyAliases.push_back("camera_mode");
+    // cameraMode values: 0=拍照, 1=拍照+录像, 2=录像, 3=同步拍录, 4=智感录像, 5=全时录像
     for (int value = 0; value <= 5; ++value) addOption(camMode, value);
     defs.push_back(camMode);
 

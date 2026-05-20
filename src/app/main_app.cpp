@@ -16,6 +16,7 @@
 #include <queue>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <unordered_map>
 #include <algorithm>
 
@@ -545,7 +546,7 @@ static std::unordered_map<std::string, std::unordered_map<std::string, std::stri
 static bool processCmdSnap(bool is_rtc_work_well) {
     //move media file from /tmp to sdcard
     std::vector<std::string> file_names;
-    
+
     std::ifstream jsonFile(QUICK_SNAP_INFO_FILE);
     if (jsonFile.is_open()) {
         Json::Value root;
@@ -554,7 +555,7 @@ static bool processCmdSnap(bool is_rtc_work_well) {
         if (!Json::parseFromStream(readerBuilder, jsonFile, &root, &errs)) {
             Logger::log(LogLevel::ERROR, "Parse json file failed");
             return false;
-        } 
+        }
         auto dir = root["dir"].asString();
         auto files = root["files"];
         std::string oldpath = QUICK_SNAP_DIR + dir + "/*";
@@ -583,7 +584,7 @@ static bool processCmdSnap(bool is_rtc_work_well) {
 
         //create desc file
         for (auto & file : files) {
-            std::string filename; 
+            std::string filename;
             if (is_rtc_work_well) {
                 filename = newpath + "/" + file.asString();
             } else {
@@ -598,11 +599,11 @@ static bool processCmdSnap(bool is_rtc_work_well) {
         auto desc_filename = upload_path + ".json";
         createDescInfoFile(file_names, desc_filename);
     }
-    
+
     if (file_names.empty()) {//only for test
         file_names = {
-            "./res/20250620_101358.JPG", 
-            "./res/20250620_101458.JPG", 
+            "./res/20250620_101358.JPG",
+            "./res/20250620_101458.JPG",
             "./res/20250620_101558.JPG"
         };
         auto snap_param = ImageSnapParams();
@@ -610,6 +611,116 @@ static bool processCmdSnap(bool is_rtc_work_well) {
         imageSnap->snap(file_names);
         createDescInfoFile(file_names, "./res/20250620_101358.json");
     }
+    return true;
+}
+
+static bool processCmdVideoRecord(bool is_rtc_work_well) {
+    (void)is_rtc_work_well;
+    auto settings = Settings::getInstance();
+    int videoLength = settings->videoLength_l + (settings->videoLength_h << 8);
+    if (videoLength <= 0) videoLength = 10;
+
+    auto videoParam = std::make_shared<VideoParams>();
+    videoParam->setResolution(2560, 1440);
+    videoParam->setFrameRate(30);
+    videoParam->setBitrate(4000);
+    videoParam->setCodecFormat(settings->videoCodec == 2 ? VideoCodecFormat::H265 : VideoCodecFormat::H264);
+    videoParam->setRcMode(VideoRcMode::CBR);
+    videoParam->setGop(60);
+
+    auto audioParam = std::make_shared<AudioParams>();
+    audioParam->setDeviceType(AudioDeviceType::AUDIO_IN);
+    audioParam->setDeviceId(1);
+    audioParam->setChannelId(0);
+    audioParam->setVolume(settings->audioRecordVolume);
+    audioParam->setGain(settings->audioRecordGain);
+    audioParam->setCodecFormat(AudioCodecFormat::AAC);
+    audioParam->setSampleRate(AudioSampleRate::SR_16000);
+    audioParam->setChannelCount(1);
+
+    auto recorder = std::make_shared<VideoRecorder>(videoParam, audioParam);
+    std::string record_path = std::string(MEDIA_TARGET_PATH) + getCurrentTimeFormatted() + ".mp4";
+    Logger::log(LogLevel::INFO, "Work Mode record: %s, duration=%d", record_path.c_str(), videoLength);
+    if (!recorder->record(record_path, videoLength)) {
+        Logger::log(LogLevel::ERROR, "Work Mode record failed");
+        return false;
+    }
+
+    std::vector<std::string> files = {record_path};
+    std::string desc_filename = std::string(MEDIA_UPLOAD_PATH) + getCurrentTimeFormatted() + ".json";
+    if (!Misc::createDirectory(MEDIA_UPLOAD_PATH)) {
+        Logger::log(LogLevel::ERROR, "Failed to create upload directory");
+    }
+    createDescInfoFile(files, desc_filename);
+    return true;
+}
+
+static bool processCmdConcurrentSnapRecord(bool is_rtc_work_well) {
+    (void)is_rtc_work_well;
+    auto settings = Settings::getInstance();
+    int videoLength = settings->videoLength_l + (settings->videoLength_h << 8);
+    if (videoLength <= 0) videoLength = 10;
+    int burstNumber = settings->burstNumber;
+    if (burstNumber <= 0) burstNumber = 1;
+
+    auto videoParam = std::make_shared<VideoParams>();
+    videoParam->setResolution(2560, 1440);
+    videoParam->setFrameRate(30);
+    videoParam->setBitrate(4000);
+    videoParam->setCodecFormat(settings->videoCodec == 2 ? VideoCodecFormat::H265 : VideoCodecFormat::H264);
+    videoParam->setRcMode(VideoRcMode::CBR);
+    videoParam->setGop(60);
+
+    auto audioParam = std::make_shared<AudioParams>();
+    audioParam->setDeviceType(AudioDeviceType::AUDIO_IN);
+    audioParam->setDeviceId(1);
+    audioParam->setChannelId(0);
+    audioParam->setVolume(settings->audioRecordVolume);
+    audioParam->setGain(settings->audioRecordGain);
+    audioParam->setCodecFormat(AudioCodecFormat::AAC);
+    audioParam->setSampleRate(AudioSampleRate::SR_16000);
+    audioParam->setChannelCount(1);
+
+    auto recorder = std::make_shared<VideoRecorder>(videoParam, audioParam, true);
+
+    std::string record_path = std::string(MEDIA_TARGET_PATH) + getCurrentTimeFormatted() + ".mp4";
+    std::atomic<bool> record_done{false};
+
+    recorder->record(record_path, [&record_done](bool ok) {
+        record_done = true;
+        Logger::log(LogLevel::INFO, "Work Mode concurrent record done: ok=%d", ok);
+    }, videoLength);
+
+    sleep(1);
+
+    std::vector<std::string> snap_files;
+    for (int i = 0; i < burstNumber; i++) {
+        std::string snap_path = std::string(MEDIA_TARGET_PATH) + getCurrentTimeFormatted() + "_" + to_string_custom(i+1) + ".jpg";
+        int jpegQuality = 85;
+        if (recorder->captureJpeg(snap_path, jpegQuality)) {
+            snap_files.push_back(snap_path);
+            Logger::log(LogLevel::INFO, "Work Mode concurrent snap: %s", snap_path.c_str());
+        } else {
+            Logger::log(LogLevel::ERROR, "Work Mode concurrent snap failed: %s", snap_path.c_str());
+        }
+        if (i < burstNumber - 1) {
+            sleep(1);
+        }
+    }
+
+    int wait_count = 0;
+    while (!record_done && wait_count < videoLength + 10) {
+        sleep(1);
+        wait_count++;
+    }
+
+    std::vector<std::string> all_files = snap_files;
+    all_files.push_back(record_path);
+    std::string desc_filename = std::string(MEDIA_UPLOAD_PATH) + getCurrentTimeFormatted() + ".json";
+    if (!Misc::createDirectory(MEDIA_UPLOAD_PATH)) {
+        Logger::log(LogLevel::ERROR, "Failed to create upload directory");
+    }
+    createDescInfoFile(all_files, desc_filename);
     return true;
 }
 static void printUsage(char *argv[])
@@ -1247,8 +1358,31 @@ int main(int argc, char* argv[])
     }
 
     if (command & CMD_SNAP && is_rtc_work_well) {
-        if (!processCmdSnap(is_rtc_work_well)) {
-            goto main_exit;
+        uint8_t camMode = Settings::getInstance()->cameraMode;
+        if (camMode == 0) {
+            if (!processCmdSnap(is_rtc_work_well)) {
+                goto main_exit;
+            }
+        } else if (camMode == 1) {
+            if (!processCmdSnap(is_rtc_work_well)) {
+                goto main_exit;
+            }
+            if (!processCmdVideoRecord(is_rtc_work_well)) {
+                goto main_exit;
+            }
+        } else if (camMode == 2) {
+            if (!processCmdVideoRecord(is_rtc_work_well)) {
+                goto main_exit;
+            }
+        } else if (camMode == 3) {
+            if (!processCmdSnap(is_rtc_work_well)) {
+                Logger::log(LogLevel::WARNING, "quick_snap failed, continue with concurrent record");
+            }
+            if (!processCmdConcurrentSnapRecord(is_rtc_work_well)) {
+                goto main_exit;
+            }
+        } else {
+            Logger::log(LogLevel::WARNING, "cameraMode=%d not supported in work mode", camMode);
         }
     }
 
@@ -1343,8 +1477,31 @@ int main(int argc, char* argv[])
     }
 
     if (command & CMD_SNAP && !is_rtc_work_well) {
-        if (!processCmdSnap(is_rtc_work_well)) {
-            goto main_exit;
+        uint8_t camMode = Settings::getInstance()->cameraMode;
+        if (camMode == 0) {
+            if (!processCmdSnap(is_rtc_work_well)) {
+                goto main_exit;
+            }
+        } else if (camMode == 1) {
+            if (!processCmdSnap(is_rtc_work_well)) {
+                goto main_exit;
+            }
+            if (!processCmdVideoRecord(is_rtc_work_well)) {
+                goto main_exit;
+            }
+        } else if (camMode == 2) {
+            if (!processCmdVideoRecord(is_rtc_work_well)) {
+                goto main_exit;
+            }
+        } else if (camMode == 3) {
+            if (!processCmdSnap(is_rtc_work_well)) {
+                Logger::log(LogLevel::WARNING, "quick_snap failed, continue with concurrent record");
+            }
+            if (!processCmdConcurrentSnapRecord(is_rtc_work_well)) {
+                goto main_exit;
+            }
+        } else {
+            Logger::log(LogLevel::WARNING, "cameraMode=%d not supported in work mode", camMode);
         }
     }
 
@@ -1410,6 +1567,7 @@ int main(int argc, char* argv[])
     }
 
     if (command & CMD_MOBILE) {
+        setenv("HTC_TEST_MODE", "1", 1);
         uint16_t http_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_CTRL_PORT, 80);
         uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
         auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");

@@ -130,6 +130,11 @@ const char* videoRcModeName(media::VideoRcMode mode) {
     }
 }
 
+static bool isTestMode() {
+    const char* testMode = std::getenv("HTC_TEST_MODE");
+    return testMode != nullptr && std::string(testMode) == "1";
+}
+
 } // namespace
 
 CameraServiceT32::CameraServiceT32() {
@@ -153,12 +158,20 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
 
     is_capturing_ = true;
 
-    // Read configured photo size from settings
-    int sizeIndex = Settings::getInstance()->stillSize;
-    if (sizeIndex < 0 || sizeIndex >= SNAP_IMG_SIZE_MAX) sizeIndex = SNAP_IMG_SIZE_4M;
-    int width = SnapImgSize[sizeIndex].width;
-    int height = SnapImgSize[sizeIndex].height;
-    int jpegQuality = (quality > 0 && quality <= 99) ? quality : CameraPropertyService::getInstance().getStillQualityForJpeg();
+    // Test Mode: fixed sensor native resolution; Work Mode: follow Settings
+    int width, height, jpegQuality;
+    if (isTestMode()) {
+        width = 2560;
+        height = 1440;
+        jpegQuality = (quality > 0 && quality <= 99) ? quality : 85;
+        elog_i(TAG, "Test Mode takePhoto: fixed size=%dx%d", width, height);
+    } else {
+        int sizeIndex = Settings::getInstance()->stillSize;
+        if (sizeIndex < 0 || sizeIndex >= SNAP_IMG_SIZE_MAX) sizeIndex = SNAP_IMG_SIZE_4M;
+        width = SnapImgSize[sizeIndex].width;
+        height = SnapImgSize[sizeIndex].height;
+        jpegQuality = (quality > 0 && quality <= 99) ? quality : CameraPropertyService::getInstance().getStillQualityForJpeg();
+    }
 
     elog_i(TAG, "Taking photo: ch=%d, save=%d, size=%dx%d, quality=%d", channel, save, width, height, jpegQuality);
 
@@ -402,12 +415,23 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     auto now = std::time(nullptr);
     auto tm = *std::localtime(&now);
     std::ostringstream oss;
-    oss << "/mnt/sdcard/DCIM/VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
+    /* Temporary: record to /tmp to verify if SD card is the fps bottleneck */
+    oss << "/tmp/VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
     std::string filename = oss.str();
     current_record_file_ = filename;
 
     auto vidParam = std::make_shared<media::VideoParams>();
-    applyConfiguredVideoParams(vidParam);
+    if (isTestMode()) {
+        vidParam->setResolution(2560, 1440);
+        vidParam->setFrameRate(30);
+        vidParam->setBitrate(4000);
+        vidParam->setCodecFormat(media::VideoCodecFormat::H265);
+        vidParam->setRcMode(media::VideoRcMode::CBR);
+        vidParam->setGop(60);
+        elog_i(TAG, "Test Mode record: fixed 2560x1440 H265 30fps");
+    } else {
+        applyConfiguredVideoParams(vidParam);
+    }
     std::shared_ptr<media::AudioParams> audParam = nullptr;
     if (audio) {
         audParam = std::make_shared<media::AudioParams>();

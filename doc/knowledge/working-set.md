@@ -58,13 +58,31 @@
 - `playbooks/mdns-simu-and-bonjour-verification.md`
 - `reviews/mdns-doc-calibration-2026-04-13.md`
 
-## 7. 可能的下一步
+## 7. 当前活跃任务
+
+### photo-video-concurrent（同步拍录）
+
+**状态**：Sample 级验证已完成，结论已记录  
+**关键结论**：
+- 并发拍照最佳路径：**CH2 硬件放大到 8M（3840×2160）**，录影 30fps 不受影响
+- 并发拍照分辨率上限：**8M**（CH2 Encoder 不支持软件缩放；CH0 软件缩放会拖垮录影到 0.5fps）
+- GC4653 需要 **VTS=1680 workaround**（已 push `4e79f75`）
+
+**参考文档**：
+- `doc/knowledge/specs/photo-video-concurrent-implementation-plan.md` — 实现计划 & 验证结果
+- `doc/knowledge/reviews/photo-video-concurrent-sample-calibration-2026-05-20.md` — 本轮验证校准记录
+- `doc/knowledge/bugs/T32-recording-fps-17-investigation.md` — GC4653 FPS 根因分析
+
+**遗留问题**：
+- >8M 并发拍照无可行路径（需暂停录影后走 `LargeImageSnap`）
+- `LargeImageSnap` 在并发录影时的 CPU 负载影响未实测
+
+---
+
+## 8. 可能的下一步
 
 按优先级建议：
-1. 进入真机校准阶段，优先验证：
-   - device / storage 真实接线
-   - workmode 真实切换闭环
-   - mDNS / event discovery 实测
+1. 产品代码集成：将 CH2 硬件 8M 并发路径集成到 `VideoRecorder` + `CameraServiceT32`
 2. 为历史 `doc/` 建立更细的迁移策略，至少覆盖：
    - `doc/analysis/`
    - `doc/design/`

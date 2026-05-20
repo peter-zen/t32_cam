@@ -33,10 +33,13 @@ public:
 
         VideoRecorder();
         VideoRecorder(const std::shared_ptr<VideoParams> vidParam, const std::shared_ptr<AudioParams> audParam=nullptr);
+        VideoRecorder(const std::shared_ptr<VideoParams> vidParam, const std::shared_ptr<AudioParams> audParam, bool concurrentSnap);
         VideoRecorder(const VideoRecorder &) = default;
         VideoRecorder &operator=(const VideoRecorder &) = default;
         ~VideoRecorder();
-        
+
+        bool captureJpeg(const std::string& filename, int quality);
+
         // 静态音频数据回调函数
         static void staticAudioDataCallback(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame, void* userData);
 
@@ -46,6 +49,7 @@ private:
         bool record(VideoCodecFormat payloadType, const std::string &filename, int duration=0);
         //video
         bool initVideo();
+        bool initJpegStream();
         bool uninitVideo();
         ssize_t getNALSize(uint8_t *buf, ssize_t size);
         //audio
@@ -79,6 +83,8 @@ private:
         int64_t lastVideoTimestamp;
         std::shared_ptr<hal::IVideo> video_;
         std::shared_ptr<hal::IVideoStream> stream_;
+        std::shared_ptr<hal::IVideoStream> jpegStream_;
+        bool concurrentSnapEnabled_ = false;
 };
 }
 #endif

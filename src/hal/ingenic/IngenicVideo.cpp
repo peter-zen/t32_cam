@@ -87,6 +87,50 @@ static void releaseBind(int group_id, IMPCell* fs_cell, IMPCell* enc_cell) {
     }
 }
 
+static std::mutex g_fs_mutex;
+static std::map<int, int> g_fs_ref_count;
+
+static bool acquireFrameSource(int group_id, bool* out_first = nullptr) {
+    std::lock_guard<std::mutex> lock(g_fs_mutex);
+    auto it = g_fs_ref_count.find(group_id);
+    if (it != g_fs_ref_count.end()) {
+        it->second++;
+        if (out_first) *out_first = false;
+        Logger::log(LogLevel::DEBUG, "[HAL] acquireFrameSource(%d): shared, ref=%d", group_id, it->second);
+        return true;
+    }
+    if (IMP_FrameSource_EnableChn(group_id) < 0) {
+        Logger::log(LogLevel::ERROR, "[HAL] acquireFrameSource(%d): EnableChn failed", group_id);
+        if (out_first) *out_first = false;
+        return false;
+    }
+    g_fs_ref_count[group_id] = 1;
+    if (out_first) *out_first = true;
+    Logger::log(LogLevel::DEBUG, "[HAL] acquireFrameSource(%d): enabled, ref=1", group_id);
+    return true;
+}
+
+static bool releaseFrameSource(int group_id, bool* out_last = nullptr) {
+    std::lock_guard<std::mutex> lock(g_fs_mutex);
+    auto it = g_fs_ref_count.find(group_id);
+    if (it == g_fs_ref_count.end()) {
+        Logger::log(LogLevel::WARNING, "[HAL] releaseFrameSource(%d): not found", group_id);
+        if (out_last) *out_last = false;
+        return true;
+    }
+    it->second--;
+    if (it->second <= 0) {
+        IMP_FrameSource_DisableChn(group_id);
+        g_fs_ref_count.erase(it);
+        if (out_last) *out_last = true;
+        Logger::log(LogLevel::DEBUG, "[HAL] releaseFrameSource(%d): disabled", group_id);
+        return true;
+    }
+    if (out_last) *out_last = false;
+    Logger::log(LogLevel::DEBUG, "[HAL] releaseFrameSource(%d): shared, ref=%d", group_id, it->second);
+    return true;
+}
+
 static std::vector<SensorConfig> loadSensors() {
     std::vector<SensorConfig> s;
     int num = SENSOR_NUM;
@@ -931,16 +975,17 @@ bool IngenicVideoStream::start() {
     std::lock_guard<std::mutex> lock(mtx_);
     if (ref_count_ == 0) {
         Logger::log(LogLevel::DEBUG, "[HAL] start: group_id=%d channel_id=%d ref_count=%d", group_id_, channel_id_, ref_count_);
-        if (IMP_FrameSource_EnableChn(group_id_) < 0) {
-            Logger::log(LogLevel::ERROR, "[HAL] start: IMP_FrameSource_EnableChn(%d) failed", group_id_);
+        bool first_enable = false;
+        if (!acquireFrameSource(group_id_, &first_enable)) {
+            Logger::log(LogLevel::ERROR, "[HAL] start: acquireFrameSource(%d) failed", group_id_);
             return false;
         }
         if (IMP_Encoder_StartRecvPic(channel_id_) < 0) {
             Logger::log(LogLevel::ERROR, "[HAL] start: IMP_Encoder_StartRecvPic(%d) failed", channel_id_);
-            IMP_FrameSource_DisableChn(group_id_);
+            releaseFrameSource(group_id_);
             return false;
         }
-        if (group_id_ == 0 && IspOsdManager::getInstance()) {
+        if (group_id_ == 0 && first_enable && IspOsdManager::getInstance()) {
             IspOsdManager::getInstance()->start();
         }
         started_ = true;
@@ -960,11 +1005,11 @@ bool IngenicVideoStream::stop() {
     if (ref_count_ == 0 && started_) {
         Logger::log(LogLevel::DEBUG, "[HAL] stop: stopping recv pic channel_id=%d", channel_id_);
         IMP_Encoder_StopRecvPic(channel_id_);
-        if (group_id_ == 0 && IspOsdManager::getInstance()) {
+        bool last_disable = false;
+        releaseFrameSource(group_id_, &last_disable);
+        if (group_id_ == 0 && last_disable && IspOsdManager::getInstance()) {
             IspOsdManager::getInstance()->stop();
         }
-        Logger::log(LogLevel::DEBUG, "[HAL] stop: disabling framesource group_id=%d", group_id_);
-        IMP_FrameSource_DisableChn(group_id_);
         started_ = false;
         Logger::log(LogLevel::DEBUG, "[HAL] stop: success (resources kept configured)");
     }

@@ -243,6 +243,29 @@ VideoRecorder::VideoRecorder(const std::shared_ptr<VideoParams> vidParam, const 
 	initialized = initialize();
 }
 
+VideoRecorder::VideoRecorder(const std::shared_ptr<VideoParams> vidParam, const std::shared_ptr<AudioParams> audParam, bool concurrentSnap)
+    : vidParam(vidParam)
+    , audParam(audParam)
+    , stopRecording(false)
+    , audio_track_id(-1)
+    , audioRecording(false)
+    , audioThreadId(0)
+    , audio_(nullptr)
+    , audioStream_(nullptr)
+    , audioThread(nullptr)
+    , audioThreadRunning(false)
+    , audioTimestamp(0)
+    , audioCurrentTimestamp(0)
+    , audioSampleRate(8000)
+    , audioChannels(1)
+    , audioIsAac(false)
+    , audioDsiSet(false)
+    , lastVideoTimestamp(0)
+    , concurrentSnapEnabled_(concurrentSnap)
+{
+	initialized = initialize();
+}
+
 VideoRecorder::~VideoRecorder()
 {
     deinitialize();
@@ -988,11 +1011,109 @@ bool VideoRecorder::initVideo()
     return true;
 }
 
+bool VideoRecorder::initJpegStream() {
+    if (jpegStream_) return true;
+    if (!video_) {
+        Logger::log(LogLevel::ERROR, "initJpegStream: video_ is null");
+        return false;
+    }
+
+    jpegStream_ = video_->createVideoStream();
+    if (!jpegStream_) {
+        Logger::log(LogLevel::ERROR, "initJpegStream: createVideoStream failed");
+        return false;
+    }
+
+    hal::VideoStreamConfig cfg;
+    memset(&cfg, 0, sizeof(hal::VideoStreamConfig));
+    cfg.payload = hal::VideoPayloadType::JPEG;
+    cfg.channel.sensor_index = VIDEO_SENSOR_ID;
+    cfg.channel.stream_index = 2;  // CH2: hardware scaler path for 8M
+    cfg.width = 3840;              // 8M max for concurrent snap
+    cfg.height = 2160;
+    cfg.fps_num = 1;
+    cfg.fps_den = 1;
+    cfg.quality = 85;
+    cfg.rc_mode = hal::VideoRcMode::FIXQP;
+    cfg.enable_ivdc = true;
+
+    Logger::log(LogLevel::INFO,
+                "initJpegStream: sensor=%d stream=%d size=%dx%d quality=%d",
+                cfg.channel.sensor_index, cfg.channel.stream_index,
+                cfg.width, cfg.height, cfg.quality);
+
+    if (!jpegStream_->configure(cfg)) {
+        Logger::log(LogLevel::ERROR, "initJpegStream: configure failed");
+        jpegStream_.reset();
+        return false;
+    }
+    return true;
+}
+
+bool VideoRecorder::captureJpeg(const std::string& filename, int quality) {
+    if (!concurrentSnapEnabled_) {
+        Logger::log(LogLevel::WARNING, "captureJpeg: concurrent snap not enabled");
+        return false;
+    }
+    if (!initialized || !video_) {
+        Logger::log(LogLevel::ERROR, "captureJpeg: not initialized");
+        return false;
+    }
+
+    if (!initJpegStream()) {
+        Logger::log(LogLevel::ERROR, "captureJpeg: initJpegStream failed");
+        return false;
+    }
+
+    if (!jpegStream_->start()) {
+        Logger::log(LogLevel::ERROR, "captureJpeg: jpegStream start failed");
+        return false;
+    }
+
+    if (!jpegStream_->polling(1000)) {
+        Logger::log(LogLevel::ERROR, "captureJpeg: polling timeout");
+        jpegStream_->stop();
+        return false;
+    }
+
+    hal::VideoEncodedFrame frame;
+    if (!jpegStream_->getFrame(frame)) {
+        Logger::log(LogLevel::ERROR, "captureJpeg: getFrame failed");
+        jpegStream_->stop();
+        return false;
+    }
+
+    FILE* fp = fopen(filename.c_str(), "wb");
+    if (!fp) {
+        Logger::log(LogLevel::ERROR, "captureJpeg: fopen %s failed", filename.c_str());
+        jpegStream_->releaseFrame(frame);
+        jpegStream_->stop();
+        return false;
+    }
+
+    for (int i = 0; i < frame.piece_count; ++i) {
+        if (frame.pieces[i].size > 0) {
+            fwrite(frame.pieces[i].data, 1, frame.pieces[i].size, fp);
+        }
+    }
+    fclose(fp);
+
+    jpegStream_->releaseFrame(frame);
+    jpegStream_->stop();
+
+    Logger::log(LogLevel::INFO, "captureJpeg: saved %s", filename.c_str());
+    return true;
+}
+
 bool VideoRecorder::uninitVideo(void)
 {
     if (initialized) {
         if (stream_) {
             stream_->stop();
+        }
+        if (jpegStream_) {
+            jpegStream_->stop();
+            jpegStream_.reset();
         }
         if (video_) {
             video_->exit();

@@ -235,9 +235,14 @@ int main(int argc, char* argv[])
     working_mode = WorkMode::getWorkingMode();
 
     if (working_mode == workingMode::WORKING_MODE_SNAP_ONLY || working_mode == workingMode::WORKING_MODE_SNAP_UPLOAD) {
-        if (quick_snap(rtc_work_well) < 0) {
-            Logger::log(LogLevel::ERROR, "Failed to quick snap");
-            working_mode = workingMode::WORKING_MODE_MAX;
+        uint8_t camMode = Settings::getInstance()->cameraMode;
+        if (camMode == 2) {
+            Logger::log(LogLevel::INFO, "Work Mode: cameraMode=%d (video only), skip quick_snap", camMode);
+        } else {
+            if (quick_snap(rtc_work_well) < 0) {
+                Logger::log(LogLevel::ERROR, "Failed to quick snap");
+                working_mode = workingMode::WORKING_MODE_MAX;
+            }
         }
     }
 #else
