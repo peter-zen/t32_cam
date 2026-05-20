@@ -1105,6 +1105,25 @@ bool IngenicVideo::init() {
     if (!ispOsdMgr_->init(SENSOR_NUM)) {
         Logger::log(LogLevel::WARNING, "IngenicVideo: IspOsdManager init failed");
     }
+    /* Workaround: libimp.so internally overwrites VTS to 3000 during EnableSensor/EnableTuning,
+     * dropping actual fps to ~17. Force VTS back to 1680 for correct 30fps.
+     * See doc/knowledge/bugs/T32-recording-fps-17-investigation.md
+     */
+    {
+        IMPISPSensorRegister r = {0x0340, 0x06};
+        IMP_ISP_SetSensorRegister(IMPVI_MAIN, &r);
+        r.addr = 0x0341; r.value = 0x90;
+        IMP_ISP_SetSensorRegister(IMPVI_MAIN, &r);
+
+        r.addr = 0x0340; r.value = 0;
+        IMP_ISP_GetSensorRegister(IMPVI_MAIN, &r);
+        uint32_t vts_high = r.value;
+        r.addr = 0x0341; r.value = 0;
+        IMP_ISP_GetSensorRegister(IMPVI_MAIN, &r);
+        uint32_t vts_low = r.value;
+        uint32_t vts = (vts_high << 8) | vts_low;
+        Logger::log(LogLevel::INFO, "IngenicVideo VTS corrected to 0x%04x (%d)", vts, vts);
+    }
     return true;
 }
 bool IngenicVideo::exit() {

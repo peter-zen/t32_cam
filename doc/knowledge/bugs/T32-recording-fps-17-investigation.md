@@ -111,9 +111,72 @@ IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &setFps);
 
 ---
 
-## 6. 附录：排查过程中涉及的文件
+---
 
-**临时修改用于验证（已恢复或已注释）**：
+## 6. 主工程修复（2026-05-20）
+
+### 6.1 新问题：libimp.so 内部自动改写 VTS
+
+将 sample 中的验证结论应用到主工程后，发现产品代码即使**完全移除** `IMP_ISP_Tuning_SetSensorFPS` 调用，运行时 VTS 仍然被改写为 **3000**。
+
+日志验证：
+```
+I/LEGACY  IngenicVideo init done, VTS=0x0bb8 (3000)
+```
+
+这说明 **BSP `libimp.so` 动态库**在 `IMP_ISP_EnableSensor`/`IMP_ISP_EnableTuning` 等初始化流程中，内部自动触发了 `gc4653_set_fps()`，将 VTS 从正确的 1680 改写为 3000。而 sample 使用的是静态链接的 `libimp.a`，该行为未出现。
+
+### 6.2 Workaround：强制修正 VTS
+
+在 `src/hal/ingenic/IngenicVideo.cpp` 的 `init()` 末尾，增加寄存器级修正：
+
+```cpp
+/* Workaround: libimp.so internally overwrites VTS to 3000 during
+ * EnableSensor/EnableTuning, dropping actual fps to ~17.
+ * Force VTS back to 1680 for correct 30fps.
+ */
+{
+    IMPISPSensorRegister r = {0x0340, 0x06};
+    IMP_ISP_SetSensorRegister(IMPVI_MAIN, &r);
+    r.addr = 0x0341; r.value = 0x90;
+    IMP_ISP_SetSensorRegister(IMPVI_MAIN, &r);
+}
+```
+
+同时把 `SensorController::setAllFps()` 改为空实现，并注释掉调用点：
+```cpp
+// IngenicVideo.cpp:1096
+// if (sensorMgr.setAllFps(sensors) < 0) return false;
+```
+
+### 6.3 修复效果
+
+| 阶段 | VTS | observed_fps | 说明 |
+|------|-----|--------------|------|
+| 修复前 | 3000 | ~16.5 fps | `libimp.so` 内部改写 |
+| 修正 VTS 后 | 1680 | ~27.9 fps | sensor 输出已正常，但存在下游瓶颈 |
+
+帧率从 ~16.5fps 大幅提升到 **~27.9fps**，sensor 层面的问题已解决。
+
+### 6.4 剩余瓶颈分析
+
+修正 VTS 后仍未达到 30fps，日志显示：
+- `avg_delta_ms=35.81ms`（理想 33.33ms）
+- `max_delta_ms=197.13ms`，`max_loop_ms=179.11ms`
+- `avg_write_ms=15.66ms`，`avg_poll_ms=20.08ms`
+
+**判断**：sensor 已正确输出 30fps，但录影流程中 **SD 卡写入延迟** 或 **编码器/FrameSource 处理** 导致部分帧间隔被拉大，实际录影帧率被拉低到 ~28fps。
+
+下一步建议：将录影路径临时改到 `/tmp`（内存文件系统），排除 SD 卡因素。
+
+---
+
+## 7. 附录：排查过程中涉及的文件
+
+**主工程修改**：
+- `src/hal/ingenic/IngenicVideo.cpp` — 注释 `setAllFps` 调用，添加 VTS 修正 workaround
+
+**Sample 验证修改（已恢复或已注释）**：
 - `sdk/samples/libimp-samples/sample-common.h` — 配置改为 GC4653 / 30fps
 - `sdk/samples/libimp-samples/sample-common.c` — 添加 FPS monitor、寄存器读取、`SetSensorFPS` 注释验证
 - `sdk/samples/libimp-samples/sample-Encoder-video.c` — VTS workaround 添加与移除
