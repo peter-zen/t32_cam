@@ -78,7 +78,7 @@ extern "C"
 #define FIRST_DEFAULT_BOOT                  0                           //sensor default mode(0/1/2/3/4)
 #define CHN0_EN                             1                           //sensor0，output0
 #define CHN1_EN                             0                           //sensor0，output1
-#define CHN2_EN                             0                           //sensor0, output2
+#define CHN2_EN                             1                           //sensor0, output2 (JPEG 8M hardware scale up)
 #define FIRST_CROP_EN                       0
 #define FIRST_SENSOR_FRAME_RATE_NUM         30
 #define FIRST_SENSOR_FRAME_RATE_DEN         1
@@ -198,8 +198,8 @@ extern "C"
 #define ENC_VIDEO_CHANNEL       0
 #define ENC_JPEG_CHANNEL        1
 
-#define STREAM_FILE_PATH_PREFIX     "/tmp"
-#define SNAP_FILE_PATH_PREFIX       "/tmp"
+#define STREAM_FILE_PATH_PREFIX     "/mnt/sdcard/DCIM"
+#define SNAP_FILE_PATH_PREFIX       "/mnt/sdcard/DCIM"
 
 #define OSD_REGION_WIDTH            16
 #define OSD_REGION_HEIGHT           34

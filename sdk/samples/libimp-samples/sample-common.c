@@ -178,15 +178,15 @@ struct chn_conf chn[FS_CHN_NUM] = {
 			.crop.enable = 0,
 			.crop.top = 0,
 			.crop.left = 0,
-			.crop.width = FIRST_SENSOR_WIDTH_THIRD,
-			.crop.height = FIRST_SENSOR_HEIGHT_THIRD,
+			.crop.width = FIRST_SENSOR_WIDTH,
+			.crop.height = FIRST_SENSOR_HEIGHT,
 
 			.scaler.enable = 1,
-			.scaler.outwidth = FIRST_SENSOR_WIDTH_THIRD,
-			.scaler.outheight = FIRST_SENSOR_HEIGHT_THIRD,
+			.scaler.outwidth = 3840,
+			.scaler.outheight = 2160,
 
-			.picWidth = FIRST_SENSOR_WIDTH_THIRD,
-			.picHeight = FIRST_SENSOR_HEIGHT_THIRD,
+			.picWidth = 3840,
+			.picHeight = 2160,
 		},
 		.framesource_chn =	{ DEV_ID_FS, CHN2_INDEX, 0},
 		.imp_encoder = { DEV_ID_ENC, CHN2_INDEX, 0},
@@ -782,9 +782,9 @@ static void *get_frame(void *args)
 	int fd = -1;
 
 	if (PIX_FMT_NV12 == chn[index].fs_chn_attr.pixFmt) {
-		sprintf(framefilename, "/tmp/frame%dx%d_%d.nv12", chn[index].fs_chn_attr.picWidth, chn[index].fs_chn_attr.picHeight, chnNum);
+		sprintf(framefilename, "/mnt/sdcard/DCIM/frame%dx%d_%d.nv12", chn[index].fs_chn_attr.picWidth, chn[index].fs_chn_attr.picHeight, chnNum);
 	} else {
-		sprintf(framefilename, "/tmp/frame%dx%d_%d.raw", chn[index].fs_chn_attr.picWidth, chn[index].fs_chn_attr.picHeight, chnNum);
+		sprintf(framefilename, "/mnt/sdcard/DCIM/frame%dx%d_%d.raw", chn[index].fs_chn_attr.picWidth, chn[index].fs_chn_attr.picHeight, chnNum);
 	}
 
 	fd = open(framefilename, O_RDWR | O_CREAT, 0x644);
@@ -951,7 +951,7 @@ int sample_jpeg_init()
 		if (chn[i].enable) {
 			/* channel0 run v0+v1，channel1 and channel2 run v0 */
 			if (SENSOR_NUM == IMPISP_TOTAL_ONE) {
-				if (chn[i].index != 0)
+				if (chn[i].index != 2)
 					continue;
 			} else if (SENSOR_NUM == IMPISP_TOTAL_TWO) {
 				if (chn[i].index != 0 && chn[i].index != 3)
@@ -970,8 +970,13 @@ int sample_jpeg_init()
 			enc_attr->enType = PT_JPEG;
 			enc_attr->bufSize = 0;
 			enc_attr->profile = 0;
+			/* Baseline test: no scale up, JPEG = FrameSource = 2560x1440
+			 * Verify basic concurrent video+jpeg stability.
+			 */
 			enc_attr->picWidth = imp_chn_attr_tmp->picWidth;
 			enc_attr->picHeight = imp_chn_attr_tmp->picHeight;
+			IMP_LOG_INFO(TAG, "JPEG Channel %d: target=%dx%d (no scale, same as FrameSource)\n",
+				12+chn[i].index/3, enc_attr->picWidth, enc_attr->picHeight);
 			rc_attr = &channel_attr.rcAttr;
 			rc_attr->attrRcMode.rcMode = ENC_RC_MODE_FIXQP;
 			rc_attr->attrRcMode.attrJPEGFixQp.qp = 40;
@@ -1019,7 +1024,7 @@ int sample_jpeg_exit(void)
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
 			if (SENSOR_NUM == IMPISP_TOTAL_ONE) {
-				if (chn[i].index != 0)
+				if (chn[i].index != 2)
 					continue;
 			} else if (SENSOR_NUM == IMPISP_TOTAL_TWO) {
 				if (chn[i].index != 0 && chn[i].index != 3)
@@ -1073,6 +1078,9 @@ int sample_video_init()
 
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
+			/* CH2 is dedicated to JPEG capture, skip video encoder */
+			if (chn[i].index == 2)
+				continue;
 			imp_chn_attr_tmp = &chn[i].fs_chn_attr;
 			memset(&channel_attr, 0, sizeof(IMPEncoderCHNAttr));
 			memset(&i2d_attr, 0, sizeof(IMPFSI2DAttr));
@@ -1384,6 +1392,9 @@ int sample_video_exit(void)
 
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
+			/* CH2 is dedicated to JPEG capture, skip video encoder */
+			if (chn[i].index == 2)
+				continue;
 			chnNum = chn[i].index;
 			memset(&chn_stat, 0, sizeof(IMPEncoderCHNStat));
 			ret = IMP_Encoder_Query(chnNum, &chn_stat);
@@ -1678,6 +1689,9 @@ int sample_start_get_video_stream()
 
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
+			/* CH2 is dedicated to JPEG capture, skip video stream */
+			if (chn[i].index == 2)
+				continue;
 			int arg = ((chn[i].payloadType << 16) | chn[i].index);
 			ret = pthread_create(&tid[chn[i].index], NULL, get_video_stream, (void *)arg);
 			if (ret < 0) {
@@ -1695,6 +1709,9 @@ void sample_stop_get_video_stream()
 
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
+			/* CH2 is dedicated to JPEG capture, skip video stream */
+			if (chn[i].index == 2)
+				continue;
 			pthread_join(tid[chn[i].index], NULL);
 		}
 	}
@@ -1840,7 +1857,7 @@ int sample_start_get_jpeg_stream()
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
 			if (SENSOR_NUM == IMPISP_TOTAL_ONE) {
-				if (chn[i].index != 0)
+				if (chn[i].index != 2)
 					continue;
 			} else if (SENSOR_NUM == IMPISP_TOTAL_TWO) {
 				if (chn[i].index != 0 && chn[i].index != 3)
@@ -1871,7 +1888,7 @@ void sample_stop_get_jpeg_stream()
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
 			if (SENSOR_NUM == IMPISP_TOTAL_ONE) {
-				if (chn[i].index != 0)
+				if (chn[i].index != 2)
 					continue;
 			} else if (SENSOR_NUM == IMPISP_TOTAL_TWO) {
 				if (chn[i].index != 0 && chn[i].index != 3)
