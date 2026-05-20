@@ -642,7 +642,7 @@ int sample_system_init()
 		IMP_LOG_ERR(TAG, "failed to set running mode\n");
 		return -1;
 	}
-	/* Skip SetSensorFPS to verify if init VTS=1500 is sufficient for 30fps */
+	/* Skip SetSensorFPS — libimp.a keeps correct VTS=1680, but libimp.so auto-overwrites to 3000 */
 #if 0
 	IMPISPSensorFps setFps = { FIRST_SENSOR_FRAME_RATE_NUM, FIRST_SENSOR_FRAME_RATE_DEN };
 	ret = IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &setFps);
@@ -679,10 +679,28 @@ int sample_system_init()
 	}
 #endif
 
-	IMP_LOG_INFO(TAG, "===== Sensor Config: name=%s, res=%dx%d, fps=%d/%d, nrVBs=%d =====\n",
-		sensor_info[0].name, FIRST_SENSOR_WIDTH, FIRST_SENSOR_HEIGHT,
-		FIRST_SENSOR_FRAME_RATE_NUM, FIRST_SENSOR_FRAME_RATE_DEN,
-		chn[0].fs_chn_attr.nrVBs);
+	/* Workaround: force VTS=1680 for GC4653 30fps
+	 * libimp.so auto-overwrites VTS to 3000 during init;
+	 * libimp.a may also do so in some sample scenarios.
+	 */
+	{
+		IMPISPSensorRegister r = {0x0340, 0x06};
+		IMP_ISP_SetSensorRegister(IMPVI_MAIN, &r);
+		r.addr = 0x0341; r.value = 0x90;
+		IMP_ISP_SetSensorRegister(IMPVI_MAIN, &r);
+
+		/* Verify */
+		IMPISPSensorRegister r_verify = {0x0340, 0};
+		IMP_ISP_GetSensorRegister(IMPVI_MAIN, &r_verify);
+		uint16_t vts = r_verify.value;
+		r_verify.addr = 0x0341;
+		IMP_ISP_GetSensorRegister(IMPVI_MAIN, &r_verify);
+		vts = (vts << 8) | r_verify.value;
+		IMP_LOG_INFO(TAG, "===== Sensor Config: name=%s, res=%dx%d, fps=%d/%d, nrVBs=%d, VTS=%u =====\n",
+			sensor_info[0].name, FIRST_SENSOR_WIDTH, FIRST_SENSOR_HEIGHT,
+			FIRST_SENSOR_FRAME_RATE_NUM, FIRST_SENSOR_FRAME_RATE_DEN,
+			chn[0].fs_chn_attr.nrVBs, vts);
+	}
 
 	IMP_LOG_DBG(TAG, "ImpSystemInit success\n");
 
