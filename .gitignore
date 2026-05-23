@@ -10,5 +10,17 @@ sim_sdcard_runtime/
 *.log
 CMakeFiles
 local_assets/*
+
+# Toolchain (extracted from ref/)
+toolchain/
+
+# Video assets
+res/*.mp4
+
+# Sample binaries (keep .c/.h sources)
+sdk/samples/libimp-samples/sample-*
+!sdk/samples/libimp-samples/sample-*.c
+!sdk/samples/libimp-samples/sample-*.h
+sdk/samples/libimp-samples/*.o
 !local_assets/README.md
 .omx/
