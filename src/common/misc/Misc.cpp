@@ -563,6 +563,13 @@ bool Misc::mountSDCard(const std::string& target_path)
 		return false;
 	}
 
+	// Check if SD card is already mounted
+	ret = syscall((char*)"mount | grep -q /dev/mmcblk0p1", 5000);
+	if (ret == 0) {
+		Logger::log(LogLevel::INFO, "SD card already mounted, skip");
+		return true;
+	}
+
 	std::string command = "mount /dev/mmcblk0p1 " + target_path;
 	ret = syscall((char*)command.c_str(), 5000);
 	if(ret < 0) {

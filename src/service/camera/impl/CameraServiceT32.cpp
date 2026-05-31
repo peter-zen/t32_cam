@@ -415,8 +415,7 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     auto now = std::time(nullptr);
     auto tm = *std::localtime(&now);
     std::ostringstream oss;
-    /* Temporary: record to /tmp to verify if SD card is the fps bottleneck */
-    oss << "/tmp/VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
+    oss << "/mnt/sdcard/DCIM/VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
     std::string filename = oss.str();
     current_record_file_ = filename;
 
