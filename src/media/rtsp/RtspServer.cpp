@@ -577,6 +577,16 @@ bool RtspServer::daynight_switch(bool on)
     daynight_controller->setIRLedPins(IR_LED_PIN);
     daynight_controller->setIRCutPins(IR_CUT_ENABLE_PIN, IR_CUT_CTRL_PIN);
 
+    const char* forceDay = std::getenv("HTC_FORCE_RECORD_DAY_MODE");
+    if (forceDay && strcmp(forceDay, "1") == 0) {
+        Logger::log(LogLevel::INFO, "RtspServer daynight_switch: force DAY mode");
+        daynight_controller->controlISP(DayNightState::DAY);
+        daynight_controller->controlIRCut(DayNightState::DAY);
+        daynight_controller->controlIRLed(DayNightState::DAY);
+        daynight_controller->suspendAutoSwitch();
+        return true;
+    }
+
     if (on) {
         auto daynight_state = daynight_controller->getDayNightState();
         daynight_controller->controlISP(daynight_state);

@@ -1195,9 +1195,6 @@ int main(int argc, char* argv[])
                     break;
                 case WORKING_MODE_TEST_ONLY:
                     {
-                        auto daynight_state = daynight_switch->getDayNightState();
-                        daynight_switch->controlIRCut(daynight_state);
-                        daynight_switch->controlIRLed(daynight_state);
                         if (gpio_rgb_led) {
                             gpio_rgb_led->asyncBlink(30);
                         }
@@ -1568,6 +1565,23 @@ int main(int argc, char* argv[])
 
     if (command & CMD_MOBILE) {
         setenv("HTC_TEST_MODE", "1", 1);
+
+        // Day/Night initialization for CMD_MOBILE (covers both -m and -wm 3 paths)
+        if (daynight_switch) {
+            const char* forceDay = std::getenv("HTC_FORCE_RECORD_DAY_MODE");
+            if (forceDay && strcmp(forceDay, "1") == 0) {
+                Logger::log(LogLevel::INFO, "CMD_MOBILE: force DAY mode from --force-day");
+                daynight_switch->controlISP(DayNightState::DAY);
+                daynight_switch->controlIRCut(DayNightState::DAY);
+                daynight_switch->controlIRLed(DayNightState::DAY);
+            } else {
+                auto daynight_state = daynight_switch->getDayNightState();
+                daynight_switch->controlISP(daynight_state);
+                daynight_switch->controlIRCut(daynight_state);
+                daynight_switch->controlIRLed(daynight_state);
+            }
+        }
+
         uint16_t http_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_CTRL_PORT, 80);
         uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
         auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
