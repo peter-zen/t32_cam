@@ -24,8 +24,9 @@
 #define TAG "CamT32"
 
 // Max resolution supported by hardware JPEG encoder (sensor native resolution)
-static constexpr int HW_ENCODER_MAX_W = 2560;
-static constexpr int HW_ENCODER_MAX_H = 1440;
+// CH0 FrameSource hardware scaler supports up to 8M (3840x2160)
+static constexpr int HW_ENCODER_MAX_W = 3840;
+static constexpr int HW_ENCODER_MAX_H = 2160;
 
 namespace service {
 
@@ -184,7 +185,8 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
 
     bool ok;
     if (width <= HW_ENCODER_MAX_W && height <= HW_ENCODER_MAX_H) {
-        // Hardware path: within sensor resolution, use hardware JPEG encoder
+        // Hardware path: CH0 hardware scaler + hardware JPEG (≤ 8M)
+        // CH2 hardware scaler + hardware JPEG for thumbnail (always 320 wide)
         if (!image_snap_) {
             image_snap_ = std::make_shared<media::ImageSnap>();
         }
@@ -192,8 +194,16 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
         params.setImageSize(width, height);
         image_snap_->setParams(params);
         ok = image_snap_->snap(filename);
+        // Save thumbnail from CH2 (captured by ImageSnap during snap)
+        if (ok && image_snap_->hasThumbnail()) {
+            MetadataDao dao;
+            if (dao.saveThumbnail(filename, image_snap_->getThumbnailData())) {
+                elog_i(TAG, "Thumbnail saved for %s (%zu bytes)",
+                       filename.c_str(), image_snap_->getThumbnailData().size());
+            }
+        }
     } else {
-        // Software path: exceeds sensor resolution, use strip-based resize + software JPEG
+        // Large image path: CH0 CPU SIMD scale + hardware JPEG (> 8M)
         if (!large_snap_) {
             large_snap_ = std::make_shared<media::LargeImageSnap>();
         }

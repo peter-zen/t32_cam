@@ -54,14 +54,14 @@
 #define FIRST_DEFAULT_BOOT                  0
 #define CHN0_EN                             1
 #define CHN1_EN                             1
-#define CHN2_EN                             0
+#define CHN2_EN                             1
 #define FIRST_CROP_EN                       0
 #define FIRST_SENSOR_FRAME_RATE_NUM         30
 #define FIRST_SENSOR_FRAME_RATE_DEN         1
 #define FIRST_SENSOR_WIDTH_SECOND           1280
 #define FIRST_SENSOR_HEIGHT_SECOND          720
-#define FIRST_SENSOR_WIDTH_THIRD            1280
-#define FIRST_SENSOR_HEIGHT_THIRD           720
+#define FIRST_SENSOR_WIDTH_THIRD            320
+#define FIRST_SENSOR_HEIGHT_THIRD           180
 #else
 #define FIRST_SNESOR_NAME                   "gc5613"
 #define FIRST_I2C_ADDR                      0x31

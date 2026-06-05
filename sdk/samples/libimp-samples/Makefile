@@ -69,7 +69,8 @@ SAMPLES = sample-Ai-AEC \
 		  sample-Atlas-Encoder-video \
 		  sample-Soft-photosensitive \
 		  sample-Encoder-ldc-video \
-		  sample-AutoIR
+		  sample-AutoIR \
+		  sample-thumb-test
 
 all: 	$(SAMPLES)
 
@@ -229,6 +230,10 @@ sample-Encoder-ldc-video: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a $(SDK
 	$(STRIP) $@
 
 sample-AutoIR: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o sample-AutoIR.o
+	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) -lpthread -lm -lrt
+	$(STRIP) $@
+
+sample-thumb-test: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o sample-thumb-test.o
 	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) -lpthread -lm -lrt
 	$(STRIP) $@
 

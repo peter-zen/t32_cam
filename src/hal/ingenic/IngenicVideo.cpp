@@ -894,7 +894,11 @@ IngenicVideoStream::~IngenicVideoStream() {
 bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
     cfg_ = cfg;
     group_id_ = cfg.channel.sensor_index * 3 + cfg.channel.stream_index;
-    channel_id_ = (cfg.payload == VideoPayloadType::JPEG) ? (12 + group_id_/3) : group_id_;
+    // JPEG channels: 12 + sensor_index*3 + stream_index (avoids CH0/CH2 conflict)
+    // CH0 -> 12, CH1 -> 13, CH2 -> 14, sensor1 CH0 -> 15, ...
+    channel_id_ = (cfg.payload == VideoPayloadType::JPEG)
+        ? (12 + cfg.channel.sensor_index * 3 + cfg.channel.stream_index)
+        : group_id_;
     Logger::log(LogLevel::DEBUG, "[HAL] configure: payload=%d sensor=%d stream=%d group_id=%d channel_id=%d size=%dx%d fps=%d/%d quality=%d rc=%d skip=%d/%d ivdc=%d",
             (int)cfg.payload, cfg.channel.sensor_index, cfg.channel.stream_index, group_id_, channel_id_,
             cfg.width, cfg.height, cfg.fps_num, cfg.fps_den, cfg.quality, (int)cfg.rc_mode, cfg.skip_m, cfg.skip_n, cfg.enable_ivdc ? 1 : 0);

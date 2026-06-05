@@ -81,6 +81,8 @@ bool ImageSnap::initialize()
         Logger::log(LogLevel::ERROR, "initialize: video init failed");
         return false;
     }
+
+    /* Main JPEG stream: CH0 */
     stream_ = video_->createVideoStream();
     if (!stream_) {
         Logger::log(LogLevel::ERROR, "initialize: createVideoStream failed");
@@ -104,6 +106,37 @@ bool ImageSnap::initialize()
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
         return false;
     }
+
+    /* Thumbnail JPEG stream: CH2 (hardware scaler, 320 wide, IVDC) */
+    thumbVideo_ = hal::HalProvider::createVideo();
+    if (thumbVideo_ && thumbVideo_->init()) {
+        thumbStream_ = thumbVideo_->createVideoStream();
+    }
+    if (thumbStream_) {
+        hal::VideoStreamConfig tcfg;
+        memset(&tcfg, 0, sizeof(hal::VideoStreamConfig));
+        tcfg.payload = hal::VideoPayloadType::JPEG;
+        tcfg.channel.sensor_index = SNAP_SENSOR_ID;
+        tcfg.channel.stream_index = THUMB_STREAM_ID;
+        tcfg.width = 320;
+        tcfg.height = (h * 320 + w / 2) / w;  /* maintain aspect ratio */
+        tcfg.height = (tcfg.height + 1) & ~1;  /* align to 2 */
+        tcfg.fps_num = 15;
+        tcfg.fps_den = 1;
+        tcfg.quality = 60;
+        tcfg.rc_mode = hal::VideoRcMode::FIXQP;
+        tcfg.enable_ivdc = true;
+        if (!thumbStream_->configure(tcfg)) {
+            Logger::log(LogLevel::WARNING, "initialize: thumb stream configure failed (thumbnail disabled)");
+            thumbStream_.reset();
+        } else {
+            Logger::log(LogLevel::INFO, "initialize: thumb stream configured %dx%d",
+                        tcfg.width, tcfg.height);
+        }
+    } else {
+        Logger::log(LogLevel::WARNING, "initialize: createVideoStream for thumb failed (thumbnail disabled)");
+    }
+
     return true;
 }
 
@@ -117,8 +150,14 @@ void ImageSnap::deinitialize()
             }
         }
         threads.clear();
+        if (thumbStream_) {
+            thumbStream_->stop();
+        }
         if (stream_) {
             stream_->stop();
+        }
+        if (thumbVideo_) {
+            thumbVideo_->exit();
         }
         if (video_) {
             video_->exit();
@@ -176,6 +215,14 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
         return false;
     }
 
+    /* Start thumbnail stream (CH2) if available */
+    if (thumbStream_) {
+        if (!thumbStream_->start()) {
+            Logger::log(LogLevel::WARNING, "snap: thumb stream start failed (thumbnail disabled)");
+            thumbStream_.reset();
+        }
+    }
+
     bool result = true;
     if (onSnapDone) {
         this->threads.emplace_back([this, filenames, onSnapDone]() {
@@ -183,6 +230,7 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
             if (!this->snap_internal(filenames)) {
                 nonBlockingResult = false;
             }
+            if (thumbStream_) thumbStream_->stop();
             stream_->stop();
             if (onSnapDone) {
                 onSnapDone(nonBlockingResult);
@@ -193,7 +241,8 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
         if (!snap_internal(filenames)) {
             result = false;
         }
-    
+
+        if (thumbStream_) thumbStream_->stop();
         stream_->stop();
 
         if (onSnapDone) {
@@ -246,37 +295,62 @@ bool ImageSnap::snap_internal(const std::vector<std::string> &filenames)
 
         long fileSize = ftell(fp);
         fclose(fp);
-#if 0
-        // Save to DB
-        MediaItem item;
-        item.filePath = filename;
-        item.type = 1; // Photo
-        item.timestamp = time(NULL);
-        item.fileSize = fileSize;
-        item.width = info.width;
-        item.height = info.height;
-        
-        MetadataDao dao;
-        if (dao.addMedia(item)) {
-            Logger::log(LogLevel::INFO, "Saved photo to DB: %s", filename.c_str());
-            
-            // Generate and save thumbnail
-            std::vector<char> thumbData = Jpeg::extractThumbnail(filename);
-            if (!thumbData.empty()) {
-                 std::vector<uint8_t> uData(thumbData.begin(), thumbData.end());
-                 dao.saveThumbnail(filename, uData);
-                 Logger::log(LogLevel::INFO, "Saved thumbnail to DB");
-            } else {
-                 // Fallback: use the original image if small enough? Or skip.
-                 // For now, let's assume extractThumbnail works or we skip.
-                 Logger::log(LogLevel::WARNING, "Failed to extract thumbnail");
+        Logger::log(LogLevel::INFO, "snap(int): saved %s (%ld bytes)", filename.c_str(), fileSize);
 
+        /* Save photo metadata to media_file.db */
+        {
+            MetadataDao dao;
+            MediaItem item;
+            item.filePath = filename;
+            item.type = 1; /* Photo */
+            item.timestamp = time(NULL);
+            item.fileSize = fileSize;
+            item.width = info.width;
+            item.height = info.height;
+            if (dao.addMedia(item)) {
+                Logger::log(LogLevel::INFO, "snap(int): saved to DB: %s", filename.c_str());
+            } else {
+                Logger::log(LogLevel::WARNING, "snap(int): addMedia failed for %s", filename.c_str());
             }
-        } else {
-            Logger::log(LogLevel::ERROR, "Failed to save photo to DB: %s", filename.c_str());
         }
-#endif
+
+        /* Capture thumbnail from CH2 (same sensor frame, hardware scaled) */
+        capture_thumbnail();
     }
+    return true;
+}
+
+bool ImageSnap::capture_thumbnail()
+{
+    thumbData_.clear();
+    if (!thumbStream_) {
+        return false;
+    }
+
+    if (!thumbStream_->polling(1000)) {
+        Logger::log(LogLevel::WARNING, "capture_thumbnail: polling timeout");
+        return false;
+    }
+
+    hal::VideoEncodedFrame frame;
+    if (!thumbStream_->getFrame(frame)) {
+        Logger::log(LogLevel::WARNING, "capture_thumbnail: getFrame failed");
+        return false;
+    }
+
+    /* Collect all pieces into thumbData_ */
+    size_t totalSize = 0;
+    for (int i = 0; i < frame.piece_count; ++i) {
+        totalSize += frame.pieces[i].size;
+    }
+    thumbData_.reserve(totalSize);
+    for (int i = 0; i < frame.piece_count; ++i) {
+        const auto* p = static_cast<const uint8_t*>(frame.pieces[i].data);
+        thumbData_.insert(thumbData_.end(), p, p + frame.pieces[i].size);
+    }
+
+    thumbStream_->releaseFrame(frame);
+    Logger::log(LogLevel::INFO, "capture_thumbnail: captured %zu bytes", thumbData_.size());
     return true;
 }
 
