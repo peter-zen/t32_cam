@@ -10,6 +10,7 @@
 #include <queue>
 #include <sys/types.h>
 #include <condition_variable>
+#include <cstdint>
 #include "VideoParams.h"
 #include "AudioParams.h"
 #include "IAudio.h"
@@ -39,6 +40,11 @@ public:
         ~VideoRecorder();
 
         bool captureJpeg(const std::string& filename, int quality);
+
+        // Capture a thumbnail JPEG from CH2 into memory (for recording thumbnail)
+        bool captureThumbnail();
+        const std::vector<uint8_t>& getThumbnailData() const { return thumbData_; }
+        bool hasThumbnail() const { return !thumbData_.empty(); }
 
         // 静态音频数据回调函数
         static void staticAudioDataCallback(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame, void* userData);
@@ -85,6 +91,7 @@ private:
         std::shared_ptr<hal::IVideoStream> stream_;
         std::shared_ptr<hal::IVideoStream> jpegStream_;
         bool concurrentSnapEnabled_ = false;
+        std::vector<uint8_t> thumbData_;
 };
 }
 #endif

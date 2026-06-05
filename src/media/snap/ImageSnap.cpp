@@ -19,6 +19,17 @@
 #include "HalProvider.h"
 #include "IVideo.h"
 
+#ifndef SIMULATION_MODE
+#include <imp/imp_framesource.h>
+#include <imp/imp_encoder.h>
+#include "simd_resize_large.h"
+#include "simd_resize_large.c"
+#endif
+
+/* CH0 hardware scaler max: 8M (3840x2160) */
+static constexpr int HW_SCALER_MAX_W = 3840;
+static constexpr int HW_SCALER_MAX_H = 2160;
+
 using namespace media;
 
 ImageSnapParams::ImageSnapParams()
@@ -73,6 +84,13 @@ bool ImageSnap::setParams(const ImageSnapParams& params) {
 
 bool ImageSnap::initialize()
 {
+    int w = 0, h = 0;
+    params.getImageSize(w, h);
+
+    /* Determine if target resolution exceeds hardware scaler max (8M) */
+    isLargeImage_ = (w > HW_SCALER_MAX_W || h > HW_SCALER_MAX_H);
+    Logger::log(LogLevel::INFO, "initialize: target=%dx%d isLargeImage=%d", w, h, isLargeImage_ ? 1 : 0);
+
     video_ = hal::HalProvider::createVideo();
     if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
@@ -83,14 +101,15 @@ bool ImageSnap::initialize()
         return false;
     }
 
-    /* Main JPEG stream: CH0 */
+    /* Main JPEG stream: CH0
+     * - ≤ 8M: IVDC enabled (hardware direct path, encoder captures directly)
+     * - > 8M: IVDC disabled (need GetFrame for CPU SIMD resize, then InputJpege)
+     */
     stream_ = video_->createVideoStream();
     if (!stream_) {
         Logger::log(LogLevel::ERROR, "initialize: createVideoStream failed");
         return false;
     }
-    int w = 0, h = 0;
-    params.getImageSize(w, h);
     hal::VideoStreamConfig cfg;
     memset(&cfg, 0, sizeof(hal::VideoStreamConfig));
     cfg.payload = hal::VideoPayloadType::JPEG;
@@ -102,7 +121,7 @@ bool ImageSnap::initialize()
     cfg.fps_den = 1;
     cfg.quality = 40;
     cfg.rc_mode = hal::VideoRcMode::FIXQP;
-    cfg.enable_ivdc = true;
+    cfg.enable_ivdc = !isLargeImage_;
     if (!stream_->configure(cfg)) {
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
         return false;
@@ -210,10 +229,15 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
     
     daynight_switch(true);
 
-    if (!stream_->start()) {
-        Logger::log(LogLevel::ERROR, "snap: stream start failed");
-        if (onSnapDone) onSnapDone(false);
-        return false;
+    /* For ≤ 8M: start encoder stream (IVDC captures directly)
+     * For > 8M: skip encoder stream (we use GetFrame + InputJpege instead)
+     */
+    if (!isLargeImage_) {
+        if (!stream_->start()) {
+            Logger::log(LogLevel::ERROR, "snap: stream start failed");
+            if (onSnapDone) onSnapDone(false);
+            return false;
+        }
     }
 
     /* Start thumbnail stream (CH2) if available */
@@ -228,23 +252,27 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
     if (onSnapDone) {
         this->threads.emplace_back([this, filenames, onSnapDone]() {
             bool nonBlockingResult = true;
-            if (!this->snap_internal(filenames)) {
-                nonBlockingResult = false;
+            if (isLargeImage_) {
+                nonBlockingResult = this->snap_large_internal(filenames);
+            } else {
+                nonBlockingResult = this->snap_internal(filenames);
             }
             if (thumbStream_) thumbStream_->stop();
-            stream_->stop();
+            if (!isLargeImage_) stream_->stop();
             if (onSnapDone) {
                 onSnapDone(nonBlockingResult);
             }
         });
         return true;
     } else {
-        if (!snap_internal(filenames)) {
-            result = false;
+        if (isLargeImage_) {
+            result = snap_large_internal(filenames);
+        } else {
+            result = snap_internal(filenames);
         }
 
         if (thumbStream_) thumbStream_->stop();
-        stream_->stop();
+        if (!isLargeImage_) stream_->stop();
 
         if (onSnapDone) {
             onSnapDone(result);
@@ -319,6 +347,114 @@ bool ImageSnap::snap_internal(const std::vector<std::string> &filenames)
         capture_thumbnail();
     }
     return true;
+}
+
+bool ImageSnap::snap_large_internal(const std::vector<std::string> &filenames)
+{
+#ifndef SIMULATION_MODE
+    Logger::log(LogLevel::INFO, "snap_large_internal: capturing %zu images", filenames.size());
+
+    /* Enable FrameSource CH0 to get NV12 frames */
+    IMP_FrameSource_EnableChn(SNAP_SENSOR_ID);
+
+    for (auto& filename : filenames) {
+        /* Get NV12 frame from CH0 (sensor resolution, no IVDC) */
+        IMPFrameInfo *frame = nullptr;
+        if (IMP_FrameSource_GetFrame(SNAP_SENSOR_ID, &frame) < 0) {
+            Logger::log(LogLevel::ERROR, "snap_large_internal: GetFrame failed");
+            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
+            return false;
+        }
+
+        int srcW = frame->width;
+        int srcH = frame->height;
+        int dstW = 0, dstH = 0;
+        params.getImageSize(dstW, dstH);
+        const uint8_t* srcData = reinterpret_cast<const uint8_t*>(frame->virAddr);
+
+        Logger::log(LogLevel::INFO, "snap_large_internal: src=%dx%d dst=%dx%d", srcW, srcH, dstW, dstH);
+
+        /* Allocate contiguous NV12 buffer for resized image (required by InputJpege) */
+        size_t resizeSize = static_cast<size_t>(dstW) * dstH * 3 / 2;
+        uint8_t* resizeBuf = static_cast<uint8_t*>(IMP_Encoder_VbmAlloc(resizeSize, 256));
+        if (!resizeBuf) {
+            Logger::log(LogLevel::ERROR, "snap_large_internal: VbmAlloc(%zu) failed", resizeSize);
+            IMP_FrameSource_ReleaseFrame(SNAP_SENSOR_ID, frame);
+            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
+            return false;
+        }
+        memset(resizeBuf, 0, resizeSize);
+
+        /* CPU SIMD resize entire frame */
+        int ret = opencv_resize_crop_simd(const_cast<uint8_t*>(srcData), srcW, srcH,
+                                           resizeBuf, dstW, dstH);
+        IMP_FrameSource_ReleaseFrame(SNAP_SENSOR_ID, frame);
+        if (ret != 0) {
+            Logger::log(LogLevel::ERROR, "snap_large_internal: SIMD resize failed ret=%d", ret);
+            IMP_Encoder_VbmFree(resizeBuf);
+            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
+            return false;
+        }
+
+        /* Hardware JPEG encode the full frame */
+        size_t jpegBufSize = resizeSize;
+        uint8_t* jpegBuf = static_cast<uint8_t*>(malloc(jpegBufSize));
+        if (!jpegBuf) {
+            IMP_Encoder_VbmFree(resizeBuf);
+            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
+            return false;
+        }
+
+        int jpegLen = 0;
+        ret = IMP_Encoder_InputJpege(resizeBuf, jpegBuf, dstW, dstH, 85, &jpegLen);
+        IMP_Encoder_VbmFree(resizeBuf);
+        if (ret != 0 || jpegLen <= 0) {
+            Logger::log(LogLevel::ERROR, "snap_large_internal: InputJpege failed ret=%d len=%d", ret, jpegLen);
+            free(jpegBuf);
+            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
+            return false;
+        }
+
+        /* Write JPEG to file */
+        FILE* fp = fopen(filename.c_str(), "wb");
+        if (!fp) {
+            Logger::log(LogLevel::ERROR, "snap_large_internal: open %s failed", filename.c_str());
+            free(jpegBuf);
+            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
+            return false;
+        }
+        fwrite(jpegBuf, 1, jpegLen, fp);
+        fclose(fp);
+        free(jpegBuf);
+
+        Logger::log(LogLevel::INFO, "snap_large_internal: saved %s (%d bytes)", filename.c_str(), jpegLen);
+
+        /* Save photo metadata to media_file.db */
+        {
+            MetadataDao dao;
+            MediaItem item;
+            item.filePath = filename;
+            item.type = 1; /* Photo */
+            item.timestamp = time(NULL);
+            item.fileSize = jpegLen;
+            item.width = dstW;
+            item.height = dstH;
+            if (dao.addMedia(item)) {
+                Logger::log(LogLevel::INFO, "snap_large_internal: saved to DB: %s", filename.c_str());
+            } else {
+                Logger::log(LogLevel::WARNING, "snap_large_internal: addMedia failed for %s", filename.c_str());
+            }
+        }
+
+        /* Capture thumbnail from CH2 */
+        capture_thumbnail();
+    }
+
+    IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
+    return true;
+#else
+    return false;
+#endif
 }
 
 bool ImageSnap::capture_thumbnail()

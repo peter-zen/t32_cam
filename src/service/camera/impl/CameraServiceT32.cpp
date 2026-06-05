@@ -183,31 +183,25 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
     oss << "/mnt/sdcard/DCIM/IMG_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".jpg";
     std::string filename = oss.str();
 
-    bool ok;
-    if (width <= HW_ENCODER_MAX_W && height <= HW_ENCODER_MAX_H) {
-        // Hardware path: CH0 hardware scaler + hardware JPEG (≤ 8M)
-        // CH2 hardware scaler + hardware JPEG for thumbnail (always 320 wide)
-        if (!image_snap_) {
-            image_snap_ = std::make_shared<media::ImageSnap>();
+    /* ImageSnap handles all resolutions:
+     * - ≤ 8M: CH0 hardware scaler + hardware JPEG (IVDC)
+     * - > 8M: CH0 GetFrame + CPU SIMD resize + hardware JPEG (InputJpege)
+     * - Thumbnail: CH2 hardware scaler 320x180 + hardware JPEG (IVDC)
+     */
+    if (!image_snap_) {
+        image_snap_ = std::make_shared<media::ImageSnap>();
+    }
+    media::ImageSnapParams params;
+    params.setImageSize(width, height);
+    image_snap_->setParams(params);
+    bool ok = image_snap_->snap(filename);
+    /* Save thumbnail from CH2 (captured by ImageSnap during snap) */
+    if (ok && image_snap_->hasThumbnail()) {
+        MetadataDao dao;
+        if (dao.saveThumbnail(filename, image_snap_->getThumbnailData())) {
+            elog_i(TAG, "Thumbnail saved for %s (%zu bytes)",
+                   filename.c_str(), image_snap_->getThumbnailData().size());
         }
-        media::ImageSnapParams params;
-        params.setImageSize(width, height);
-        image_snap_->setParams(params);
-        ok = image_snap_->snap(filename);
-        // Save thumbnail from CH2 (captured by ImageSnap during snap)
-        if (ok && image_snap_->hasThumbnail()) {
-            MetadataDao dao;
-            if (dao.saveThumbnail(filename, image_snap_->getThumbnailData())) {
-                elog_i(TAG, "Thumbnail saved for %s (%zu bytes)",
-                       filename.c_str(), image_snap_->getThumbnailData().size());
-            }
-        }
-    } else {
-        // Large image path: CH0 CPU SIMD scale + hardware JPEG (> 8M)
-        if (!large_snap_) {
-            large_snap_ = std::make_shared<media::LargeImageSnap>();
-        }
-        ok = large_snap_->snapLarge(filename, width, height, jpegQuality);
     }
 
     if (ok) {
@@ -442,7 +436,21 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
         applyConfiguredVideoParams(vidParam);
     }
     std::shared_ptr<media::AudioParams> audParam = nullptr;
-    if (audio) {
+    /* Check if --no-audio was specified or audio module unavailable */
+    const char* noAudioEnv = std::getenv("HTC_NO_AUDIO");
+    bool audioDisabled = (noAudioEnv && strcmp(noAudioEnv, "1") == 0);
+    if (audio && !audioDisabled) {
+        /* Verify audio kernel module is available */
+        int lsmodRet = system("lsmod | grep -q audio");
+        if (lsmodRet != 0) {
+            lsmodRet = system("insmod /system/modules/audio/audio.ko spk_gpio=-1 spk_level=-1 2>/dev/null");
+            if (lsmodRet != 0) {
+                elog_w(TAG, "Audio kernel module not available, disabling audio recording");
+                audioDisabled = true;
+            }
+        }
+    }
+    if (audio && !audioDisabled) {
         audParam = std::make_shared<media::AudioParams>();
         audParam->setDeviceType(media::AudioDeviceType::AUDIO_IN);
         audParam->setDeviceId(1);
@@ -452,6 +460,16 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
         audParam->setCodecFormat(media::AudioCodecFormat::AAC);
         audParam->setSampleRate(media::AudioSampleRate::SR_16000);
         audParam->setChannelCount(1);
+    }
+    /* Stop and release old recorder before creating new one.
+     * The old recording thread may still hold a reference to video_recorder_,
+     * preventing the destructor from running and releasing encoder channel 0.
+     */
+    if (video_recorder_) {
+        video_recorder_->stopRecorder();
+        /* Give the old recording thread time to finish */
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        video_recorder_.reset();
     }
     video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam);
 
@@ -533,8 +551,17 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     }
 
     elog_i(TAG, "Start recording: duration=%d", duration);
-    bool ok = video_recorder_->record(current_record_file_, [this](bool) {
+    std::string recordFile = current_record_file_;
+    bool ok = video_recorder_->record(current_record_file_, [this, recordFile](bool) {
         std::lock_guard<std::mutex> l(op_mutex_);
+        /* Save recording thumbnail to DB */
+        if (video_recorder_ && video_recorder_->hasThumbnail()) {
+            MetadataDao dao;
+            if (dao.saveThumbnail(recordFile, video_recorder_->getThumbnailData())) {
+                elog_i(TAG, "Recording thumbnail saved for %s (%zu bytes)",
+                       recordFile.c_str(), video_recorder_->getThumbnailData().size());
+            }
+        }
         is_recording_ = false;
     }, duration);
     if (!ok) {

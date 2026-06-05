@@ -59,10 +59,12 @@ class ImageSnap {
         bool initialize();
         void deinitialize();
         bool snap_internal(const std::vector<std::string> &filenames);
+        bool snap_large_internal(const std::vector<std::string> &filenames);
         bool capture_thumbnail();
         bool daynight_switch(bool on);
         ImageSnapParams params;
         bool initialized;
+        bool isLargeImage_;  /* true when target > 8M: CH0 no IVDC, GetFrame+SIMD */
         std::vector<std::thread> threads;
         std::shared_ptr<hal::IVideo> video_;
         std::shared_ptr<hal::IVideoStream> stream_;

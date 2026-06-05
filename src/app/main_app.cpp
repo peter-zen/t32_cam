@@ -1154,6 +1154,7 @@ int main(int argc, char* argv[])
                     mobile_rtsp_enabled = false;
                 } else if (std::string(argv[i]) == "--no-audio") {
                     rtsp_audio_enabled = false;
+                    setenv("HTC_NO_AUDIO", "1", 1);
                 } else if (std::string(argv[i]) == "--force-day") {
                     setenv("HTC_FORCE_RECORD_DAY_MODE", "1", 1);
                 } else if (std::string(argv[i]) == "--record-stream1") {

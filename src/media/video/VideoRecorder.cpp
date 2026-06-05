@@ -551,7 +551,16 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     
     // Reset last timestamp for new recording
     lastVideoTimestamp = 0;
-    
+
+    /* Capture thumbnail from CH2 before recording loop starts
+     * TODO: Temporarily disabled - Bus error on T32, need to investigate
+     * CH2 JPEG encoder conflict with ImageSnap's CH2 stream.
+     */
+    // if (concurrentSnapEnabled_) {
+    //     captureThumbnail();
+    // }
+
+
     // Pre-roll: wait for the first audio timestamp to align AV start
     if (audioRecording) {
         int wait_ms_total = 0;
@@ -1102,6 +1111,57 @@ bool VideoRecorder::captureJpeg(const std::string& filename, int quality) {
     jpegStream_->stop();
 
     Logger::log(LogLevel::INFO, "captureJpeg: saved %s", filename.c_str());
+    return true;
+}
+
+bool VideoRecorder::captureThumbnail() {
+    thumbData_.clear();
+    if (!concurrentSnapEnabled_) {
+        Logger::log(LogLevel::WARNING, "captureThumbnail: concurrent snap not enabled");
+        return false;
+    }
+    if (!initialized || !video_) {
+        return false;
+    }
+
+    if (!initJpegStream()) {
+        Logger::log(LogLevel::WARNING, "captureThumbnail: initJpegStream failed");
+        return false;
+    }
+
+    if (!jpegStream_->start()) {
+        Logger::log(LogLevel::WARNING, "captureThumbnail: jpegStream start failed");
+        return false;
+    }
+
+    if (!jpegStream_->polling(1000)) {
+        Logger::log(LogLevel::WARNING, "captureThumbnail: polling timeout");
+        jpegStream_->stop();
+        return false;
+    }
+
+    hal::VideoEncodedFrame frame;
+    if (!jpegStream_->getFrame(frame)) {
+        Logger::log(LogLevel::WARNING, "captureThumbnail: getFrame failed");
+        jpegStream_->stop();
+        return false;
+    }
+
+    /* Collect all pieces into thumbData_ */
+    size_t totalSize = 0;
+    for (int i = 0; i < frame.piece_count; ++i) {
+        totalSize += frame.pieces[i].size;
+    }
+    thumbData_.reserve(totalSize);
+    for (int i = 0; i < frame.piece_count; ++i) {
+        const auto* p = static_cast<const uint8_t*>(frame.pieces[i].data);
+        thumbData_.insert(thumbData_.end(), p, p + frame.pieces[i].size);
+    }
+
+    jpegStream_->releaseFrame(frame);
+    jpegStream_->stop();
+
+    Logger::log(LogLevel::INFO, "captureThumbnail: captured %zu bytes", thumbData_.size());
     return true;
 }
 
