@@ -1041,12 +1041,12 @@ bool VideoRecorder::initJpegStream() {
     memset(&cfg, 0, sizeof(hal::VideoStreamConfig));
     cfg.payload = hal::VideoPayloadType::JPEG;
     cfg.channel.sensor_index = VIDEO_SENSOR_ID;
-    cfg.channel.stream_index = 2;  // CH2: hardware scaler path for 8M
-    cfg.width = 3840;              // 8M max for concurrent snap
-    cfg.height = 2160;
+    cfg.channel.stream_index = 2;  // CH2: hardware scaler for thumbnail
+    cfg.width = 320;               // thumbnail width
+    cfg.height = 180;              // thumbnail height (16:9)
     cfg.fps_num = 1;
     cfg.fps_den = 1;
-    cfg.quality = 85;
+    cfg.quality = 80;
     cfg.rc_mode = hal::VideoRcMode::FIXQP;
     cfg.enable_ivdc = true;
 
