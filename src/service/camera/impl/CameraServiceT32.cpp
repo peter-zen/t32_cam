@@ -471,7 +471,7 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         video_recorder_.reset();
     }
-    video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam);
+    video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam, true);
 
     // If duration not specified by API, read from settings
     if (duration <= 0) {
@@ -554,13 +554,23 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     std::string recordFile = current_record_file_;
     bool ok = video_recorder_->record(current_record_file_, [this, recordFile](bool) {
         std::lock_guard<std::mutex> l(op_mutex_);
-        /* Save recording thumbnail to DB */
-        if (video_recorder_ && video_recorder_->hasThumbnail()) {
-            MetadataDao dao;
-            if (dao.saveThumbnail(recordFile, video_recorder_->getThumbnailData())) {
-                elog_i(TAG, "Recording thumbnail saved for %s (%zu bytes)",
-                       recordFile.c_str(), video_recorder_->getThumbnailData().size());
+        elog_i(TAG, "Recording done callback for %s", recordFile.c_str());
+        /* Save thumbnail captured at recording start */
+        if (video_recorder_) {
+            elog_i(TAG, "Thumbnail data: has=%d size=%zu",
+                   video_recorder_->hasThumbnail() ? 1 : 0,
+                   video_recorder_->getThumbnailData().size());
+            if (video_recorder_->hasThumbnail()) {
+                MetadataDao dao;
+                if (dao.saveThumbnail(recordFile, video_recorder_->getThumbnailData())) {
+                    elog_i(TAG, "Recording thumbnail saved for %s (%zu bytes)",
+                           recordFile.c_str(), video_recorder_->getThumbnailData().size());
+                } else {
+                    elog_e(TAG, "saveThumbnail failed for %s", recordFile.c_str());
+                }
             }
+        } else {
+            elog_w(TAG, "video_recorder_ is null in onRecordDone");
         }
         is_recording_ = false;
     }, duration);

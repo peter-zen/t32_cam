@@ -552,13 +552,17 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     // Reset last timestamp for new recording
     lastVideoTimestamp = 0;
 
-    /* Capture thumbnail from CH2 before recording loop starts
-     * TODO: Temporarily disabled - Bus error on T32, need to investigate
-     * CH2 JPEG encoder conflict with ImageSnap's CH2 stream.
-     */
-    // if (concurrentSnapEnabled_) {
-    //     captureThumbnail();
-    // }
+    /* Capture thumbnail from CH2 at recording start (CH2 is free, no concurrent photo) */
+    if (concurrentSnapEnabled_) {
+        Logger::log(LogLevel::INFO, "record: capturing thumbnail from CH2...");
+        if (captureThumbnail()) {
+            Logger::log(LogLevel::INFO, "record: thumbnail captured %zu bytes", thumbData_.size());
+        } else {
+            Logger::log(LogLevel::WARNING, "record: thumbnail capture failed");
+        }
+    } else {
+        Logger::log(LogLevel::INFO, "record: thumbnail skipped (concurrentSnap not enabled)");
+    }
 
 
     // Pre-roll: wait for the first audio timestamp to align AV start
