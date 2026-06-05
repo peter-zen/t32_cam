@@ -1,6 +1,7 @@
 #include "ImageSnap.h"
 #include <mutex>
 #include <string.h>
+#include <cstdlib>
 #include <fstream>
 #include <sys/select.h>
 #include <sys/time.h>
@@ -354,25 +355,11 @@ bool ImageSnap::capture_thumbnail()
     return true;
 }
 
-bool ImageSnap::daynight_switch(bool on)
+bool ImageSnap::daynight_switch(bool /*on*/)
 {
-    auto daynight_controller = DayNightSwitch::getInstance();
-    if (!daynight_controller) {
-        Logger::log(LogLevel::ERROR, "daynight_switch: controller null");
-        return false;
-    }
-    daynight_controller->setCdsPins(CDS_SENSOR_PIN);
-    daynight_controller->setIRLedPins(IR_LED_PIN);
-    daynight_controller->setIRCutPins(IR_CUT_ENABLE_PIN, IR_CUT_CTRL_PIN);
-    if (on) {
-        auto daynight_state = daynight_controller->getDayNightState();
-        daynight_controller->controlISP(daynight_state);
-        daynight_controller->controlIRCut(daynight_state);
-        daynight_controller->controlIRLed(daynight_state);
-    } else {
-        daynight_controller->controlISP(DayNightState::DAY);
-        daynight_controller->controlIRCut(DayNightState::DAY);
-        daynight_controller->controlIRLed(DayNightState::DAY);
-    }
+    /* Photo capture should not change the current day/night mode.
+     * The ISP is already in the correct mode set by the application startup.
+     * Changing it here would affect RTSP preview and other streams globally.
+     */
     return true;
 }
