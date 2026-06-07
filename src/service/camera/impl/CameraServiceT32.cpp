@@ -406,16 +406,13 @@ int CameraServiceT32::capturePreviewFrame(int channel, int width, int height, st
 
 int CameraServiceT32::startRecord(int channel, int duration, bool audio, const std::string& recordId) {
     (void)channel;
-    (void)recordId;
     std::lock_guard<std::mutex> lock(op_mutex_);
     if (is_recording_) {
         elog_w(TAG, "Already recording");
         return -1;
     }
 
-    is_recording_ = true;
-
-    // Generate filename
+    // Generate filename (HTTP path: /mnt/sdcard/DCIM/VID_<timestamp>.mp4)
     auto now = std::time(nullptr);
     auto tm = *std::localtime(&now);
     std::ostringstream oss;
@@ -423,161 +420,68 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     std::string filename = oss.str();
     current_record_file_ = filename;
 
-    auto vidParam = std::make_shared<media::VideoParams>();
-    if (isTestMode()) {
-        vidParam->setResolution(2560, 1440);
-        vidParam->setFrameRate(30);
-        vidParam->setBitrate(4000);
-        vidParam->setCodecFormat(media::VideoCodecFormat::H265);
-        vidParam->setRcMode(media::VideoRcMode::CBR);
-        vidParam->setGop(60);
-        elog_i(TAG, "Test Mode record: fixed 2560x1440 H265 30fps");
-    } else {
-        applyConfiguredVideoParams(vidParam);
-    }
-    std::shared_ptr<media::AudioParams> audParam = nullptr;
-    /* Check if --no-audio was specified or audio module unavailable */
+    /* Audio enable: caller 决定 + env var 覆盖 */
     const char* noAudioEnv = std::getenv("HTC_NO_AUDIO");
     bool audioDisabled = (noAudioEnv && strcmp(noAudioEnv, "1") == 0);
-    if (audio && !audioDisabled) {
-        /* Verify audio kernel module is available */
+    bool effectiveAudio = audio && !audioDisabled;
+
+    /* 尝试加载 audio 内核模块（与现状一致）*/
+    if (effectiveAudio) {
         int lsmodRet = system("lsmod | grep -q audio");
         if (lsmodRet != 0) {
             lsmodRet = system("insmod /system/modules/audio/audio.ko spk_gpio=-1 spk_level=-1 2>/dev/null");
             if (lsmodRet != 0) {
                 elog_w(TAG, "Audio kernel module not available, disabling audio recording");
-                audioDisabled = true;
+                effectiveAudio = false;
             }
         }
     }
-    if (audio && !audioDisabled) {
-        audParam = std::make_shared<media::AudioParams>();
-        audParam->setDeviceType(media::AudioDeviceType::AUDIO_IN);
-        audParam->setDeviceId(1);
-        audParam->setChannelId(0);
-        audParam->setVolume(Settings::getInstance()->audioRecordVolume);
-        audParam->setGain(Settings::getInstance()->audioRecordGain);
-        audParam->setCodecFormat(media::AudioCodecFormat::AAC);
-        audParam->setSampleRate(media::AudioSampleRate::SR_16000);
-        audParam->setChannelCount(1);
-    }
-    /* Stop and release old recorder before creating new one.
-     * The old recording thread may still hold a reference to video_recorder_,
-     * preventing the destructor from running and releasing encoder channel 0.
-     */
+
+    /* 释放旧 recorder（CameraRecorder 内部会等线程结束） */
     if (video_recorder_) {
-        video_recorder_->stopRecorder();
-        /* Give the old recording thread time to finish */
+        video_recorder_->stop();
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         video_recorder_.reset();
     }
-    video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam, true);
 
-    // If duration not specified by API, read from settings
-    if (duration <= 0) {
-        duration = CameraPropertyService::getInstance().getVideoRecordLength();
-    }
+    /* 创建新 CameraRecorder + 配置回调 */
+    video_recorder_ = std::make_shared<service::camera::CameraRecorder>();
 
-    logDefaultStreamProfiles();
-    int recordStreamId = 0;
-    const char* recordStreamEnv = std::getenv("HTC_RECORD_STREAM_ID");
-    if (recordStreamEnv && strcmp(recordStreamEnv, "1") == 0) {
-        recordStreamId = 1;
-    }
-    int width = 0;
-    int height = 0;
-    vidParam->getResolution(width, height);
-    elog_i(TAG,
-           "record config: file=%s sensor=0 stream=%d size=%dx%d fps=%d bitrate=%dKbps codec=%s rc=%s duration=%d audio=%d",
-           current_record_file_.c_str(),
-           recordStreamId,
-           width,
-           height,
-           vidParam->getFrameRate(),
-           vidParam->getBitrate(),
-           videoCodecName(vidParam->getCodecFormat()),
-           videoRcModeName(vidParam->getRcMode()),
-           duration,
-           audio ? 1 : 0);
-
-    // Disk space check and loop recording cleanup
-    {
-        int bitrateKbps = vidParam->getBitrate();
-        // Estimate space needed (Kbps * 1000 / 8) + 10% overhead, in MB
-        long long estimatedMB = 0;
-        if (duration > 0) {
-            estimatedMB = static_cast<long long>(bitrateKbps) * 1000 * duration / 8 / (1024 * 1024);
-        }
-        estimatedMB = estimatedMB * 11 / 10 + 10; // +10% overhead + 10MB safety
-
-        struct statvfs stat;
-        if (statvfs("/mnt/sdcard", &stat) == 0) {
-            unsigned long long blockSize = stat.f_frsize ? stat.f_frsize : stat.f_bsize;
-            long long freeMB = static_cast<long long>((stat.f_bavail * blockSize) >> 20);
-
-            if (freeMB < estimatedMB) {
-                bool autoCover = Settings::getInstance()->autoCover != 0;
-                if (autoCover) {
-                    // Delete oldest video(s) to make space
-                    MetadataDao dao;
-                    int attempts = 0;
-                    while (freeMB < estimatedMB && attempts < 50) {
-                        std::string oldest = dao.getOldestMediaPath(2); // type=2: video
-                        if (oldest.empty()) break;
-
-                        // Delete from DB and filesystem
-                        dao.deleteMedia(oldest);
-                        remove(oldest.c_str());
-                        elog_i(TAG, "Loop recording: deleted %s to free space", oldest.c_str());
-                        attempts++;
-
-                        // Re-read free space
-                        if (statvfs("/mnt/sdcard", &stat) == 0) {
-                            freeMB = static_cast<long long>((stat.f_bavail * blockSize) >> 20);
-                        }
-                    }
-                    if (freeMB < estimatedMB) {
-                        elog_w(TAG, "Insufficient space even after cleanup: need=%lld MB, free=%lld MB", estimatedMB, freeMB);
-                        is_recording_ = false;
-                        return -1;
-                    }
-                } else {
-                    elog_w(TAG, "Insufficient space: need=%lld MB, free=%lld MB", estimatedMB, freeMB);
-                    is_recording_ = false;
-                    return -1;
-                }
-            }
-        }
-    }
-
-    elog_i(TAG, "Start recording: duration=%d", duration);
-    std::string recordFile = current_record_file_;
-    bool ok = video_recorder_->record(current_record_file_, [this, recordFile](bool) {
+    service::camera::RecordOptions opts;
+    opts.audio = effectiveAudio;
+    opts.autoCover = (Settings::getInstance()->autoCover != 0);
+    opts.onComplete = [this](const service::camera::RecordResult& r) {
         std::lock_guard<std::mutex> l(op_mutex_);
-        elog_i(TAG, "Recording done callback for %s", recordFile.c_str());
-        /* Save thumbnail captured at recording start */
-        if (video_recorder_) {
-            elog_i(TAG, "Thumbnail data: has=%d size=%zu",
-                   video_recorder_->hasThumbnail() ? 1 : 0,
-                   video_recorder_->getThumbnailData().size());
-            if (video_recorder_->hasThumbnail()) {
+        elog_i(TAG, "Recording done: file=%s error=%d durationMs=%lld manual=%d",
+               r.filePath.c_str(), static_cast<int>(r.error),
+               (long long)r.durationMs, r.stoppedManually ? 1 : 0);
+
+        /* 仅成功 / 主动 stop 时写 thumbnail */
+        if (r.error == service::camera::RecordError::None ||
+            r.error == service::camera::RecordError::UserStop) {
+            if (video_recorder_ && video_recorder_->hasThumbnail()) {
                 MetadataDao dao;
-                if (dao.saveThumbnail(recordFile, video_recorder_->getThumbnailData())) {
+                if (dao.saveThumbnail(r.filePath, video_recorder_->getThumbnailData())) {
                     elog_i(TAG, "Recording thumbnail saved for %s (%zu bytes)",
-                           recordFile.c_str(), video_recorder_->getThumbnailData().size());
+                           r.filePath.c_str(), video_recorder_->getThumbnailData().size());
                 } else {
-                    elog_e(TAG, "saveThumbnail failed for %s", recordFile.c_str());
+                    elog_e(TAG, "saveThumbnail failed for %s", r.filePath.c_str());
                 }
             }
-        } else {
-            elog_w(TAG, "video_recorder_ is null in onRecordDone");
         }
         is_recording_ = false;
-    }, duration);
-    if (!ok) {
-        is_recording_ = false;
+    };
+
+    if (!video_recorder_->record(filename, duration, opts)) {
+        elog_e(TAG, "CameraRecorder::record start failed for %s", filename.c_str());
+        video_recorder_.reset();
         return -1;
     }
+
+    is_recording_ = true;
+    (void)recordId;  // recordId 生成在调用方，本函数不再处理
+    elog_i(TAG, "Start recording via CameraRecorder: file=%s duration=%d audio=%d",
+           filename.c_str(), duration, effectiveAudio ? 1 : 0);
     return 0;
 }
 
@@ -587,17 +491,19 @@ int CameraServiceT32::stopRecord() {
         return 0;
     }
     if (video_recorder_) {
-        video_recorder_->stopRecorder();
+        video_recorder_->stop();
     }
-    is_recording_ = false;
-    elog_i(TAG, "Stop recording");
+    /* is_recording_ 会在 onComplete 回调中清零；这里不立即清，给 MP4 收尾留时间 */
+    elog_i(TAG, "Stop recording signal sent");
     return 0;
 }
 
 RecordStatus CameraServiceT32::getRecordStatus() {
     RecordStatus status;
     status.state = is_recording_ ? RecordState::RECORDING : RecordState::IDLE;
-    status.duration = 0;
+    status.duration = video_recorder_
+                      ? static_cast<int>(video_recorder_->getCurrentDurationMs() / 1000)
+                      : 0;
     status.filePath = current_record_file_;
     return status;
 }

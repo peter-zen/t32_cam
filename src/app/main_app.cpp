@@ -17,6 +17,7 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <future>
 #include <unordered_map>
 #include <algorithm>
 
@@ -30,6 +31,8 @@
 #include "ElogInit.h"
 #include "ImageSnap.h"
 #include "VideoRecorder.h"
+#include "CameraRecorder.h"
+#include "RecordingPostProcess.h"
 #include "EnvManager.h"
 #include "misc/Misc.h"
 #include "utils/crc/CRC.h"
@@ -616,42 +619,46 @@ static bool processCmdSnap(bool is_rtc_work_well) {
 
 static bool processCmdVideoRecord(bool is_rtc_work_well) {
     (void)is_rtc_work_well;
-    auto settings = Settings::getInstance();
-    int videoLength = settings->videoLength_l + (settings->videoLength_h << 8);
-    if (videoLength <= 0) videoLength = 10;
+    using service::camera::CameraRecorder;
+    using service::camera::RecordError;
+    using service::camera::RecordOptions;
+    using service::camera::RecordResult;
 
-    auto videoParam = std::make_shared<VideoParams>();
-    videoParam->setResolution(2560, 1440);
-    videoParam->setFrameRate(30);
-    videoParam->setBitrate(4000);
-    videoParam->setCodecFormat(settings->videoCodec == 2 ? VideoCodecFormat::H265 : VideoCodecFormat::H264);
-    videoParam->setRcMode(VideoRcMode::CBR);
-    videoParam->setGop(60);
+    // 同步等待异步录影完成
+    std::promise<RecordResult> done;
+    auto future = done.get_future();
 
-    auto audioParam = std::make_shared<AudioParams>();
-    audioParam->setDeviceType(AudioDeviceType::AUDIO_IN);
-    audioParam->setDeviceId(1);
-    audioParam->setChannelId(0);
-    audioParam->setVolume(settings->audioRecordVolume);
-    audioParam->setGain(settings->audioRecordGain);
-    audioParam->setCodecFormat(AudioCodecFormat::AAC);
-    audioParam->setSampleRate(AudioSampleRate::SR_16000);
-    audioParam->setChannelCount(1);
-
-    auto recorder = std::make_shared<VideoRecorder>(videoParam, audioParam);
     std::string record_path = std::string(MEDIA_TARGET_PATH) + getCurrentTimeFormatted() + ".mp4";
-    Logger::log(LogLevel::INFO, "Work Mode record: %s, duration=%d", record_path.c_str(), videoLength);
-    if (!recorder->record(record_path, videoLength)) {
-        Logger::log(LogLevel::ERROR, "Work Mode record failed");
+    CameraRecorder recorder;
+    RecordOptions opts;
+    opts.audio = true;
+    opts.autoCover = false;  // work mode 不循环覆盖
+    opts.onComplete = [&done](const RecordResult& r) {
+        done.set_value(r);
+    };
+
+    Logger::log(LogLevel::INFO, "Work Mode record start: %s", record_path.c_str());
+    if (!recorder.record(record_path, /*durationSec=*/0, opts)) {
+        Logger::log(LogLevel::ERROR, "Work Mode record start failed (CameraRecorder rejected)");
         return false;
     }
 
-    std::vector<std::string> files = {record_path};
-    std::string desc_filename = std::string(MEDIA_UPLOAD_PATH) + getCurrentTimeFormatted() + ".json";
-    if (!Misc::createDirectory(MEDIA_UPLOAD_PATH)) {
-        Logger::log(LogLevel::ERROR, "Failed to create upload directory");
+    RecordResult r = future.get();  // 阻塞直到录完
+
+    if (r.error != RecordError::None && r.error != RecordError::UserStop) {
+        Logger::log(LogLevel::ERROR, "Work Mode record failed: %s", r.errorMessage.c_str());
+        return false;
     }
-    createDescInfoFile(files, desc_filename);
+
+    // 写 desc JSON（格式与现状一致：generateDescInfo 仍由 main_app 持有）
+    std::vector<std::string> files = { record_path };
+    std::string desc_info;
+    if (generateDescInfo(files, desc_info) == 0) {
+        std::string desc_filename = std::string(MEDIA_UPLOAD_PATH) + getCurrentTimeFormatted() + ".json";
+        service::camera::RecordingPostProcess::writeWorkModeDescJson(desc_info, desc_filename);
+    } else {
+        Logger::log(LogLevel::ERROR, "Work Mode record: generateDescInfo failed");
+    }
     return true;
 }
 

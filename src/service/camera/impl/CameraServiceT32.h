@@ -1,10 +1,10 @@
 #ifndef CAMERA_SERVICE_T32_H
 #define CAMERA_SERVICE_T32_H
 
+#include "../CameraRecorder.h"
 #include "../ICameraService.h"
 #include "../../../media/snap/ImageSnap.h"
 #include "../../../media/snap/LargeImageSnap.h"
-#include "../../../media/video/VideoRecorder.h"
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -57,7 +57,7 @@ private:
     std::mutex op_mutex_;
     std::shared_ptr<media::ImageSnap> image_snap_;
     std::shared_ptr<media::LargeImageSnap> large_snap_;
-    std::shared_ptr<media::VideoRecorder> video_recorder_;
+    std::shared_ptr<service::camera::CameraRecorder> video_recorder_;
     std::string current_record_file_;
     std::mutex timer_mutex_;
     std::condition_variable timer_cv_;
