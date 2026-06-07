@@ -24,3 +24,13 @@ sdk/samples/libimp-samples/sample-*
 sdk/samples/libimp-samples/*.o
 !local_assets/README.md
 .omx/
+
+# T32 hardware build output (mirrors build/ and build_sim/)
+build_t32/
+
+# Downloaded tools (e.g., ffmpeg static builds)
+.tools/
+
+# AI agent skill definitions (personal/IDE config, references non-existent
+# project layout; do not share across clones)
+.claude/skills/
