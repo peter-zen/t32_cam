@@ -1031,6 +1031,20 @@ bool VideoRecorder::initJpegStream() {
         return false;
     }
 
+    // 缩略图尺寸：宽度固定 320，高度按 video 宽高比计算（保持视频纵横比）
+    // 例: 1920x1080 (16:9) → 320x180；1024x768 (4:3) → 320x240；720x720 (1:1) → 320x320
+    constexpr int kThumbWidth = 320;
+    int thumbHeight = 180;  // fallback default (16:9)
+    if (vidParam) {
+        int vw = 0, vh = 0;
+        vidParam->getResolution(vw, vh);
+        if (vw > 0 && vh > 0) {
+            thumbHeight = (kThumbWidth * vh) / vw;
+            if (thumbHeight % 2 != 0) thumbHeight += 1;  // 偶数对齐硬件 scaler
+            if (thumbHeight <= 0) thumbHeight = 180;
+        }
+    }
+
     jpegStream_ = video_->createVideoStream();
     if (!jpegStream_) {
         Logger::log(LogLevel::ERROR, "initJpegStream: createVideoStream failed");
@@ -1042,8 +1056,8 @@ bool VideoRecorder::initJpegStream() {
     cfg.payload = hal::VideoPayloadType::JPEG;
     cfg.channel.sensor_index = VIDEO_SENSOR_ID;
     cfg.channel.stream_index = 2;  // CH2: hardware scaler for thumbnail
-    cfg.width = 320;               // thumbnail width
-    cfg.height = 180;              // thumbnail height (16:9)
+    cfg.width = kThumbWidth;
+    cfg.height = thumbHeight;       // 按 video 宽高比计算（保持纵横比）
     cfg.fps_num = 1;
     cfg.fps_den = 1;
     cfg.quality = 80;
