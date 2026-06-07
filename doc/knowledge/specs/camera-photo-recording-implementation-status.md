@@ -332,3 +332,108 @@ POST /api/v1/camera/video/start {channel, duration, audio}
 | `src/app/main_app.cpp` | workingMode→命令映射（已实现） |
 | `src/media/rtsp/RtspServer.h/.cpp` | RTSP实时流 |
 | `src/storage/MetadataDao.h` | 媒体数据库（VideoRecorder写入，ImageSnap未写入） |
+
+---
+
+## 八、C2 重构计划：CameraRecorder 统一录影
+
+> 设计日期：2026-06-07
+> 状态：方案已锁，进入实现阶段
+> 关联 ADR：[`decisions/asymmetric-snap-vs-record-design.md`](../decisions/asymmetric-snap-vs-record-design.md)
+> 关联 Spec：[`specs/camera-recorder-unified-design.md`](camera-recorder-unified-design.md)
+
+### 8.1 现状与动机
+
+当前录影"消费者"分散在两处独立实现，参数管道不一致：
+
+| 调用方 | 位置 | 视频参数来源 | 缩略图 | 后置动作 |
+|--------|------|-------------|--------|---------|
+| `processCmdVideoRecord` (work mode) | `src/app/main_app.cpp:617` | **硬编码** 2560×1440/30fps/4000Kbps/CBR | 无 | 写 desc JSON |
+| `CameraServiceT32::startRecord` (HTTP) | `src/service/camera/impl/CameraServiceT32.cpp:407` | `applyConfiguredVideoParams()` 读 config | CH2 in-stream | 写 `MetadataDao` |
+
+work mode 那条路径关键参数（分辨率/帧率/码率/RC 模式）全部硬编码，与 HTTP 路径参数管道不一致——用户改 `settings.json` 里的 `Video_Size` / `Video_Bitrate_Type` 不影响 work mode 录影。
+
+### 8.2 目标
+
+引入通用 `CameraRecorder` 类，把"录影"做成一份统一实现，由 work mode 和 HTTP 共用。
+
+| 目标 | 度量 |
+|------|------|
+| work mode 录影参数从 config 读 | 移除 main_app.cpp:624-629 的 4 行硬编码 |
+| work mode 缩略图可生成 | `RecordOptions` 控制是否生成 |
+| HTTP / work mode 共用同一录影管道 | `CameraRecorder::record()` 一份代码 |
+| 录完写 desc/DB 通过回调 | 写后置文件由 `RecordingPostProcess` 工具类负责 |
+
+### 8.3 设计要点
+
+**类与契约**（详见 [`specs/camera-recorder-unified-design.md`](camera-recorder-unified-design.md)）：
+
+```cpp
+// src/service/camera/CameraRecorder.h
+class CameraRecorder {
+public:
+    CameraRecorder();  // 内部读 CameraPropertyService + Settings
+    bool record(const std::string& filePath, int durationSec, 
+                const RecordOptions& options);  // 异步，立即返回
+    bool stop();  // 异步收尾，触发 onComplete(stoppedManually=true)
+    int64_t getCurrentDurationMs() const;
+};
+
+struct RecordOptions {
+    bool autoCover = false;  // 不传时读 Settings::autoCover
+    std::function<void(const RecordResult&)> onComplete;
+};
+
+struct RecordResult {
+    RecordError error = RecordError::None;
+    std::string filePath;
+    std::string thumbnailPath;  // 规则: <video dir>/thumb/<basename>.jpg
+    int64_t durationMs = 0;
+    int64_t fileSizeBytes = 0;
+    bool stoppedManually = false;
+    std::string errorMessage;
+};
+
+enum class RecordError {
+    None, InsufficientDiskSpace, EncoderInitFailed, 
+    RecordStartFailed, InternalError, UserStop
+};
+```
+
+**`VideoRecorder` 角色不变** —— 仍是 MP4 muxer / 音频混流 / 缩略图抓取（CH2 in-stream）。`CameraRecorder` 包裹 `VideoRecorder`，加策略层（读 config / 磁盘检查 / autoCover / 回调 / 缩略图路径生成）。
+
+**`RecordingPostProcess` 工具类** —— `src/service/camera/RecordingPostProcess.h/.cpp`，暴露两个静态方法：
+- `writeWorkModeDescJson(const RecordResult&)` —— work mode 写 desc JSON
+- `writeMetadataDaoEntry(const RecordResult&)` —— HTTP 写 `MetadataDao`
+
+### 8.4 改动清单
+
+| 文件 | 改动类型 | 内容 |
+|------|---------|------|
+| `src/service/camera/CameraRecorder.h` | 新增 | 类/结构体/枚举声明（**位置调整**：从 `media/video/` 移到 `service/camera/`，避免循环依赖） |
+| `src/service/camera/CameraRecorder.cpp` | 新增 | 实现：读 config / 磁盘检查 / 录影编排 / 回调 / stop |
+| `src/service/camera/RecordingPostProcess.h` | 新增 | 工具类声明 |
+| `src/service/camera/RecordingPostProcess.cpp` | 新增 | 工具类实现 |
+| `src/media/video/VideoRecorder.cpp` | 改 | `captureThumbnail()` 高度按 video 宽高比算（320 × videoH/videoW） |
+| `src/service/camera/impl/CameraServiceT32.cpp` | 改 | `startRecord` / `stopRecord` / `getRecordStatus` 委托给 `CameraRecorder`；callback 调 `RecordingPostProcess::writeMetadataDaoEntry` |
+| `src/app/main_app.cpp` | 改 | `processCmdVideoRecord` 用 `CameraRecorder` + `std::promise/future` + `RecordingPostProcess::writeWorkModeDescJson` |
+| `src/service/camera/CMakeLists.txt` | 不改 | GLOB 自动收录新文件 |
+
+### 8.5 范围限定（不重构）
+
+| 不动 | 原因 |
+|------|------|
+| `processCmdConcurrentSnapRecord` (cameraMode=3 边录边拍) | 与 work mode 一次性语义解耦度高，是另一故事 |
+| `-vr` / `--video-record` 测试入口 (`CMD_VIDEO_RECORD` 分支) | 硬编码参数是测试隔离需要，不该被统一实现吞掉 |
+| RTSP 流 | 不落盘，不属于"录影文件"概念 |
+| `camera/thumbnail` 独立 HTTP 端点 | 走 `ImageSnap`，独立功能 |
+| desc JSON schema | 维持现状（不增删字段），是上传协议契约 |
+
+### 8.6 验证方案
+
+- 编译验证：`cmake -DBUILD_FOR_SIMULATION=ON -B build_sim -S . && cmake --build build_sim -j$(nproc)`
+- work mode 启动时，验证录影分辨率/帧率/码率来自 `settings.json`（不是硬编码 2560×1440/30/4000）
+- work mode 录完，desc JSON 格式与重构前一致（仅文件列表，不增字段）
+- HTTP `POST /api/v1/camera/video/start`，DB 中有 `MediaItem` 记录
+- HTTP `POST /api/v1/camera/video/stop`，MP4 文件 moov 完整，DB `duration` 字段是实际时长
+- 缩略图生成：HTTP 路径下 `dao.getThumbnail(filePath)` 能拿到 320×宽高比高度 的 JPEG
