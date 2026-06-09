@@ -7,10 +7,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <elog.h>
-#include <filesystem>
 #include <sstream>
 
-#include "../CameraPropertyService.h"
+#include "CameraPropertyService.h"
 #include "../../config/setting/Settings.h"
 #include "../../storage/MetadataDao.h"
 
@@ -42,21 +41,28 @@ CameraRecorder::~CameraRecorder() {
 std::string CameraRecorder::computeThumbnailPath(const std::string& filePath) {
     // 规则: <video dir>/thumb/<basename>.jpg
     // 例: /sdcard/DCIM/VID_20260607_101010.mp4 → /sdcard/DCIM/thumb/VID_20260607_101010.jpg
-    namespace fs = std::filesystem;
-    fs::path p(filePath);
-    fs::path dir = p.parent_path();
-    fs::path stem = p.stem();
-    fs::path thumbDir = dir / "thumb";
-    return (thumbDir / (stem.string() + ".jpg")).string();
+    // 项目是 C++14 + GCC 5.4,没有 std::filesystem,用字符串操作代替。
+    size_t slash = filePath.find_last_of('/');
+    std::string dir = (slash == std::string::npos) ? std::string() : filePath.substr(0, slash);
+    std::string base = (slash == std::string::npos) ? filePath : filePath.substr(slash + 1);
+    size_t dot = base.find_last_of('.');
+    std::string stem = (dot == std::string::npos) ? base : base.substr(0, dot);
+    std::string thumbDir = dir + "/thumb";
+    return thumbDir + "/" + stem + ".jpg";
 }
 
-std::shared_ptr<media::VideoParams> CameraRecorder::buildVideoParams() {
+std::shared_ptr<media::VideoParams> CameraRecorder::buildVideoParams(int bitrateKbpsOverride) {
     auto& cps = CameraPropertyService::getInstance();
     int width = 0, height = 0, fps = 0, bitrateKbps = 0;
     cps.getVideoRecordConfig(width, height, fps, bitrateKbps);
     if (width <= 0 || height <= 0) { width = 1920; height = 1080; }
     if (fps <= 0) fps = 30;
-    if (bitrateKbps <= 0) bitrateKbps = 16384;
+    if (bitrateKbps <= 0) bitrateKbps = 4000;
+    if (bitrateKbpsOverride > 0) {
+        elog_i(kTag, "buildVideoParams: bitrate override %d kbps (CPS value was %d kbps)",
+               bitrateKbpsOverride, bitrateKbps);
+        bitrateKbps = bitrateKbpsOverride;
+    }
 
     int codecReg = cps.getVideoRecordCodec();
     int rcReg = cps.getVideoRecordRcMode();
@@ -136,16 +142,14 @@ bool CameraRecorder::ensureDiskSpace(int bitrateKbps, int durationSec, bool auto
         try {
             MetadataDao dao;
             dao.deleteMedia(oldest);
-            std::error_code ec;
-            std::filesystem::remove(oldest, ec);
-            if (!ec) {
+            if (unlink(oldest.c_str()) == 0) {
                 elog_i(kTag, "autoCover: deleted %s to free space", oldest.c_str());
             } else {
-                elog_w(kTag, "autoCover: remove %s failed: %s",
-                       oldest.c_str(), ec.message().c_str());
+                elog_w(kTag, "autoCover: unlink %s failed: %s",
+                       oldest.c_str(), strerror(errno));
             }
         } catch (...) {
-            errorMessage = "autoCover: deleteMedia/remove threw";
+            errorMessage = "autoCover: deleteMedia/unlink threw";
             return false;
         }
         attempts++;
@@ -191,7 +195,7 @@ bool CameraRecorder::record(const std::string& filePath, int durationSec,
         }
     }
 
-    auto vidParam = buildVideoParams();
+    auto vidParam = buildVideoParams(options.bitrateKbpsOverride);
     std::shared_ptr<media::AudioParams> audParam;
     if (options.audio) {
         audParam = buildAudioParams();
@@ -211,7 +215,8 @@ bool CameraRecorder::record(const std::string& filePath, int durationSec,
     auto onComplete = options.onComplete;
 
     try {
-        video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam);
+        // concurrentSnap=true 开启 CH2 缩略图抓取(recording 起步时拍一帧 320x180 JPEG)
+        video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam, /*concurrentSnap=*/true);
     } catch (const std::exception& e) {
         is_recording_.store(false);
         std::string msg = std::string("VideoRecorder ctor failed: ") + e.what();
@@ -303,6 +308,18 @@ const std::vector<uint8_t>& CameraRecorder::getThumbnailData() const {
 
 bool CameraRecorder::hasThumbnail() const {
     return video_recorder_ && video_recorder_->hasThumbnail();
+}
+
+void CameraRecorder::releaseVideoResources() {
+    // 重置 video_recorder_ shared_ptr → 引用计数归零 → 触发 ~VideoRecorder →
+    // deinitialize() → uninitVideo() → video_->exit() → IMP_System_Exit()。
+    // 这条调用链会立刻释放 SDK 的帧缓冲池，是避免 zram swap 尖峰的关键。
+    if (video_recorder_) {
+        elog_i(kTag, "releaseVideoResources: releasing SDK frame buffers now");
+        video_recorder_.reset();
+    }
+    is_recording_.store(false);
+    current_duration_ms_.store(0);
 }
 
 } // namespace camera

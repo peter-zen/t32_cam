@@ -497,8 +497,8 @@ static Json::Value build_storage_info_json(const service::StorageInfo& info) {
 
 static const std::map<std::string, PropertyMap>& get_preset_definitions() {
     static const std::map<std::string, PropertyMap> presets = {
-        {"default", {{"resolution", Json::Value("1920x1080")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(16384)}}},
-        {"high_quality", {{"resolution", Json::Value("2560x1440")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(16384)}}},
+        {"default", {{"resolution", Json::Value("1920x1080")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(4000)}}},
+        {"high_quality", {{"resolution", Json::Value("2560x1440")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(6000)}}},
         {"low_power", {{"resolution", Json::Value("1280x720")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(8192)}}},
     };
     return presets;

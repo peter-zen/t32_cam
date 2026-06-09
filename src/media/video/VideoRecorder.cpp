@@ -905,6 +905,13 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     MP4E_close(muxer);
     mp4_h26x_write_close(&mp4wr);
     fflush(fp);
+    // 强制刷盘：fclose 之前 fsync，避免 23MB mp4 的 FAT entry 写入被 page cache
+    // 延后后与紧接的 thumbnail/desc JSON 写竞争导致 cluster bitmap 损坏
+    // ("clusters badly computed" + Filesystem has been set read-only)。
+    // 修复见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md §6.6.4 + §B.1。
+    if (::fileno(fp) >= 0) {
+        ::fsync(::fileno(fp));
+    }
     long fileSize = 0;
     if (fseek(fp, 0, SEEK_END) == 0) {
         fileSize = ftell(fp);

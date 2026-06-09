@@ -34,6 +34,8 @@ enum class RecordError {
 /**
  * @brief Options passed to CameraRecorder::record().
  */
+struct RecordResult;  // forward decl: onComplete below needs the type name
+
 struct RecordOptions {
     /**
      * @brief Whether to record audio.
@@ -61,6 +63,15 @@ struct RecordOptions {
      * 必传。caller 不应在回调内做阻塞操作；如需阻塞请用 std::promise/future 桥接。
      */
     std::function<void(const RecordResult&)> onComplete;
+
+    /**
+     * @brief 诊断用 bitrate 覆盖（kbps）。>0 时跳过 CameraPropertyService 直接使用此值。
+     *
+     * 默认 0（用 CPS 配置）。work mode 路径下，env HTC_RECORD_BITRATE_KBPS 会
+     * 覆盖到此字段，用于验证 16 Mbps 编码器吞吐瓶颈假设
+     * （见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md §6.5）。
+     */
+    int bitrateKbpsOverride = 0;
 };
 
 /**
@@ -147,11 +158,26 @@ public:
      */
     bool hasThumbnail() const;
 
+    /**
+     * @brief 显式释放底层视频录制资源（SDK 缓冲、encoder 状态等）。
+     *
+     * 正常情况下 CameraRecorder 析构时会自动释放。但对内存紧张的 T32 设备，
+     * SDK 的帧缓冲池（~20-50MB）如果在函数返回前一直持有，会在析构瞬间
+     * 触发内核把大量脏页 swap out 到 zram，可能造成 zram OOM（表现为
+     * "Error allocating memory for compressed page" + "Write-error on
+     * swap-device"）。在录制完成、但还要做其他不依赖 SDK 的 IO
+     * （写 desc JSON、走 IIC）时，可调用本方法提前释放，避免 zram 尖峰。
+     *
+     * 调用后，video_recorder_ 已被 reset，hasThumbnail/getThumbnailData
+     * 等会返回空/无数据；getCurrentDurationMs 返回 0。
+     */
+    void releaseVideoResources();
+
 private:
     static std::string computeThumbnailPath(const std::string& filePath);
     bool ensureDiskSpace(int bitrateKbps, int durationSec, bool autoCover,
                          std::string& errorMessage);
-    static std::shared_ptr<media::VideoParams> buildVideoParams();
+    static std::shared_ptr<media::VideoParams> buildVideoParams(int bitrateKbpsOverride = 0);
     static std::shared_ptr<media::AudioParams> buildAudioParams();
 
     std::shared_ptr<media::VideoRecorder> video_recorder_;

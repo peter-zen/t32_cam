@@ -2,11 +2,13 @@
 
 #include <cerrno>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <sys/stat.h>
 
 #include <elog.h>
+
+#include "../../common/misc/Misc.h"
 
 namespace service {
 namespace camera {
@@ -15,28 +17,29 @@ namespace {
 
 constexpr const char* kTag = "RecPost";
 
+// 提取 filePath 的父目录(空串表示无父目录)
+static std::string parentDirOf(const std::string& filePath) {
+    size_t slash = filePath.find_last_of('/');
+    return (slash == std::string::npos) ? std::string() : filePath.substr(0, slash);
+}
+
 } // namespace
 
 void RecordingPostProcess::writeWorkModeDescJson(const std::string& jsonContent,
                                                   const std::string& filePath) {
-    namespace fs = std::filesystem;
-
-    // 1. 父目录创建
-    try {
-        fs::path p(filePath);
-        fs::path parent = p.parent_path();
-        if (!parent.empty() && !fs::exists(parent)) {
-            std::error_code ec;
-            fs::create_directories(parent, ec);
-            if (ec) {
+    // 1. 父目录创建(项目是 C++14 + GCC 5.4,没有 std::filesystem;
+    //    用 Misc::createDirectory,内部已经做了 mkdir -p 递归)
+    std::string parent = parentDirOf(filePath);
+    if (!parent.empty()) {
+        struct stat st;
+        bool exists = (stat(parent.c_str(), &st) == 0);
+        if (!exists) {
+            if (!Misc::createDirectory(parent)) {
                 elog_e(kTag, "writeWorkModeDescJson: create dir %s failed: %s",
-                       parent.c_str(), ec.message().c_str());
+                       parent.c_str(), std::strerror(errno));
                 return;
             }
         }
-    } catch (const std::exception& e) {
-        elog_e(kTag, "writeWorkModeDescJson: create dir threw: %s", e.what());
-        return;
     }
 
     // 2. 写文件

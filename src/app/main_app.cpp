@@ -15,6 +15,8 @@
 #include <csignal>
 #include <queue>
 #include <thread>
+#include <chrono>
+#include <malloc.h>   // malloc_trim (glibc extension)
 #include <mutex>
 #include <atomic>
 #include <future>
@@ -33,6 +35,7 @@
 #include "VideoRecorder.h"
 #include "CameraRecorder.h"
 #include "RecordingPostProcess.h"
+#include "MetadataDao.h"
 #include "EnvManager.h"
 #include "misc/Misc.h"
 #include "utils/crc/CRC.h"
@@ -628,11 +631,36 @@ static bool processCmdVideoRecord(bool is_rtc_work_well) {
     std::promise<RecordResult> done;
     auto future = done.get_future();
 
-    std::string record_path = std::string(MEDIA_TARGET_PATH) + getCurrentTimeFormatted() + ".mp4";
+    // 诊断开关:HTC_RECORD_TMPFS=1 时把录影文件写到 /tmp,绕过 SD 卡,
+    // 用于验证 SD 卡写延迟是否为 FPS 瓶颈(见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md 第 6.4 节)。
+    // 默认行为不变:仍然写到 MEDIA_TARGET_PATH (SD 卡)。
+    std::string record_path;
+    {
+        const char* envTmpfs = std::getenv("HTC_RECORD_TMPFS");
+        if (envTmpfs && envTmpfs[0] == '1') {
+            record_path = std::string("/tmp/") + getCurrentTimeFormatted() + ".mp4";
+            Logger::log(LogLevel::INFO, "HTC_RECORD_TMPFS=1: writing mp4 to %s (bypassing SD card)", record_path.c_str());
+        } else {
+            record_path = std::string(MEDIA_TARGET_PATH) + getCurrentTimeFormatted() + ".mp4";
+        }
+    }
     CameraRecorder recorder;
     RecordOptions opts;
     opts.audio = true;
     opts.autoCover = false;  // work mode 不循环覆盖
+    {
+        // 诊断开关:HTC_RECORD_BITRATE_KBPS 直接覆盖编码器 bitrate,
+        // 用于验证 16 Mbps 是否为 FPS 瓶颈(见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md §6.5)。
+        // 默认 0 = 用 CPS 配置(目前 16384 kbps)。
+        const char* envBr = std::getenv("HTC_RECORD_BITRATE_KBPS");
+        if (envBr && envBr[0] != '\0') {
+            int kbps = std::atoi(envBr);
+            if (kbps > 0) {
+                opts.bitrateKbpsOverride = kbps;
+                Logger::log(LogLevel::INFO, "HTC_RECORD_BITRATE_KBPS=%d: bitrate override active", kbps);
+            }
+        }
+    }
     opts.onComplete = [&done](const RecordResult& r) {
         done.set_value(r);
     };
@@ -645,12 +673,41 @@ static bool processCmdVideoRecord(bool is_rtc_work_well) {
 
     RecordResult r = future.get();  // 阻塞直到录完
 
+    // 1) 立刻落盘缩略图(SDK 帧缓冲还在,但 thumbData_ 已经在 video_recorder_ 里)
+    //    WorkMode 路径下 CameraServiceT32 的 onComplete 不会被调用,
+    //    所以 saveThumbnail 必须在这里做。
+    if (recorder.hasThumbnail()) {
+        MetadataDao dao;
+        if (dao.saveThumbnail(record_path, recorder.getThumbnailData())) {
+            Logger::log(LogLevel::INFO, "Work Mode record: thumbnail saved for %s (%zu bytes)",
+                        record_path.c_str(), recorder.getThumbnailData().size());
+        } else {
+            Logger::log(LogLevel::ERROR, "Work Mode record: saveThumbnail failed for %s",
+                        record_path.c_str());
+        }
+    } else {
+        Logger::log(LogLevel::WARNING, "Work Mode record: no thumbnail data for %s",
+                    record_path.c_str());
+    }
+
+    // 2) 显式释放 SDK 帧缓冲池(~20-50MB),避免函数返回时一次性释放触发 zram swap 尖峰。
+    //    之后 recorder 不能再访问(thumbnail / duration 都已取过)。
+    //
+    // 修复兜底(2026-06-09,见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md §B.1+B.2):
+    //   - sync() 先把 page cache 里的脏数据刷盘,减少 SDK 池释放时与 FAT 写竞争
+    //   - 释放后 sleep 200ms 让 kswapd 先跑一波,避免瞬时水印骤变触发 zram 风暴
+    //   - malloc_trim(0) 把堆碎片归还 OS,减少内核 scan 时累积的匿名页
+    ::sync();
+    recorder.releaseVideoResources();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    ::malloc_trim(0);
+
     if (r.error != RecordError::None && r.error != RecordError::UserStop) {
         Logger::log(LogLevel::ERROR, "Work Mode record failed: %s", r.errorMessage.c_str());
         return false;
     }
 
-    // 写 desc JSON（格式与现状一致：generateDescInfo 仍由 main_app 持有）
+    // 3) 写 desc JSON(generateDescInfo 走 IIC/MCU,不依赖 SDK 缓冲)
     std::vector<std::string> files = { record_path };
     std::string desc_info;
     if (generateDescInfo(files, desc_info) == 0) {

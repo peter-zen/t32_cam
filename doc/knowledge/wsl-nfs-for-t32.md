@@ -1,7 +1,7 @@
-# WSL2 NFS 服务配置 — 供 T32 真机挂载 build_t32
+# WSL2 NFS 服务配置 — 供 T32 真机挂载 build
 
 > **环境**：华为笔记本，Windows 11 + WSL2 (Ubuntu)，已验证 nfs-kernel-server 可正常工作。  
-> **目的**：将 WSL2 内的 `build_t32/` 目录通过 NFS 共享给局域网内的 T32 设备，用于真机加载固件和调试。
+> **目的**：将 WSL2 内的 `build/` 目录通过 NFS 共享给局域网内的 T32 设备，用于真机加载固件和调试。
 
 ---
 
@@ -34,7 +34,7 @@ sudo apt-get install -y nfs-kernel-server
 
 ```bash
 sudo tee /etc/exports << 'EOF'
-/home/zengping/projects/hc_t32/code/t32/build_t32 192.168.31.0/24(rw,sync,no_subtree_check,no_root_squash,insecure)
+/home/zengping/projects/hc_t32/code/t32/build 192.168.31.0/24(rw,sync,no_subtree_check,no_root_squash,insecure)
 EOF
 ```
 
@@ -98,7 +98,7 @@ netsh advfirewall firewall add rule name="NFS Server UDP" dir=in action=allow pr
 mkdir -p /mnt/nfs_build
 
 mount -t nfs -o nolock,vers=3 \
-    192.168.31.200:/home/zengping/projects/hc_t32/code/t32/build_t32 \
+    192.168.31.200:/home/zengping/projects/hc_t32/code/t32/build \
     /mnt/nfs_build
 
 ls /mnt/nfs_build
@@ -116,7 +116,7 @@ ls /mnt/nfs_build
 在 T32 设备的 `/etc/fstab` 中添加：
 
 ```fstab
-192.168.31.200:/home/zengping/projects/hc_t32/code/t32/build_t32 /mnt/nfs_build nfs defaults,nolock,vers=3 0 0
+192.168.31.200:/home/zengping/projects/hc_t32/code/t32/build /mnt/nfs_build nfs defaults,nolock,vers=3 0 0
 ```
 
 ---
@@ -130,7 +130,7 @@ ls /mnt/nfs_build
 
 ### Q2: T32 挂载时报 `Permission denied`
 - 确认 `/etc/exports` 中加入了 `insecure` 选项
-- 检查 `build_t32/` 目录的本地权限是否允许访问
+- 检查 `build/` 目录的本地权限是否允许访问
 
 ### Q3: WSL2 重启后 NFS 服务未自动启动
 ```bash
