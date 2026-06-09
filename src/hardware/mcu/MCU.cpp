@@ -2,197 +2,16 @@
 #include <mutex>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <vector>
 #include <sstream>
 #include "Logger.h"
-#include "time/rtc/RTC.h"
+#include "RTC.h"
 #include "StringConvert.h"
 #include "Common.h"
 
 #define I2C_SLAVE_NAME "/dev/hc32l13x"
 
-enum {
-	PARAM_STATUS=1, /*工作状，参考STATUS_BIT_E*/
-	PARAM_IR_VALUE_H, /*光敏值 高8bit*/
-	PARAM_IR_VALUE, /*光敏值 低8bit*/
-	PARAM_BATTERY, /*电池电量等级0-3，3最高，0 为电池电量低，1-3代表电池电量低中高3个等级**/
-	PARAM_BAT_H, /*电池电量电压值 高8bit*/
-	PARAM_BAT_L, /*电池电量电压值 低8bit*/
-	PARAM_TEMPER, /*热敏电阻值0-216，减40后转换为实际的华氏度值，摄氏度测量范围（-40C ~ 80C）**/
-	PARAM_BAT_TYPE, /*电池类型BATTERY_TYPE_E，根据电池电压来区分，上电时大于8.5V为干电池；0 18650理电池，1 1.5V干电池，暂不能匹配1.2V电池*/
-	//PARAM_MCU_VERSION, /*DSP需转换成字符串上传给遥控器，例：100 转换为"100"*/
-
-	PARAM_NOT_UPLOAD_FILE_H = 10,
-	PARAM_TLS_STATUS = 11, /*相机状态，参考CAM_STL_STATUS_E*/
-	PARAM_DSP_PWR_OFF, /*PARAM_DSP_PWR_OFF    0表示DSP已关机**/
-	PARAM_DSP_LED_STATUS, /*指示灯状态**/
-	PARAM_UP_OUTTIME_H, /*上传超时 给DSP上电时清零，大于零时给倒计时增时，手动清零,单位分钟*/
-	PARAM_UP_OUTTIME,
-	PARAM_SYNC_GPS_TIME, /*0 未获取GPS时间，相机网络同步时间后下发时间， 1 获取到GPS时间，相机不再下发时间**/
-	PARAM_YEAR_H, /*RTC 年 */
-	PARAM_YEAR, /*RTC 年 */
-	PARAM_MONTH, /*RTC 月 十进制 1:12 表示 1:12 月**/
-	PARAM_DAY, /*RTC 日 十进制 1:31*/
-	PARAM_WEEK, /*RTC 周 十进制 0:6 表示周日:周六*/
-	PARAM_HOUR, /*RTC 时**/
-	PARAM_MINUTE, /*RTC 分**/
-	PARAM_SECOND, /*RTC 秒**/
-	PARAM_CAM_MODE, /*相机模式*/
-	PARAM_VIDEO_LEN_H, /*视频长度 高**/
-	PARAM_VIDEO_LEN, /*视频长度	*/
-	PARAM_PIR_SW, /*PIR  1:ON   0:OFF*/
-	PARAM_INTERVAL_HOUR, /*PIR 触发时间 小时*/
-	PARAM_INTERVAL_MINUTE, /*PIR 触发时间 分钟*/
-	PARAM_INTERVAL_SECOND, /*PIR 触发时间 秒钟*/
-	PARAM_PIR_SENSITIVITY, /*PIR 触发灵敏度**/
-	PARAM_TIMER, /*定时模式  1:ON   0:OFF*/
-	PARAM_LAPSE_HOUR, /*定时触发时间间隔 小时*/
-	PARAM_LAPSE_MINUTE, /*定时触发时间间隔 分钟*/
-	PARAM_LAPSE_SECOND, /*定时触发时间间隔 秒钟*/
-	PARAM_TIMER1_START_H, /*定时时段1 开始 小时*/
-	PARAM_TIMER1_START_M, /*定时时段1 开始 分钟*/
-	PARAM_TIMER1_STOP_H, /*定时时段1 结束 小时*/
-	PARAM_TIMER1_STOP_M, /*定时时段1 结束 分钟*/
-	PARAM_TIMER2_START_H, /*定时时段2 开始 小时*/
-	PARAM_TIMER2_START_M, /*定时时段2 开始 分钟*/
-	PARAM_TIMER2_STOP_H, /*定时时段2 结束 小时*/
-	PARAM_TIMER2_STOP_M, /*定时时段2 结束 分钟*/
-	PARAM_TIMER3_START_H, /*定时时段3 开始 小时*/
-	PARAM_TIMER3_START_M, /*定时时段3 开始 分钟*/
-	PARAM_TIMER3_STOP_H, /*定时时段3 结束 小时*/
-	PARAM_TIMER3_STOP_M, /*定时时段3 结束 分钟*/
-	PARAM_OPT_SET, /*bit0  1红外灯，0白光灯;  bit1 1 1511A   0 1511B*/
-	PARAM_TIMER_WEEK_REPEAT, /*周重复**/
-	PARAM_SHOT_LIMIT, /*拍摄限制*/
-	PARAM_UPLOAD_NUM, /*集中上传数**/
-	PARAM_NOT_UPLOAD_FILE, /*未上传文件数量**/
-	PARAM_PWR_LOW_VAL_H,
-	PARAM_PWR_LOW_VAL,
-	PARAM_CAM_PID, /*相机的PID 4位**/
-	PARAM_CAM_PID_END = PARAM_CAM_PID + 5,
-	PARAM_EAX_PID, /*基站的PID 8位**/
-	PARAM_EAX_PID_END = PARAM_EAX_PID + 9,
-	PARAM_CAM_PWR_RESET, /*DSP 把该位置1后，断电重启设备*/
-
-	/*基站设置参数*/
-	PARAM_EAX_MODE, /*基站模式*/
-	PARAM_EAX_SLEEP_START_H, /*基站节能时段 开始 小时*/
-	PARAM_EAX_SLEEP_START_M, /*基站节能时段 开始 分钟*/
-	PARAM_EAX_SLEEP_STOP_H, /*基站节能时段 结束 小时*/
-	PARAM_EAX_SLEEP_STOP_M, /*基站节能时段 结束 分钟*/
-
-	/*基站信息*/
-	PARAM_EAX_INFO_BATTERY_A, /*电池A组电压 除10后转换成电压值 单位V*/
-	PARAM_EAX_INFO_BATTERY_B, /*电池B组电压 除10后转换成电压值 单位V*/
-	PARAM_EAX_INFO_PWR_OUT_V, /*基站 外接电源电压*/
-	PARAM_EAX_INFO_SUN_V, /*太阳能 电源电压*/
-	PARAM_EAX_INFO_WIFI_STATUS, /*WIFI状态 0 WIFI已准备好可联网**/
-	PARAM_EAX_INFO_MODE, /*基站当前设置的模式**/
-	PARAM_EAX_INFO_SLEEP_S_H, /*基站当前设置的节能时段 开始 小时*/
-	PARAM_EAX_INFO_SLEEP_S_M, /*基站当前设置的节能时段 开始 分钟*/
-	PARAM_EAX_INFO_SLEEP_E_H, /*基站当前设置的节能时段 结束 小时*/
-	PARAM_EAX_INFO_SLEEP_E_M, /*基站当前设置的节能时段 结束 分钟*/
-	PARAM_EAX_INFO_VERSION, /*基站当前程序版本*/
-
-	/*基站GPS信息*/
-	PARAM_EAX_GPS_INFO_LON, /*经度 字符串占用10个字节**/
-	PARAM_EAX_GPS_INFO_U_LON = PARAM_EAX_GPS_INFO_LON + 11, /*经度方向：E-东，W-西**/
-	PARAM_EAX_GPS_INFO_LAT, /*纬度 字符串占用10个字节**/
-	PARAM_EAX_GPS_INFO_U_LAT = PARAM_EAX_GPS_INFO_LAT + 10, /*纬度方向：N-北，S-南**/
-	PARAM_EAX_GPS_INFO_ALTITUDE, /*海拔高度 站字符串占用10个字节**/
-	PARAM_EAX_GPS_INFO_ALTITUDE_E = PARAM_EAX_GPS_INFO_ALTITUDE + 10, /*海拔高度 字符串结速地址*/
-
-	/*GPS信息 */
-	PARAM_GPS_INFO_LON, /*经度 字符串占用10个字节**/
-	PARAM_GPS_INFO_U_LON = PARAM_GPS_INFO_LON + 11, /*经度方向：E-东，W-西**/
-	PARAM_GPS_INFO_LAT, /*纬度 字符串占用10个字节**/
-	PARAM_GPS_INFO_U_LAT = PARAM_GPS_INFO_LAT + 10, /*纬度方向：N-北，S-南**/
-	PARAM_GPS_INFO_ALTITUDE, /*海拔高度 站字符串占用10个字节*/
-	PARAM_GPS_INFO_ALTITUDE_E = PARAM_GPS_INFO_ALTITUDE + 10, /*海拔高度 字符串结速地址*/
-
-	/*模块信息*/
-	PARAM_MODULAR_RSSI_L,
-	PARAM_MODULAR_RSSI_H, /*信号强度测量值dBm "-141" to "-44"  "-1" 无效值**/
-	PARAM_MODULAR_RSRP_L,
-	PARAM_MODULAR_RSRP_H, /*dBm -141" to "-44"*/
-	PARAM_MODULAR_RSRQ_L,
-	PARAM_MODULAR_RSRQ_H, /*"-196" to "-30" */
-	PARAM_MODULAR_EARFEN_L,
-	PARAM_MODULAR_EARFEN_H,
-	/* 测量结果的频点信息**/ /* CF */
-	PARAM_MODULAR_DISTANCE_L,
-	PARAM_MODULAR_DISTANCE_H, /* 与对端节点距离, 单位为米，取值范围[0, 5000] */
-	PARAM_MODULAR_TX_POWER, /* 传输功率，单位 dBm, "-50" to "+50" */
-	PARAM_MODULAR_SNR, /* "-50" to "+50" */
-	PARAM_MODULAR_IP, /* 基站模块IP 4字节 */
-	PARAM_MODULAR_IP_END = PARAM_MODULAR_IP + 4,
-	PARAM_CENTER_NODE_PID, /* 中心节点PID 8位，占用9字节空间 */
-	PARAM_CENTER_NODE_PID_END = PARAM_CENTER_NODE_PID + 9,
-	PARAM_SYS_ON_TIME_L,
-	PARAM_SYS_ON_TIME_H,
-	PARAM_SYS_HEART_RATE_0,
-	/*0-7 bit */ /* SYS_HeartRate 心跳间隔 数据类型uint32_t 取值范围 1~86400 默认值3600 */
-	PARAM_SYS_HEART_RATE_1, /*8-15 bit*/
-	PARAM_SYS_HEART_RATE_2, /*16-23 bit*/
-	PARAM_SYS_HEART_RATE_3, /*24-31 bit*/
-
-	PARAM_SYS_LOW_VOLTAGE_L,
-	/*0-7 bit*/ /* SYS_LowVoltage 低电预警电压 数据类型uint16_t 单位mV */
-	PARAM_SYS_LOW_VOLTAGE_H, /*8-15 bit*/
-
-	PARAM_SYS_END_VOLTAGE_L,
-	/*0-7 bit*/ /* SYS_EndVoltage 关机保护电压 数据类型uint16_t 单位mV */
-	PARAM_SYS_END_VOLTAGE_H, /*8-15 bit*/
-
-	PARAM_CONFIG_LOW_VOLTAGE_L,
-	/*0-7 bit*/ /* SYS_LowVoltage 低电预警电压 数据类型uint16_t 单位mV */
-	PARAM_CONFIG_LOW_VOLTAGE_H, /*8-15 bit*/
-
-	PARAM_CONFIG_END_VOLTAGE_L,
-	/*0-7 bit */ /* SYS_EndVoltage 关机保护电压 数据类型uint16_t 单位mV 默认值0*/
-	PARAM_CONFIG_END_VOLTAGE_H, /* 8-15 bit */
-
-	PARAM_PWR_OUT_VOLTAGE_L,
-	PARAM_PWR_OUT_VOLTAGE_H, /* 相机外接电源电压 */
-	PARAM_CAM_ORDINARY_MODE, /* 1 普通相机模式， 0 网络相机模式 */
-
-	/*基站设置参数  20220513 新增*/
-	PARAM_EAX_LOW_VOLTAGE, /* 基站低电预警电压 除10后转换成电压值 单位V */
-	PARAM_EAX_END_VOLTAGE, /* 基站关机保护电压 除10后转换成电压值 单位V */
-
-	PARAM_4G_EXIST, /* 检测试到4G模块时置 1*/
-	PARAM_4G_WIFI_OK, /* 0 WIFI 准备好，1 WIFI未准备好 */
-	PARAM_4G_RSSI, /* 4G信号强度，转换为实际的dBm -44 ~ -127 */
-	PARAM_4G_ACT, /* 当前制式 0-无服务,3-GSM/GPRS 模式,4-WCDMA 模式,15-TD-SCDMA 模式,17-LTE 模式 */
-
-	/*外部无线探测器  GPS坐标 取原来相机的GPS坐标（探测器时覆盖）*/
-	PARAM_RM_ID, /*当前触发ID，0为相机本机触发*/
-	PARAM_RM_ID_END = PARAM_RM_ID + 3,
-	PARAM_RM_TYPE, /*类型  0 PIR探头    1 噪音  2 振动*/
-	PARAM_RM_BAT_V, /*电池电压 电压值转换 126  126 / 10 = 12.6v*/
-	PARAM_RM_SUN_V, /*太阳能电压 电压值转换 126  126 / 10 = 12.6v*/
-	PARAM_RM_COUNT_L,
-	PARAM_RM_COUNT_H, /*触发计数*/
-	PARAM_RM_NOISE_L,
-	PARAM_RM_NOISE_H, /*传感器的值**/
-	PARAM_REMOTE_WAKE_EN = 218, /* 4G远程唤醒 0 关闭 1 开启 */
-	PARAM_SHOT_CONTINUOUS = 219,
-	PARAM_CAM_PID_NEW = 256, /*Camera's PID*/
-	PARAM_CAM_PID_NEW_END = PARAM_CAM_PID_NEW + 20,
-
-	PARAM_CAM_WIFI_SSID, /* wifi SSID in STA mode.*/
-	PARAM_CAM_WIFI_SSID_END = PARAM_CAM_WIFI_SSID + 16,
-
-	PARAM_CAM_WIFI_PWD, /* wifi SSID in STA mode.*/
-	PARAM_CAM_WIFI_PWD_END = PARAM_CAM_WIFI_PWD + 16,
-	PARAM_EVENT_TYPE, /* EVENT_TYPE_E */
-	PARAM_EVENT_ID,
-	PARAM_EVENT_ID_END = PARAM_EVENT_ID + 3,
-	PARAM_EVENT_NUM,
-
-	PARAM_ARR_NUM, /* 参数数组大小 放在参数的最后面 */
-
-};
 
 std::shared_ptr<MCU> MCU::getInstance()
 {
@@ -238,344 +57,291 @@ bool MCU::powerEnoughForFirmwareUpdate()
 bool MCU::waitFor(int seconds)
 {
 	return false;
-	unsigned char buf[2] = { 0 };
-	buf[0] = (seconds >> 8) & 0xFF;
-	buf[1] = seconds & 0xFF;
-	int reg_start = PARAM_UNPACK_START(PARAM_UP_OUTTIME_H);
-	if (iic->write(reg_start, &buf[0], 1) != 1) {
-		return false;
-	}
-	reg_start = PARAM_UNPACK_START(PARAM_UP_OUTTIME);
-	if (iic->write(reg_start, &buf[1], 1) != 1) {
-		return false;
-	}
-	return true;
 }
 
 int MCU::readShutdownVoltage()
 {
 	return 0;
-	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_SYS_END_VOLTAGE_H, &buf[0], 1) != 1) {
-		return 0;
-	}
-	if (iic->read(PARAM_SYS_END_VOLTAGE_L, &buf[1], 1) != 1) {
-		return 0;
-	}
-	value = (buf[0] << 8) | buf[1];
-	return value;
 }
 
 int MCU::readLowPowerVoltage()
 {
 	return 0;
-	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_SYS_LOW_VOLTAGE_H, &buf[0], 1) != 1) {
-		return 0;
-	}
-	if (iic->read(PARAM_SYS_LOW_VOLTAGE_L, &buf[1], 1) != 1) {
-		return 0;
-	}
-	value = (buf[0] << 8) | buf[1];
-	return value;
 }
 
 int MCU::readBatteryLevel()
 {
 	return 0;
-	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_BATTERY, buf, 1) != 1) {
-		return 0;
-	}
-	value = buf[0];
-	return value;
 }
 
 int MCU::readBatteryType()
 {
 	return 0;
-	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_BAT_TYPE, buf, 1) != 1) {
-		return 0;
-	}
-	value = buf[0];
-	return value;
 }
 
 bool MCU::IsWifiStationReady()
 {
 	return true;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_EAX_INFO_WIFI_STATUS, buf, 1) != 1) {
-		return false;
-	}
-	return buf[0] == 0;
 }
 
 int MCU::readSignalCF()
 {
-	return 0;
 	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_MODULAR_EARFEN_H, &buf[0], 1) != 1) {
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_CF);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_CF);
+	
+	// 带重试的I2C读取
+	int retries = 3;
+	int read_result = -1;
+	while (retries-- > 0 && read_result <= 0) {
+	    read_result = iic->read(reg_start, &buf[0], nbytes);
+	    if (read_result <= 0 && retries > 0) {
+	        usleep(10000); // 等待10ms后重试
+	    }
+	}
+	
+	if (read_result <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SIG_CF failed");
 		return 0;
 	}
-	if (iic->read(PARAM_MODULAR_EARFEN_L, &buf[1], 1) != 1) {
-		return 0;
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
 	}
-	value = (buf[0] << 8) | buf[1];
 	return value;
 }
 
 int MCU::readSignalRSSI()
 {
-	return 0;
 	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_MODULAR_RSSI_H, &buf[0], 1) != 1) {
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_RSSI);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_RSSI);
+	
+	int retries = 3;
+	int read_result = -1;
+	while (retries-- > 0 && read_result <= 0) {
+	    read_result = iic->read(reg_start, &buf[0], nbytes);
+	    if (read_result <= 0 && retries > 0) {
+	        usleep(10000);
+	    }
+	}
+	
+	if (read_result <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SIG_RSSI failed");
 		return 0;
 	}
-	if (iic->read(PARAM_MODULAR_RSSI_L, &buf[1], 1) != 1) {
-		return 0;
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
 	}
-	value = (buf[0] << 8) | buf[1];
 	return value;
 }
 
 int MCU::readSignalRSRP()
 {
-	return 0;
 	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_MODULAR_RSRP_H, &buf[0], 1) != 1) {
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_RSRP);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_RSRP);
+	
+	int retries = 3;
+	int read_result = -1;
+	while (retries-- > 0 && read_result <= 0) {
+	    read_result = iic->read(reg_start, &buf[0], nbytes);
+	    if (read_result <= 0 && retries > 0) {
+	        usleep(10000);
+	    }
+	}
+	
+	if (read_result <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SIG_RSRP failed");
 		return 0;
 	}
-	if (iic->read(PARAM_MODULAR_RSRP_L, &buf[1], 1) != 1) {
-		return 0;
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
 	}
-	value = (buf[0] << 8) | buf[1];
 	return value;
 }
 
 int MCU::readSignalRSRQ()
 {
-	return 0;
 	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_MODULAR_RSRQ_H, &buf[0], 1) != 1) {
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_RSRQ);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_RSRQ);
+	
+	int retries = 3;
+	int read_result = -1;
+	while (retries-- > 0 && read_result <= 0) {
+	    read_result = iic->read(reg_start, &buf[0], nbytes);
+	    if (read_result <= 0 && retries > 0) {
+	        usleep(10000);
+	    }
+	}
+	
+	if (read_result <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SIG_RSRQ failed");
 		return 0;
 	}
-	if (iic->read(PARAM_MODULAR_RSRQ_L, &buf[1], 1) != 1) {
-		return 0;
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
 	}
-	value = (buf[0] << 8) | buf[1];
 	return value;
 }
 
 int MCU::readSignalSNR()
 {
-	return 0;
 	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_MODULAR_SNR, &buf[0], 1) != 1) {
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_SNR);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_SNR);
+	
+	int retries = 3;
+	int read_result = -1;
+	while (retries-- > 0 && read_result <= 0) {
+	    read_result = iic->read(reg_start, &buf[0], nbytes);
+	    if (read_result <= 0 && retries > 0) {
+	        usleep(10000);
+	    }
+	}
+	
+	if (read_result <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SIG_SNR failed");
 		return 0;
 	}
-	value = buf[0];
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
 	return value;
 }
 
 int MCU::readSignalTD()
 {
-	return 0;
 	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_MODULAR_DISTANCE_H, &buf[0], 1) != 1) {
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_TD);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_TD);
+	
+	int retries = 3;
+	int read_result = -1;
+	while (retries-- > 0 && read_result <= 0) {
+	    read_result = iic->read(reg_start, &buf[0], nbytes);
+	    if (read_result <= 0 && retries > 0) {
+	        usleep(10000);
+	    }
+	}
+	
+	if (read_result <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SIG_TD failed");
 		return 0;
 	}
-	if (iic->read(PARAM_MODULAR_DISTANCE_L, &buf[1], 1) != 1) {
-		return 0;
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
 	}
-	value = (buf[0] << 8) | buf[1];
 	return value;
 }
 
 int MCU::readSignalTP()
 {
-	return 0;
 	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_MODULAR_TX_POWER, &buf[0], 1) != 1) {
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_TP);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_TP);
+	
+	int retries = 3;
+	int read_result = -1;
+	while (retries-- > 0 && read_result <= 0) {
+	    read_result = iic->read(reg_start, &buf[0], nbytes);
+	    if (read_result <= 0 && retries > 0) {
+	        usleep(10000);
+	    }
+	}
+	
+	if (read_result <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SIG_TP failed");
 		return 0;
 	}
-	value = buf[0];
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
+	}
 	return value;
 }
 
 bool MCU::Is4gExist()
 {
 	return false;
-	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_4G_EXIST, buf, 1) != 1) {
-		return false;
-	}
-	value = buf[0];
-	return value == 1;
 }
 
 bool MCU::writeRemoteWakeup(int remote_wakeup)
 {
-	return true;
-	unsigned char buf[1] = { static_cast<unsigned char>(remote_wakeup) };
-	int reg_start = PARAM_UNPACK_START(PARAM_REMOTE_WAKE_EN);
-	if (iic->write(reg_start, buf, 1) != 1) {
-		return false;
-	}
 	return true;
 }
 
 bool MCU::useGpsTime()
 {
 	return false;
-	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_SYNC_GPS_TIME, buf, 1) != 1) {
-		return false;
-	}
-	value = buf[0];
-	return value == 1;
 }
 
 int MCU::readCds()
 {
-	return 0;
-	int cds = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_IR_VALUE_H, &buf[0], 1) != 1) {
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_CDS_VALUE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_CDS_VALUE);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
 		return 0;
 	}
-
-	if (iic->read(PARAM_IR_VALUE, &buf[1], 1) != 1) {
-		return 0;
+	for (int i = 0; i < nbytes; i++) {
+	    pval[i] = buf[i];
 	}
-
-	cds = (buf[0] << 8) | buf[1];
-	return cds;
+	return value;
 }
 
 bool MCU::IsRemoteWakeup()
 {
 	return false;
-	unsigned char buf = 0;
-	if (iic->read(PARAM_STATUS, &buf, 1) != 1) {
-		return false;
-	}
-	return (buf & 0x10) ? true : false;
 }
 
 int MCU::readRMID()
 {
 	return 0;
-	int idx = 0;
-    uint32_t sensorID = 0;
-	uint8_t *pID = (uint8_t *)&sensorID;
-
-	for (idx = 0; idx < 4; idx++) {
-		unsigned char buf[1] = { 0 };
-		if (iic->read(PARAM_RM_ID + idx, &buf[0], 1) != 1) {
-			return 0;
-		}
-		pID[idx]= buf[0];
-	}
-
-	return sensorID;
 }
 
 int MCU::readRMType()
 {
 	return 0;
-	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_RM_TYPE, &buf[0], 1) != 1) {
-		return 0;
-	}
-	value = buf[0];
-	return value;
 }
 
 int MCU::readRMValue()
 {
 	return 0;
-	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_RM_NOISE_H, &buf[0], 1) != 1) {
-		return 0;
-	}
-	if (iic->read(PARAM_RM_NOISE_L, &buf[1], 1) != 1) {
-		return 0;
-	}
-	value = (buf[0] << 8) | buf[1];
-	return value;
 }
 
 int MCU::readRMCount()
 {
 	return 0;
-	int value = 0;
-	unsigned char buf[2] = { 0 };
-	if (iic->read(PARAM_RM_COUNT_H, &buf[0], 1) != 1) {
-		return 0;
-	}
-	if (iic->read(PARAM_RM_COUNT_L, &buf[1], 1) != 1) {
-		return 0;
-	}
-	value = (buf[0] << 8) | buf[1];
-	return value;
 }
 int MCU::readEventType()
 {
 	return 0;
-	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_EVENT_TYPE, &buf[0], 1) != 1) {
-		return 0;
-	}
-	value = buf[0];
-	return value;
 }
 
 int MCU::readEventID()
 {
 	return 0;
-	int idx = 0;
-    int eventID = 0;
-	uint8_t *pID = (uint8_t *)&eventID;
-
-	for (idx = 0; idx < 4; idx++) {
-		unsigned char buf[1] = { 0 };
-		if (iic->read(PARAM_EVENT_ID + idx, &buf[0], 1) != 1) {
-			return 0;
-		}
-		pID[idx]= buf[0];
-	}
-
-	return eventID;
 }
 
 int MCU::readEventNum()
 {
 	return 0;
-	int value = 0;
-	unsigned char buf[1] = { 0 };
-	if (iic->read(PARAM_EVENT_NUM, &buf[0], 1) != 1) {
-		return 0;
-	}
-	value = buf[0];
-	return value;
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 int MCU::readWorkingMode()
@@ -583,11 +349,11 @@ int MCU::readWorkingMode()
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_WORK_MODE);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_WORK_MODE);
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_MODE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_MODE);
 
 	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
-		Logger::log(LogLevel::ERROR, "[MCU]read working modefailed");
+		Logger::log(LogLevel::ERROR, "[MCU]read working mode failed");
 		return -1;
 	}
 
@@ -603,8 +369,8 @@ int MCU::readTemperature()
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TEMPER);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TEMPER);
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SOR_TEMPS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SOR_TEMPS);
 	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]read temperature failed");
 		return 0;
@@ -622,8 +388,8 @@ int MCU::readHumidity()
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_RHS);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_RHS);
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SOR_RHS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SOR_RHS);
 	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]read humidity failed");
 		return 0;
@@ -641,8 +407,8 @@ int MCU::readAtmosPressure()
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_APS);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_APS);
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SOR_APS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SOR_APS);
 	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]read atmos pressure failed");
 		return 0;
@@ -694,7 +460,18 @@ std::string MCU::readPID()
 	char buf[128] = { 0 };
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PID);
 	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PID);
-	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+	
+	// 带重试的I2C读取
+	int retries = 3;
+	int read_result = -1;
+	while (retries-- > 0 && read_result <= 0) {
+	    read_result = iic->read(reg_start, &buf[0], nbytes);
+	    if (read_result <= 0 && retries > 0) {
+	        usleep(10000);
+	    }
+	}
+	
+	if (read_result <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]read PID failed");
 		return "";
 	}
@@ -812,8 +589,8 @@ int MCU::readBatteryVoltage()
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY1);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY1);
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BAT1);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BAT1);
 	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]read battery voltage failed");
 		return 0;
@@ -831,8 +608,8 @@ int MCU::readBattery1Voltage()
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY1);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY1);
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BAT1);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BAT1);
 	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]read battery1 voltage failed");
 		return 0;
@@ -850,8 +627,8 @@ int MCU::readBattery2Voltage()
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BATTERY2);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BATTERY2);
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_BAT2);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_BAT2);
 	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]read battery2 voltage failed");
 		return 0;
@@ -869,8 +646,8 @@ int MCU::readRMSunPowerValue()
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SPOWER);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SPOWER);
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SPWR);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SPWR);
 	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]read RMSunPowerValue failed");
 		return 0;
@@ -888,8 +665,8 @@ int MCU::readExternalVoltage()
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
-	int reg_start = PARAM_UNPACK_START(PARAM_MCU_EPOWER);
-	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_EPOWER);
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_EPWR);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_EPWR);
 	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
 		Logger::log(LogLevel::ERROR, "[MCU]read external voltage failed");
 		return 0;
@@ -994,79 +771,45 @@ struct tm MCU::getDatetime()
 	struct tm time;
 	memset(&time, 0, sizeof(time));
 	unsigned char buf[32];
-	int nbytes = 0;
-
-	{//year
-		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_YEAR);
-		memset(buf, 0, sizeof(buf));
-		if (iic->read(PARAM_MCU_YEAR, buf, nbytes) <= 0) {
-			Logger::log(LogLevel::ERROR, "Failed to read year from MCU");
-			return time;
-		}
-		int year = 0;
-		memcpy(&year, buf, nbytes);
-		time.tm_year = year - YEAR_OFFSET;
+	
+	// 一次性读取所有日期时间字段（从YEAR开始，共7字节：YEAR(2) + MONTH(1) + DAY(1) + HOUR(1) + MINUTE(1) + SECOND(1)）
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_YEAR);
+	int total_bytes = PARAM_UNPACK_BYTES(PARAM_MCU_YEAR) + 
+					   PARAM_UNPACK_BYTES(PARAM_MCU_MONTH) + 
+					   PARAM_UNPACK_BYTES(PARAM_MCU_DAY) + 
+					   PARAM_UNPACK_BYTES(PARAM_MCU_HOUR) + 
+					   PARAM_UNPACK_BYTES(PARAM_MCU_MINUTE) + 
+					   PARAM_UNPACK_BYTES(PARAM_MCU_SECOND);
+	
+	memset(buf, 0, sizeof(buf));
+	if (iic->read(reg_start, buf, total_bytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "Failed to read datetime from MCU");
+		return time;
 	}
-
-	{//month
-		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_MONTH);
-		memset(buf, 0, sizeof(buf));
-		if (iic->read(PARAM_MCU_MONTH, buf, nbytes) <= 0) {
-			Logger::log(LogLevel::ERROR, "Failed to read month from MCU");
-			return time;
-		}
-		int month = 0;
-		memcpy(&month, buf, nbytes);
-		time.tm_mon = month - MONTH_OFFSET;
-	}
-
-	{//day
-		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_DAY);
-		memset(buf, 0, sizeof(buf));
-		if (iic->read(PARAM_MCU_DAY, buf, nbytes) <= 0) {
-			Logger::log(LogLevel::ERROR, "Failed to read day from MCU");
-			return time;
-		}
-		int day = 0;
-		memcpy(&day, buf, nbytes);
-		time.tm_mday = day;
-	}
-
-	{//hour
-		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_HOUR);
-		memset(buf, 0, sizeof(buf));
-		if (iic->read(PARAM_MCU_HOUR, buf, nbytes) <= 0) {
-			Logger::log(LogLevel::ERROR, "Failed to read hour from MCU");
-			return time;
-		}
-		int hour = 0;
-		memcpy(&hour, buf, nbytes);
-		time.tm_hour = hour;
-	}
-
-	{//minute
-		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_MINUTE);
-		memset(buf, 0, sizeof(buf));
-		if (iic->read(PARAM_MCU_MINUTE, buf, nbytes) <= 0) {
-			Logger::log(LogLevel::ERROR, "Failed to read minute from MCU");
-			return time;
-		}
-		int minute = 0;
-		memcpy(&minute, buf, nbytes);
-		time.tm_min = minute;
-	}
-
-	{//second
-		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SECOND);
-		memset(buf, 0, sizeof(buf));
-		if (iic->read(PARAM_MCU_SECOND, buf, nbytes) <= 0) {
-			Logger::log(LogLevel::ERROR, "Failed to read second from MCU");
-			return time;
-		}
-		int second = 0;
-		memcpy(&second, buf, nbytes);
-		time.tm_sec = second;
-	}
+	
+	// 解析读取的数据
+	int offset = 0;
+	
+	// year (2 bytes)
+	int year = 0;
+	memcpy(&year, buf + offset, PARAM_UNPACK_BYTES(PARAM_MCU_YEAR));
+	offset += PARAM_UNPACK_BYTES(PARAM_MCU_YEAR);
+	time.tm_year = year - YEAR_OFFSET;
+	
+	// month (1 byte)
+	time.tm_mon = buf[offset++] - MONTH_OFFSET;
+	
+	// day (1 byte)
+	time.tm_mday = buf[offset++];
+	
+	// hour (1 byte)
+	time.tm_hour = buf[offset++];
+	
+	// minute (1 byte)
+	time.tm_min = buf[offset++];
+	
+	// second (1 byte)
+	time.tm_sec = buf[offset++];
 
 	// 记录读取的时间信息到日志
 	Logger::log(LogLevel::INFO, "Read datetime from MCU: %04d-%02d-%02d %02d:%02d:%02d", 
@@ -1091,12 +834,14 @@ std::string MCU::readGps()
     char longitude_direction = 0;
     char latitude_direction = 0;
 	int nbytes = 0;
+	int reg_start = 0;
 
-    //longitude
+    //longitude - 使用MCU本身的GPS经度地址
     {
-		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSL);
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_LOCTION_LON);
+		reg_start = PARAM_UNPACK_START(PARAM_MCU_LOCTION_LON);
 		memset(buf, 0, sizeof(buf));
-		if (iic->read(PARAM_MCU_GPSL, buf, nbytes) <= 0 && buf[0] != 0) {
+		if (iic->read(reg_start, buf, nbytes) <= 0) {
 			Logger::log(LogLevel::ERROR, "Failed to read longitude from MCU");
 			gps_cached_data = ",,,,,";
 			return gps_cached_data;
@@ -1113,11 +858,12 @@ std::string MCU::readGps()
 		}
     }
 
-    // read latitude data
+    // read latitude data - 使用MCU本身的GPS纬度地址
 	{
-		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSA);
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_LOCTION_LAT);
+		reg_start = PARAM_UNPACK_START(PARAM_MCU_LOCTION_LAT);
 		memset(buf, 0, sizeof(buf));
-		if (iic->read(PARAM_MCU_GPSL, buf, nbytes) <= 0 && buf[0] != 0) {
+		if (iic->read(reg_start, buf, nbytes) <= 0) {
 			Logger::log(LogLevel::ERROR, "Failed to read latitude from MCU");
 			gps_cached_data = ",,,,,";
 			return gps_cached_data;
@@ -1133,11 +879,12 @@ std::string MCU::readGps()
 		}
     }
 
-    // altitude
+    // altitude - 使用MCU本身的GPS高程地址
 	{
-		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSH);
+		nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_LOCTION_ELE);
+		reg_start = PARAM_UNPACK_START(PARAM_MCU_LOCTION_ELE);
 		memset(buf, 0, sizeof(buf));
-		if (iic->read(PARAM_MCU_GPSH, buf, nbytes) <= 0 && buf[0] != 0) {
+		if (iic->read(reg_start, buf, nbytes) <= 0) {
 			Logger::log(LogLevel::ERROR, "Failed to read altitude from MCU");
 			gps_cached_data = ",,,,,";
 			return gps_cached_data;
@@ -1209,10 +956,10 @@ bool MCU::writeGps(const std::string &gps)
 		
 		// 写入经度数据
 		{
-			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSL);
+			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_GPSL);
 			memset(buf, 0, sizeof(buf));
 			memcpy(buf, &longitude, nbytes);
-			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_GPSL), buf, nbytes) <= 0) {
+			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_ESOR_GPSL), buf, nbytes) <= 0) {
 				Logger::log(LogLevel::ERROR, "Failed to write longitude to MCU");
 				success = false;
 			}
@@ -1220,12 +967,12 @@ bool MCU::writeGps(const std::string &gps)
 		
 		// 写入纬度数据
 		if (success) {
-			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSA);
+			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_GPSA);
 			memset(buf, 0, sizeof(buf));
 			memcpy(buf, &latitude, nbytes);
 			// 注意：这里读取使用的是PARAM_MCU_GPSL地址，但根据函数名应该写入到PARAM_MCU_GPSA
 			// 为保持一致性，这里使用与readGps相同的地址
-			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_GPSL), buf, nbytes) <= 0) {
+			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_ESOR_GPSL), buf, nbytes) <= 0) {
 				Logger::log(LogLevel::ERROR, "Failed to write latitude to MCU");
 				success = false;
 			}
@@ -1233,10 +980,10 @@ bool MCU::writeGps(const std::string &gps)
 		
 		// 写入高度数据
 		if (success) {
-			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_GPSH);
+			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_GPSH);
 			memset(buf, 0, sizeof(buf));
 			memcpy(buf, &altitude, nbytes);
-			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_GPSH), buf, nbytes) <= 0) {
+			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_ESOR_GPSH), buf, nbytes) <= 0) {
 				Logger::log(LogLevel::ERROR, "Failed to write altitude to MCU");
 				success = false;
 			}
@@ -1266,4 +1013,1401 @@ std::string MCU::convertVoltage(int value)
 	char buf[32] = {0};
 	snprintf(buf, sizeof(buf), "%d.%d", value / 10, (value % 10) / 10);
 	return std::string(buf);
+}
+
+//系统类参数
+int MCU::readFworkMark()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_FWORK_MARK);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_FWORK_MARK);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read fwork mark failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readEventStatus()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_EVENT_STATUS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_EVENT_STATUS);
+	
+	// 带重试的I2C读取
+	int retries = 3;
+	int read_result = -1;
+	while (retries-- > 0 && read_result <= 0) {
+	    read_result = iic->read(reg_start, &buf[0], nbytes);
+	    if (read_result <= 0 && retries > 0) {
+	        usleep(10000);
+	    }
+	}
+	
+	if (read_result <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read event status failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readPType()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PType);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PType);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read PType failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+//基础信息类参数
+int MCU::readUWS()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UWS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UWS);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read UWS failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readCDS_DN()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_CDS_DN);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_CDS_DN);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read CDS_DN failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readCDS_Value()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_CDS_VALUE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_CDS_VALUE);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read CDS_VALUE failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readVTSAlarm()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_VTS_ALARM);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_VTS_ALARM);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read VTS_ALARM failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readVTSSens()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_VTS_SENS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_VTS_SENS);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read VTS_SENS failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readNUFQ()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_NUFQ);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_NUFQ);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read NUFQ failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTimeout()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMEOUT);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMEOUT);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMEOUT failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readCamStatus()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_CAM_STATUS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_CAM_STATUS);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read CAM_STATUS failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readAIAlarm()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_AI_ALARM);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_AI_ALARM);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read AI_ALARM failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+//信号类参数
+std::string MCU::readSignalType()
+{
+	char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_TYPE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_TYPE);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read signal type failed");
+		return "";
+	}
+	return std::string(buf);
+}
+
+int MCU::readSignalRL()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_RL);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_RL);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read signal RL failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+//传感器类参数
+int MCU::readSOR_AL()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SOR_AL);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SOR_AL);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SOR_AL failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readSOR_UVL()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SOR_UVL);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SOR_UVL);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SOR_UVL failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readSOR_NOISE()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SOR_NOISE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SOR_NOISE);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SOR_NOISE failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readSOR_CO()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SOR_CO);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SOR_CO);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SOR_CO failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readSOR_CO2()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SOR_CO2);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SOR_CO2);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SOR_CO2 failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readSOR_O2()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SOR_O2);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SOR_O2);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read SOR_O2 failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+//外扩无线设备类参数
+int MCU::readESOR_ADD()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_ADD);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_ADD);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_ADD failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readESOR_ID()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_ID);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_ID);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_ID failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readESOR_TYPE()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_TYPE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_TYPE);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_TYPE failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readESOR_BAT()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_BAT);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_BAT);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_BAT failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readESOR_GPSA()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_GPSA);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_GPSA);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_GPSA failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readESOR_GPSL()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_GPSL);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_GPSL);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_GPSL failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readESOR_GPSH()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_GPSH);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_GPSH);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_GPSH failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+unsigned int MCU::readESOR_Value()
+{
+	unsigned int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_VALUE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_VALUE);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_VALUE failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+bool MCU::writeESOR_WS(int ws)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &ws, sizeof(ws));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_WS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_WS);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write ESOR_WS failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeESOR_WID(int wid)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &wid, sizeof(wid));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_WID);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_WID);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write ESOR_WID failed");
+		return false;
+	}
+	return true;
+}
+
+int MCU::readESOR_WS()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_WS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_WS);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_WS failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readESOR_WID()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_WID);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_WID);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read ESOR_WID failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+//参数设置类参数
+int MCU::readCAM_MAXS()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_CAM_MAXS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_CAM_MAXS);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read CAM_MAXS failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readPIR_MODE()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_MODE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PIR_MODE);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read PIR_MODE failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readPIR_SENS()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_SENS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PIR_SENS);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read PIR_SENS failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readPIR_INT()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_INT);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PIR_INT);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read PIR_INT failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readPIR_EN()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_EN);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PIR_EN);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read PIR_EN failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_INT()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_INT);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_INT);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_INT failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_1START()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_1START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_1START);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_1START failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_1END()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_1END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_1END);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_1END failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_2START()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_2START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_2START);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_2START failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_2END()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_2END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_2END);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_2END failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_3START()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_3START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_3START);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_3START failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_3END()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_3END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_3END);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_3END failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_4START()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_4START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_4START);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_4START failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_4END()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_4END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_4END);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_4END failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_5START()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_5START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_5START);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_5START failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_5END()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_5END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_5END);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_5END failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTIMER_REPEATS()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_REPEATS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_REPEATS);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TIMER_REPEATS failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+std::string MCU::readDEVICE_NAME()
+{
+	char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_DEVICE_NAME);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_DEVICE_NAME);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read DEVICE_NAME failed");
+		return "";
+	}
+	return std::string(buf);
+}
+
+int MCU::readHEARTRATE()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_HEARTRATE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_HEARTRATE);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read HEARTRATE failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readUP_MODE()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UP_MODE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UP_MODE);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read UP_MODE failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readUP_NUFQ()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UP_NUFQ);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UP_NUFQ);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read UP_NUFQ failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTDS_CF()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TDS_CF);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TDS_CF);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TDS_CF failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTDS_TP()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TDS_TP);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TDS_TP);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TDS_TP failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+int MCU::readTDS_BW()
+{
+	int value = 0;
+	char *pval = (char *)&value;
+	unsigned char buf[128] = { 0 };
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TDS_BW);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TDS_BW);
+	if (iic->read(reg_start, &buf[0], nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]read TDS_BW failed");
+		return 0;
+	}
+	for (int i = 0; i < nbytes; i++) {
+		pval[i] = buf[i];
+	}
+	return value;
+}
+
+bool MCU::writeCAM_MAXS(int max)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &max, sizeof(max));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_CAM_MAXS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_CAM_MAXS);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write CAM_MAXS failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writePIR_MODE(int mode)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &mode, sizeof(mode));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_MODE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PIR_MODE);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write PIR_MODE failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writePIR_SENS(int sens)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &sens, sizeof(sens));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_SENS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PIR_SENS);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write PIR_SENS failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writePIR_INT(int interval)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &interval, sizeof(interval));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_INT);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PIR_INT);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write PIR_INT failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER(int timer)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &timer, sizeof(timer));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writePIR_EN(int en)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &en, sizeof(en));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_EN);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PIR_EN);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write PIR_EN failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_INT(int interval)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &interval, sizeof(interval));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_INT);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_INT);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_INT failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_1START(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_1START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_1START);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_1START failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_1END(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_1END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_1END);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_1END failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_2START(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_2START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_2START);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_2START failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_2END(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_2END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_2END);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_2END failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_3START(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_3START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_3START);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_3START failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_3END(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_3END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_3END);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_3END failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_4START(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_4START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_4START);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_4START failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_4END(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_4END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_4END);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_4END failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_5START(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_5START);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_5START);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_5START failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_5END(int time)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &time, sizeof(time));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_5END);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_5END);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_5END failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTIMER_REPEATS(int repeats)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &repeats, sizeof(repeats));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_REPEATS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TIMER_REPEATS);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TIMER_REPEATS failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeDEVICE_NAME(const std::string &name)
+{
+	if (name.empty()) {
+		return false;
+	}
+	unsigned char *buf = (unsigned char *)name.c_str();
+	int nbytes = name.length();
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_DEVICE_NAME);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write DEVICE_NAME failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeHEARTRATE(int rate)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &rate, sizeof(rate));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_HEARTRATE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_HEARTRATE);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write HEARTRATE failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeUP_MODE(int mode)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &mode, sizeof(mode));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UP_MODE);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UP_MODE);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write UP_MODE failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeUP_NUFQ(int num)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &num, sizeof(num));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UP_NUFQ);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UP_NUFQ);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write UP_NUFQ failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTDS_CF(int cf)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &cf, sizeof(cf));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TDS_CF);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TDS_CF);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TDS_CF failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTDS_TP(int tp)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &tp, sizeof(tp));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TDS_TP);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TDS_TP);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TDS_TP failed");
+		return false;
+	}
+	return true;
+}
+
+bool MCU::writeTDS_BW(int bw)
+{
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &bw, sizeof(bw));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TDS_BW);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_TDS_BW);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write TDS_BW failed");
+		return false;
+	}
+	return true;
+}
+
+/**
+ * @brief MCU I2C参数单元测试 - 读取并打印所有测试数据
+ * 
+ * 此函数用于从MCU读取测试数据，验证I2C通信是否正常
+ */
+void MCU::readAllTestData()
+{
+	Logger::log(LogLevel::INFO, "\n========== MCU I2C Test Data Read ==========");
+
+	// ========== 系统核心参数 (0x0000-0x000F) ==========
+	Logger::log(LogLevel::INFO, "[0x0000] MODE: %d (0-初始,1-单拍,2-拍传,3-传输,4-测试)", 
+				readWorkingMode());
+	Logger::log(LogLevel::INFO, "[0x0001] FWORK_MARK: %d", readFworkMark());
+	Logger::log(LogLevel::INFO, "[0x0002] EVENT_STATUS: %d", readEventStatus());
+	Logger::log(LogLevel::INFO, "[0x0003] PType: %d", readPType());
+	
+	int version = readVersion();
+	Logger::log(LogLevel::INFO, "[0x0004] VERSION: %d (%s)", version, convertVersion(version).c_str());
+
+	// ========== 基础信息参数 (0x0010-0x00FF) ==========
+	int bat1 = readBattery1Voltage();
+	int bat2 = readBattery2Voltage();
+	int epwr = readExternalVoltage();
+	int spwr = readRMSunPowerValue();
+	
+	Logger::log(LogLevel::INFO, "[0x0010] BAT1: %d.%dV", bat1 / 10, bat1 % 10);
+	Logger::log(LogLevel::INFO, "[0x0011] BAT2: %d.%dV", bat2 / 10, bat2 % 10);
+	Logger::log(LogLevel::INFO, "[0x0012] EPWR: %d.%dV", epwr / 10, epwr % 10);
+	Logger::log(LogLevel::INFO, "[0x0013] SPWR: %d.%dV", spwr / 10, spwr % 10);
+
+	// GPS参数
+	std::string gps = readGps();
+	Logger::log(LogLevel::INFO, "[0x0014] GPS: %s", gps.c_str());
+
+	std::string pid = readPID();
+	Logger::log(LogLevel::INFO, "[0x001E] PID: %s", pid.c_str());
+
+	Logger::log(LogLevel::INFO, "[0x003E] UWS: %d (0-无,1-433,2-LoRa)", readUWS());
+
+	// RTC时间
+	struct tm dt = getDatetime();
+	Logger::log(LogLevel::INFO, "[0x009F] DATETIME: %04d-%02d-%02d %02d:%02d:%02d", 
+				dt.tm_year + 1900, dt.tm_mon + 1, dt.tm_mday,
+				dt.tm_hour, dt.tm_min, dt.tm_sec);
+
+	Logger::log(LogLevel::INFO, "[0x00A6] NUFQ: %d", readNUFQ());
+	Logger::log(LogLevel::INFO, "[0x00A8] TIMEOUT: %d秒", readTimeout());
+	Logger::log(LogLevel::INFO, "[0x00AA] CAM_STATUS: %d (0-已关,1-已开机,2-连网成功,3-连服务器成功,4-上传中)", readCamStatus());
+	Logger::log(LogLevel::INFO, "[0x00AB] AI_ALARM: %d", readAIAlarm());
+
+	// ========== 信号遥测参数 (0x0100-0x01FF) ==========
+	Logger::log(LogLevel::INFO, "[0x0100] SIG_TYPE: %s", readSignalType().c_str());
+	Logger::log(LogLevel::INFO, "[0x010C] SIG_CF: %d MHz", readSignalCF());
+	Logger::log(LogLevel::INFO, "[0x010E] SIG_TP: %d dBm", readSignalTP());
+	Logger::log(LogLevel::INFO, "[0x010F] SIG_RSSI: %d dBm", readSignalRSSI());
+	Logger::log(LogLevel::INFO, "[0x0110] SIG_RSRP: %d dBm", readSignalRSRP());
+	Logger::log(LogLevel::INFO, "[0x0111] SIG_RSRQ: %d dBm", readSignalRSRQ());
+	Logger::log(LogLevel::INFO, "[0x0112] SIG_RL: %d dB", readSignalRL());
+	Logger::log(LogLevel::INFO, "[0x0114] SIG_SNR: %d", readSignalSNR());
+	Logger::log(LogLevel::INFO, "[0x0115] SIG_TD: %d m", readSignalTD());
+
+	// ========== 传感器遥测参数 (0x0200-0x02FF) ==========
+	Logger::log(LogLevel::INFO, "[0x0200] CDS_DN: %d (0-夜晚,1-白天)", readCDS_DN());
+	Logger::log(LogLevel::INFO, "[0x0201] CDS_VALUE: %d.%dV", readCDS_Value() / 10, readCDS_Value() % 10);
+	Logger::log(LogLevel::INFO, "[0x0202] VTS_ALARM: %d (0-无振动,1-振动报警)", readVTSAlarm());
+	Logger::log(LogLevel::INFO, "[0x0203] VTS_SENS: %d (0-无,1-低,2-中,3-高)", readVTSSens());
+	
+	int temp = readTemperature();
+	int humidity = readHumidity();
+	int pressure = readAtmosPressure();
+	
+	Logger::log(LogLevel::INFO, "[0x0204] TEMP: %dC", temp);
+	Logger::log(LogLevel::INFO, "[0x0205] HUMIDITY: %d%%", humidity);
+	Logger::log(LogLevel::INFO, "[0x0206] PRESSURE: %d.%d hPa", pressure / 10, pressure % 10);
+
+	Logger::log(LogLevel::INFO, "[0x0208] CO: %d ppm", readSOR_CO());
+	Logger::log(LogLevel::INFO, "[0x020A] CO2: %d ppm", readSOR_CO2());
+	Logger::log(LogLevel::INFO, "[0x020C] O2: %d%%", readSOR_O2());
+	Logger::log(LogLevel::INFO, "[0x020D] AL: %d lx", readSOR_AL());
+	Logger::log(LogLevel::INFO, "[0x020F] UVL: %d", readSOR_UVL());
+	Logger::log(LogLevel::INFO, "[0x0210] NOISE: %d dBA", readSOR_NOISE());
+
+	// ========== 外扩无线设备参数 (0x0300-0x03FF) ==========
+	Logger::log(LogLevel::INFO, "[0x0300] ESOR_WS: %d (0-无,1-433,2-LoRa)", readESOR_WS());
+	Logger::log(LogLevel::INFO, "[0x0301] ESOR_WID: %d", readESOR_WID());
+	Logger::log(LogLevel::INFO, "[0x0303] ESOR_ADD: %d", readESOR_ADD());
+	Logger::log(LogLevel::INFO, "[0x0305] ESOR_ID: %d", readESOR_ID());
+	Logger::log(LogLevel::INFO, "[0x0307] ESOR_TYPE: %d", readESOR_TYPE());
+	Logger::log(LogLevel::INFO, "[0x0308] ESOR_BAT: %d.%dV", readESOR_BAT() / 10, readESOR_BAT() % 10);
+
+	// ========== 设置/策略参数 (0x0400-0x04FF) ==========
+	Logger::log(LogLevel::INFO, "[0x0400] CAM_MAXS: %d", readCAM_MAXS());
+	Logger::log(LogLevel::INFO, "[0x0401] PIR_MODE: %d (0-关闭,1-主副同触发,2-主探测)", readPIR_MODE());
+	Logger::log(LogLevel::INFO, "[0x0402] PIR_SENS: %d (0-自动,1-低,2-中,3-高)", readPIR_SENS());
+	Logger::log(LogLevel::INFO, "[0x0403] PIR_INT: %d秒", readPIR_INT());
+	Logger::log(LogLevel::INFO, "[0x0405] TIMER: %d (0-关闭,1-开启)", readTIMER());
+	Logger::log(LogLevel::INFO, "[0x0406] PIR_EN: %d (0-关闭,1-开启)", readPIR_EN());
+	Logger::log(LogLevel::INFO, "[0x0407] TIMER_INT: %d分钟", readTIMER_INT());
+
+	Logger::log(LogLevel::INFO, "=============================================");
 }

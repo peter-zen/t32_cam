@@ -7,7 +7,7 @@
 #include <vector>
 #include <mutex>
 #include "Logger.h"
-#include "utils/string/StringConvert.h"
+#include "StringConvert.h"
 
 #if !MCU_EXIST
 #define I2C_BYPASS 1
@@ -72,6 +72,8 @@ int IIC::read(int reg, void *buf, size_t count)
 		Logger::log(LogLevel::ERROR, "IIC bus is not open");
 		return -1;
 	}
+	
+	// 使用与内核驱动匹配的iic_buf结构体进行通信
 	struct iic_buf iic_buff = { reg, buf, count };
 	return ::read(iic_fd, &iic_buff, sizeof(iic_buff));
 }
@@ -87,7 +89,8 @@ int IIC::write(int reg, void *buf, size_t count)
 		Logger::log(LogLevel::ERROR, "IIC bus is not open");
 		return -1;
 	}
-
+	
+	// 使用与内核驱动匹配的iic_buf结构体进行通信
 	struct iic_buf iic_buff = { reg, buf, count };
 	return ::write(iic_fd, &iic_buff, sizeof(iic_buff));
 }

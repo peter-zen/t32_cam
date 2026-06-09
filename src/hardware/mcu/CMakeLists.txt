@@ -7,6 +7,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../../common/utils/string
     ${CMAKE_CURRENT_SOURCE_DIR}/../../logger
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../common/utils/string
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../common/time/rtc
 
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
