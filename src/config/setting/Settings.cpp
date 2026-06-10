@@ -292,9 +292,21 @@ bool Settings::loadFromJsonFile(const std::string& filePath)
 		this->devPwd[sizeof(this->devPwd) - 1] = '\0'; // Ensure null-terminated
 	}
 
-	if (root.isMember("bitRate_4k")) this->bitRate_4k = static_cast<uint8_t>(root["bitRate_4k"].asInt());
-	if (root.isMember("bitRate_1080p")) this->bitRate_1080p = static_cast<uint8_t>(root["bitRate_1080p"].asInt());
-	if (root.isMember("bitRate_720p")) this->bitRate_720p = static_cast<uint8_t>(root["bitRate_720p"].asInt());
+	// 2026-06-10: bitrate 范围校验, 防止老版本 setting.json 的异常值(16/32)覆盖代码默认
+	// 当前 mapping table 范围: 720P=2, 1080P=4, 2.5K=6, 4K=8 (Mbps)
+	// 范围 [1, 8] 是合法区间, 超出则 fallback 到 .h 默认
+	if (root.isMember("bitRate_4k")) {
+		int v = root["bitRate_4k"].asInt();
+		this->bitRate_4k = (v >= 1 && v <= 8) ? static_cast<uint8_t>(v) : 8;
+	}
+	if (root.isMember("bitRate_1080p")) {
+		int v = root["bitRate_1080p"].asInt();
+		this->bitRate_1080p = (v >= 1 && v <= 8) ? static_cast<uint8_t>(v) : 4;
+	}
+	if (root.isMember("bitRate_720p")) {
+		int v = root["bitRate_720p"].asInt();
+		this->bitRate_720p = (v >= 1 && v <= 8) ? static_cast<uint8_t>(v) : 2;
+	}
 	if (root.isMember("isWLed")) this->isWLed = static_cast<uint8_t>(root["isWLed"].asInt());
 	if (root.isMember("continuous_record")) this->continuous_record = static_cast<uint8_t>(root["continuous_record"].asInt());
 	if (root.isMember("remote_wakeup")) this->remote_wakeup = static_cast<uint8_t>(root["remote_wakeup"].asInt());
