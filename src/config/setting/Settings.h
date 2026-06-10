@@ -135,9 +135,10 @@ public:
 	char devName[16];
 	char devPwd[4];
 
-	uint8_t bitRate_4k = 32;
-	uint8_t bitRate_1080p = 16;
-	uint8_t bitRate_720p = 8;
+	uint8_t bitRate_4k = 8;       // 2026-06-10: 32→8 (mapping table: 4K=8Mbps, 见 doc/knowledge/bugs/T32-crc-fix-verification-2026-06-10.md)
+	uint8_t bitRate_2_5k = 6;     // 2026-06-10: 新增 2.5K (2560x1440) 桶, 6 Mbps
+	uint8_t bitRate_1080p = 4;    // 2026-06-10: 16→4 (mapping table: 1080P=4Mbps)
+	uint8_t bitRate_720p = 2;     // 2026-06-10: 8→2 (mapping table: 720P=2Mbps)
 	uint8_t isWLed;
 	uint8_t continuous_record;
 	uint8_t remote_wakeup;

@@ -326,13 +326,17 @@ const VideoMode* findFirstModeByResolution(const std::vector<VideoMode>& modes, 
 }
 
 int resolutionBucketDefaultMbps(int width, int height) {
+    // 2026-06-10: mapping table, 见 doc/knowledge/bugs/T32-crc-fix-verification-2026-06-10.md
     if (width >= 3840 || height >= 2160) {
-        return 32;
+        return 8;   // 4K
+    }
+    if (width >= 2560 || height >= 1440) {
+        return 6;   // 2.5K
     }
     if (width >= 1920 || height >= 1080) {
-        return 16;
+        return 4;   // 1080P
     }
-    return 8;
+    return 2;       // 720P
 }
 
 int getConfiguredBucketMbps(const Settings* settings, int width, int height) {
@@ -342,7 +346,16 @@ int getConfiguredBucketMbps(const Settings* settings, int width, int height) {
         if (settingsValue > 0) {
             return settingsValue;
         }
-        return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_4K, 32);
+        return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_4K, 8);
+    }
+
+    // 2026-06-10: 新增 2.5K (2560x1440) 桶, 6 Mbps
+    if (width >= 2560 || height >= 1440) {
+        int settingsValue = static_cast<int>(settings->bitRate_2_5k);
+        if (settingsValue > 0) {
+            return settingsValue;
+        }
+        return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_2_5K, 6);
     }
 
     if (width >= 1920 || height >= 1080) {
@@ -350,14 +363,14 @@ int getConfiguredBucketMbps(const Settings* settings, int width, int height) {
         if (settingsValue > 0) {
             return settingsValue;
         }
-        return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_1080P, 16);
+        return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_1080P, 4);
     }
 
     int settingsValue = static_cast<int>(settings->bitRate_720p);
     if (settingsValue > 0) {
         return settingsValue;
     }
-    return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_720P, 8);
+    return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_720P, 2);
 }
 
 int currentBitrateKbpsForMode(const VideoMode& mode) {
@@ -374,6 +387,13 @@ void writeBitrateForMode(const VideoMode& mode, int bitrateKbps) {
     if (mode.width >= 3840 || mode.height >= 2160) {
         settings->bitRate_4k = static_cast<uint8_t>(bucketMbps);
         deviceConfig->set(INI_SECTION_SYS, INI_KEY_BITRATE_4K, bucketMbps);
+        return;
+    }
+
+    // 2026-06-10: 新增 2.5K 桶
+    if (mode.width >= 2560 || mode.height >= 1440) {
+        settings->bitRate_2_5k = static_cast<uint8_t>(bucketMbps);
+        deviceConfig->set(INI_SECTION_SYS, INI_KEY_BITRATE_2_5K, bucketMbps);
         return;
     }
 

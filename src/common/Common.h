@@ -47,6 +47,7 @@ extern "C" {
 #define INI_KEY_LOW_VOL "LowVoltage"
 #define INI_KEY_END_VOL "EndVoltage"
 #define INI_KEY_BITRATE_4K "BR4K"
+#define INI_KEY_BITRATE_2_5K "BR2_5K"
 #define INI_KEY_BITRATE_1080P "BR1080P"
 #define INI_KEY_BITRATE_720P "BR720P"
 
