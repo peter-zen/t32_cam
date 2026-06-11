@@ -215,8 +215,8 @@ bool CameraRecorder::record(const std::string& filePath, int durationSec,
     auto onComplete = options.onComplete;
 
     try {
-        // concurrentSnap=true 开启 CH2 缩略图抓取(recording 起步时拍一帧 320x180 JPEG)
-        video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam, /*concurrentSnap=*/true);
+        // concurrentSnap 控制 CH2 缩略图抓取（processCmdVideoRecord 路径可通过 env 关闭）
+        video_recorder_ = std::make_shared<media::VideoRecorder>(vidParam, audParam, options.concurrentSnap);
     } catch (const std::exception& e) {
         is_recording_.store(false);
         std::string msg = std::string("VideoRecorder ctor failed: ") + e.what();

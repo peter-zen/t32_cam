@@ -58,6 +58,26 @@ struct RecordOptions {
     bool autoCover = false;
 
     /**
+     * @brief 诊断开关:是否启用 CH2 缩略图抓取。
+     *
+     * - true  : 录制启动时拍一张 320x180 JPEG（SDK 多开一个 stream, 内存多一份）
+     * - false : 不抓缩略图（isolation 调查使用）
+     *
+     * 默认 true。
+     */
+    bool concurrentSnap = true;
+
+    /**
+     * @brief 诊断开关:processCmdVideoRecord 是否写 desc JSON。
+     *
+     * - true  : 写 desc JSON 到 /mnt/sdcard/media/upload/（SD 卡多一次写）
+     * - false : 跳过（isolation 调查使用）
+     *
+     * 默认 true。
+     */
+    bool writeDescJson = true;
+
+    /**
      * @brief 录影结束回调（异步触发，在 VideoRecorder 后台线程执行）。
      *
      * 必传。caller 不应在回调内做阻塞操作；如需阻塞请用 std::promise/future 桥接。
