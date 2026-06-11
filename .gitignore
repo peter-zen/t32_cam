@@ -25,9 +25,6 @@ sdk/samples/libimp-samples/*.o
 !local_assets/README.md
 .omx/
 
-# T32 hardware build output (mirrors build/ and build_sim/)
-build_t32/
-
 # Downloaded tools (e.g., ffmpeg static builds)
 .tools/
 
