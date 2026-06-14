@@ -79,6 +79,29 @@
 
 ---
 
+### mcu-service-integration（MCU Service 集成）
+
+**状态**：实现已完成，sim 下 4 个端点 + 18 个 STATUS 字段全部走 McuService；T32 端待真机联调  
+**关键决策**：
+- 新增 `service::McuService`（Meyers 单例，进程内），`htc_main_app` 唯一持有
+- test mode（`CMD_MOBILE`）下启 5s 轮询线程写到 `McuCache`；work mode 与 SIMU_BUILD 同步直通
+- `CameraParameterRegistry` 加 `mcuBinding()` 工厂 + `ParameterStorageKind::MCU` 枚举值；18 个 STATUS 字段绑定到 MCU
+- `POST /api/v1/system/workmode` 改返 **HTTP 501**（work mode firmware-only，无 I2C 写路径）
+- 新单测 `tests/test_mcu_service.cpp`，sim build 跑 5 个 case
+
+**参考文档**：
+- `doc/knowledge/decisions/mcu-service-architecture.md` — 架构决策
+- `doc/api/device-and-system-api.md` — 4 个端点契约
+
+**遗留问题**（follow-up）：
+- `MCU::readFirmwareVersion()` 等仍是 stub（返 "1.0.0"），需 MCU 固件侧配合
+- 6 个 `SOR_*` 传感器（AL/UVL/NOISE/CO/CO2/O2）暂不接
+- `Location_LON/LAT/ELE` / `SPower` / `Device_MAC/IP/IMEI/NO` / `Event_Total/Event_NUFQ` 仍 placeholder
+- 新 `/api/v1/mcu/*` 端点（独立 future 任务）
+- 6th CAM_Mode 仍未实现
+
+---
+
 ## 8. 可能的下一步
 
 按优先级建议：

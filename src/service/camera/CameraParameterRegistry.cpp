@@ -1,5 +1,7 @@
 #include "CameraParameterRegistry.h"
 
+#include "../mcu/McuService.h"
+
 #include "../../common/Common.h"
 
 #include <algorithm>
@@ -460,7 +462,7 @@ std::vector<ParameterDefinition> buildDefinitions() {
     addStatus(defs, "Device", "FW_Version", ParameterValueType::STRING, "V000.00.000-000000",
               computedBinding("fw_version"), ParameterAvailability::COMPUTED, "固件版本号");
     addStatus(defs, "Device", "MCU_Version", ParameterValueType::STRING, "V00.000",
-              placeholderBinding(), ParameterAvailability::PLACEHOLDER, "MCU版本号");
+              mcuBinding("mcuVersion"), ParameterAvailability::REAL, "MCU版本号");
     addStatus(defs, "Device", "Location_LON", ParameterValueType::STRING, "0",
               placeholderBinding(), ParameterAvailability::PLACEHOLDER, "坐标-经度");
     addStatus(defs, "Device", "Location_LAT", ParameterValueType::STRING, "0",
@@ -468,13 +470,13 @@ std::vector<ParameterDefinition> buildDefinitions() {
     addStatus(defs, "Device", "Location_ELE", ParameterValueType::STRING, "0",
               placeholderBinding(), ParameterAvailability::PLACEHOLDER, "坐标-高程");
     addStatus(defs, "Device", "Battery_Type", ParameterValueType::NUMBER, 2,
-              placeholderBinding(), ParameterAvailability::PLACEHOLDER, "电池组类型");
+              mcuBinding("batteryType"), ParameterAvailability::REAL, "电池组类型");
     addStatus(defs, "Device", "Battery1", ParameterValueType::NUMBER, 0,
-              placeholderBinding(), ParameterAvailability::PLACEHOLDER, "电池组1电压");
+              mcuBinding("battery1Voltage"), ParameterAvailability::REAL, "电池组1电压");
     addStatus(defs, "Device", "Battery2", ParameterValueType::NUMBER, 0,
-              placeholderBinding(), ParameterAvailability::PLACEHOLDER, "电池组2电压");
+              mcuBinding("battery2Voltage"), ParameterAvailability::REAL, "电池组2电压");
     addStatus(defs, "Device", "EPower", ParameterValueType::NUMBER, 0,
-              placeholderBinding(), ParameterAvailability::PLACEHOLDER, "外部电源");
+              mcuBinding("externalVoltage"), ParameterAvailability::REAL, "外部电源");
     addStatus(defs, "Device", "SPower", ParameterValueType::NUMBER, 0,
               placeholderBinding(), ParameterAvailability::PLACEHOLDER, "太阳能板");
     addStatus(defs, "Device", "Device_MAC", ParameterValueType::STRING, "00:00:00:00:00:00",
@@ -490,16 +492,41 @@ std::vector<ParameterDefinition> buildDefinitions() {
     addStatus(defs, "Device", "Event_NUFQ", ParameterValueType::NUMBER, 0,
               placeholderBinding(), ParameterAvailability::PLACEHOLDER, "未上传数量");
 
-    const char* signalStatus[] = {"Signal_Type", "Signal_CF", "Signal_TP", "Signal_BW", "Signal_RSSI",
-                                  "Signal_RSRP", "Signal_RSRQ", "Signal_RL", "Signal_SNR", "Signal_TD"};
-    for (const char* name : signalStatus) {
-        addStatus(defs, "Signal", name, ParameterValueType::STRING, "0",
-                  placeholderBinding(), ParameterAvailability::PLACEHOLDER, name);
+    // Signal_* — 9 of 10 are backed by MCU::readSignal*. Signal_BW has no
+    // matching MCU reader yet, so it stays placeholder.
+    const std::pair<const char*, const char*> signalMcu[] = {
+        {"Signal_Type", "signalType"},
+        {"Signal_CF",   "signalCF"},
+        {"Signal_TP",   "signalTP"},
+        {"Signal_RSSI", "signalRSSI"},
+        {"Signal_RSRP", "signalRSRP"},
+        {"Signal_RSRQ", "signalRSRQ"},
+        {"Signal_RL",   "signalRL"},
+        {"Signal_SNR",  "signalSNR"},
+        {"Signal_TD",   "signalTD"},
+    };
+    for (const auto& kv : signalMcu) {
+        addStatus(defs, "Signal", kv.first, ParameterValueType::STRING, "0",
+                  mcuBinding(kv.second), ParameterAvailability::REAL, kv.first);
     }
+    addStatus(defs, "Signal", "Signal_BW", ParameterValueType::STRING, "0",
+              placeholderBinding(), ParameterAvailability::PLACEHOLDER, "Signal_BW");
 
-    const char* sensorStatus[] = {"Sensor_CDS", "Sensor_TEMPS", "Sensor_RHS", "Sensor_APS", "Sensor_AL",
-                                  "Sensor_UVL", "Sensor_NOISE", "Sensor_CO", "Sensor_CO2", "Sensor_O2"};
-    for (const char* name : sensorStatus) {
+    // Sensor_* — CDS / TEMPS / RHS / APS map to MCU; AL/UVL/NOISE/CO/CO2/O2
+    // (SOR_* sensors) are deferred to a follow-up per the design decision.
+    const std::pair<const char*, const char*> sensorMcu[] = {
+        {"Sensor_CDS",   "cds"},
+        {"Sensor_TEMPS", "temperature"},
+        {"Sensor_RHS",   "humidity"},
+        {"Sensor_APS",   "pressure"},
+    };
+    for (const auto& kv : sensorMcu) {
+        addStatus(defs, "Sensor", kv.first, ParameterValueType::NUMBER, 0,
+                  mcuBinding(kv.second), ParameterAvailability::REAL, kv.first);
+    }
+    const char* sensorPlaceholder[] = {"Sensor_AL", "Sensor_UVL", "Sensor_NOISE",
+                                       "Sensor_CO", "Sensor_CO2", "Sensor_O2"};
+    for (const char* name : sensorPlaceholder) {
         addStatus(defs, "Sensor", name, ParameterValueType::NUMBER, 0,
                   placeholderBinding(), ParameterAvailability::PLACEHOLDER, name);
     }
@@ -638,9 +665,46 @@ const char* parameterStorageKindToString(ParameterStorageKind kind) {
         return "placeholder";
     case ParameterStorageKind::COMMAND:
         return "command";
+    case ParameterStorageKind::MCU:
+        return "mcu";
     default:
         return "unknown";
     }
+}
+
+ParameterStorageBinding mcuBinding(const std::string& member) {
+    ParameterStorageBinding binding;
+    binding.kind = ParameterStorageKind::MCU;
+    binding.member = member;
+    return binding;
+}
+
+Json::Value readMcuValue(const std::string& member) {
+    auto& m = service::McuService::getInstance();
+    if (member == "battery1Voltage") return Json::Value(m.getBattery1Voltage());
+    if (member == "battery2Voltage") return Json::Value(m.getBattery2Voltage());
+    if (member == "batteryType")     return Json::Value(m.getBatteryType());
+    if (member == "batteryLevel")    return Json::Value(m.getBatteryLevel());
+    if (member == "externalVoltage") return Json::Value(m.getExternalVoltage());
+    if (member == "cds")             return Json::Value(m.getCds());
+    if (member == "temperature")     return Json::Value(m.getTemperature());
+    if (member == "humidity")        return Json::Value(m.getHumidity());
+    if (member == "pressure")        return Json::Value(m.getAtmosPressure());
+    if (member == "signalCF")        return Json::Value(m.getSignalCF());
+    if (member == "signalRSSI")      return Json::Value(m.getSignalRSSI());
+    if (member == "signalRSRP")      return Json::Value(m.getSignalRSRP());
+    if (member == "signalRSRQ")      return Json::Value(m.getSignalRSRQ());
+    if (member == "signalSNR")       return Json::Value(m.getSignalSNR());
+    if (member == "signalTD")        return Json::Value(m.getSignalTD());
+    if (member == "signalTP")        return Json::Value(m.getSignalTP());
+    if (member == "signalRL")        return Json::Value(m.getSignalRL());
+    if (member == "signalType")      return Json::Value(m.getSignalType());
+    if (member == "workingMode")     return Json::Value(m.getWorkingMode());
+    if (member == "firmwareVersion") return Json::Value(m.getFirmwareVersion());
+    if (member == "mcuVersion")      return Json::Value(m.getMcuFirmwareVersion());
+    if (member == "pid")             return Json::Value(m.getPID());
+    if (member == "gps")             return Json::Value(m.getGps());
+    return Json::Value();
 }
 
 } // namespace service

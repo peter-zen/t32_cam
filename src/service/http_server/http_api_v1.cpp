@@ -107,6 +107,20 @@ static void send_http_error(struct mg_connection* conn, int status_code, const s
     send_json_response(conn, status_code, root);
 }
 
+// Variant of send_http_error that ships a non-null `data` payload, so the
+// client can see structured context alongside the HTTP status (e.g. a
+// 501 with the requested mode echoed back).
+static void send_http_error_with_data(struct mg_connection* conn,
+                                      int status_code,
+                                      const std::string& message,
+                                      const Json::Value& data) {
+    Json::Value root;
+    root["code"] = status_code;
+    root["message"] = message;
+    root["data"] = data;
+    send_json_response(conn, status_code, root);
+}
+
 static void send_binary_response(struct mg_connection* conn,
                                  const char* content_type,
                                  const std::vector<uint8_t>& data) {
@@ -786,8 +800,9 @@ static int api_v1_system_workmode(struct mg_connection* conn, void* cbdata) {
     Json::Value data(Json::objectValue);
     data["mode"] = result.mode;
     data["accepted"] = result.accepted;
-    send_success_response(conn, data);
-    return 200;
+    data["reason"] = "work mode is firmware-set via GPIO/MCU firmware, not writable via I2C";
+    send_http_error_with_data(conn, 501, data["reason"].asString(), data);
+    return 501;
 }
 
 static int api_v1_storage_info(struct mg_connection* conn, void* cbdata) {

@@ -2,18 +2,20 @@
 
 #ifndef SIMULATION_MODE
 
+#include <elog.h>
+
+#include "../../mcu/McuService.h"
+
 namespace service {
 
-// TODO: Replace with real MCU calls
-// MCU::getInstance()->readPID()
-// MCU::getInstance()->readFirmwareVersion()
 DeviceInfo DeviceServiceT32::getDeviceInfo() {
+    auto& mcu = service::McuService::getInstance();
     DeviceInfo info;
-    info.pid = "T32-CAM-001";
-    info.firmwareVersion = "0.0.0";
+    info.pid = mcu.getPID();
+    info.firmwareVersion = mcu.getFirmwareVersion();
     info.model = "T32";
     info.buildDate = "";
-    info.mcuVersion = "";
+    info.mcuVersion = mcu.getMcuFirmwareVersion();
     return info;
 }
 

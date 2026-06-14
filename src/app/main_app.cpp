@@ -41,6 +41,7 @@
 #include "utils/crc/CRC.h"
 #include "Settings.h"
 #include "MCU.h"
+#include "service/mcu/McuService.h"
 #include "Disk.h"
 #include "AudioRecorder.h"
 #include "AudioParams.h"
@@ -828,6 +829,10 @@ static bool rtsp_audio_enabled = true;  // RTSP 音频默认开启
 static bool mobile_rtsp_enabled = true; // Mobile 模式默认启动 RTSP，调试录像 FPS 时可关闭
 static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
 static std::shared_ptr<StorageServClient> storageServClient = nullptr;
+// Force the McuService Meyers singleton to be constructed at static-init
+// time (before main) and destroyed at program exit, so its polling thread
+// is always joined before the underlying MCU's shared_ptr is reset.
+static auto& _mcu_keepalive = service::McuService::getInstance();
 // Signal handler for CTRL+C
 // 信号处理消息结构体
 enum class SignalMessageType {
@@ -1631,6 +1636,11 @@ int main(int argc, char* argv[])
     if (command & CMD_MOBILE) {
         setenv("HTC_TEST_MODE", "1", 1);
 
+        // Start McuService polling before the HTTP server so request handlers
+        // see a warm cache. 5s is the default; queries are O(atomic load) on
+        // the HTTP thread, I2C stays on the polling thread.
+        service::McuService::getInstance().startPolling(5000);
+
         // Day/Night initialization for CMD_MOBILE (covers both -m and -wm 3 paths)
         if (daynight_switch) {
             const char* forceDay = std::getenv("HTC_FORCE_RECORD_DAY_MODE");
@@ -1921,6 +1931,9 @@ int main(int argc, char* argv[])
     }
 
 main_exit:
+    // Stop the MCU polling thread first so any other shutdown code that
+    // touches the I2C bus (e.g. syncWithMCU) does not race with the poller.
+    service::McuService::getInstance().stopPolling();
     service::TcpEventService::getInstance()->stop();
     service::MdnsService::getInstance()->stop();
     // 停止信号处理工作线程

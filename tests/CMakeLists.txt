@@ -84,3 +84,20 @@ target_include_directories(test_tcp_event_service PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
     ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
 )
+
+add_executable(test_mcu_service test_mcu_service.cpp)
+
+target_link_libraries(test_mcu_service
+    PRIVATE
+    mcu_service
+    mcu
+    easylogger
+    pthread
+)
+
+target_include_directories(test_mcu_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/hardware/mcu
+    ${CMAKE_SOURCE_DIR}/src/service/mcu
+    ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
+)

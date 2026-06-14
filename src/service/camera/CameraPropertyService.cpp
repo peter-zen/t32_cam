@@ -710,6 +710,13 @@ Json::Value CameraPropertyService::readRegistryValue(const ParameterDefinition& 
         return definition.defaultValue;
     }
 
+    if (definition.storage.kind == ParameterStorageKind::MCU) {
+        Json::Value v = readMcuValue(definition.storage.member);
+        if (!v.isNull()) {
+            return v;
+        }
+    }
+
     if (definition.storage.kind != ParameterStorageKind::SETTINGS) {
         return definition.defaultValue;
     }

@@ -129,6 +129,7 @@ if(BUILD_FOR_SIMULATION)
         logger
         #misc libs
         mcu
+        mcu_service
         power
         disk
         common_time_rtc
@@ -263,6 +264,7 @@ target_link_libraries(htc_main_app
 
     #misc libs
     mcu
+    mcu_service
     power
     disk
     gpio
