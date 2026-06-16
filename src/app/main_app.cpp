@@ -22,6 +22,9 @@
 #include <future>
 #include <unordered_map>
 #include <algorithm>
+#include <fcntl.h>    // fcntl, O_NONBLOCK
+#include <poll.h>     // poll, POLLIN
+#include <cerrno>     // errno, EINTR, EAGAIN
 
 
 #include "MgmtServClient.h"
@@ -41,7 +44,6 @@
 #include "utils/crc/CRC.h"
 #include "Settings.h"
 #include "MCU.h"
-#include "service/mcu/McuService.h"
 #include "Disk.h"
 #include "AudioRecorder.h"
 #include "AudioParams.h"
@@ -829,234 +831,117 @@ static bool rtsp_audio_enabled = true;  // RTSP 音频默认开启
 static bool mobile_rtsp_enabled = true; // Mobile 模式默认启动 RTSP，调试录像 FPS 时可关闭
 static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
 static std::shared_ptr<StorageServClient> storageServClient = nullptr;
-// Force the McuService Meyers singleton to be constructed at static-init
-// time (before main) and destroyed at program exit, so its polling thread
-// is always joined before the underlying MCU's shared_ptr is reset.
-static auto& _mcu_keepalive = service::McuService::getInstance();
-// Signal handler for CTRL+C
-// 信号处理消息结构体
-enum class SignalMessageType {
-    EXIT,        // 退出信号(SIGINT)
-    SHUTDOWN,    // 关闭信号(SIGTERM)
-    STOP_THREAD  // 停止工作线程
-};
 
-struct SignalMessage {
-    SignalMessageType type;
-    // 可以根据需要添加更多字段
-};
+// Async-signal-safe signal handling via self-pipe.
+// The signal handler does nothing but write(2) to g_signal_pipe[1].
+// The main loop polls g_signal_pipe[0] and runs cleanup on the main thread.
+static int g_signal_pipe[2] = {-1, -1};
+static volatile sig_atomic_t g_pending_signal = 0;
 
-struct SignalResult {
-    bool success;
-    // 可以根据需要添加更多字段
-};
+static void performCleanup(int sig);  // forward decl (defined below)
 
-// 全局变量用于线程间通信
-std::queue<SignalMessage> signalMessageQueue;
-std::mutex messageMutex;
-std::condition_variable messageCondition;
-
-SignalResult signalResult;
-std::mutex resultMutex;
-std::condition_variable resultCondition;
-bool resultReady = false;
-
-// 工作线程函数，执行实际的信号处理逻辑
-static void signalHandlerThreadFunc() {
+// Drain any pending bytes from g_signal_pipe[0] and return the most recent
+// signal number recorded by signalHandler. Safe to call from the main thread.
+static int drainSignalPipe() {
+    unsigned char buf[16];
     while (true) {
-        SignalMessage message;
-        
-        // 等待消息
-        {            
-            std::unique_lock<std::mutex> lock(messageMutex);
-            messageCondition.wait(lock, []{ return !signalMessageQueue.empty(); });
-            
-            message = signalMessageQueue.front();
-            signalMessageQueue.pop();
+        ssize_t r = read(g_signal_pipe[0], buf, sizeof(buf));
+        if (r > 0) continue;
+        if (r == 0) break;
+        if (errno == EINTR) continue;
+        break;  // EAGAIN/other: nothing more to read
+    }
+    return static_cast<int>(g_pending_signal);
+}
+
+// Block for up to timeoutMs waiting for a signal. Returns the captured
+// signal number (e.g. SIGINT), or 0 on timeout. Side effect: if a signal
+// was caught, sets already_in_exit_flow and runs performCleanup so the
+// caller can break out of its loop immediately.
+static int waitForSignalOrTimeout(int timeoutMs) {
+    struct pollfd pfd;
+    pfd.fd = g_signal_pipe[0];
+    pfd.events = POLLIN;
+    int ret = poll(&pfd, 1, timeoutMs);
+    if (ret <= 0) {
+        return 0;  // timeout or error — caller will re-check the flag
+    }
+    int sig = drainSignalPipe();
+    if (sig == 0) {
+        return 0;  // spurious wakeup
+    }
+    if (!already_in_exit_flow) {
+        already_in_exit_flow = true;
+        performCleanup(sig);
+    }
+    return sig;
+}
+
+// Perform shutdown work that was previously the worker thread's job. Runs on
+// the main thread after the self-pipe wakes the main loop.
+static void performCleanup(int sig) {
+    Logger::log(LogLevel::INFO, "Processing signal %d on main thread", sig);
+
+    if (daynight_switch) {
+        daynight_switch->controlISP(DayNightState::DAY);
+        daynight_switch->controlIRLed(DayNightState::DAY);
+        daynight_switch->controlIRCut(DayNightState::DAY);
+    }
+
+    if (gpio_rgb_led) {
+        gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
+    }
+
+    std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", "");
+    if (setting_file_path.empty()) {
+        Logger::log(LogLevel::ERROR, "Failed to get setting file path");
+    } else {
+        if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
+            Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
         }
-        
-        // 处理消息
-        SignalResult result = {true};
-        
-        switch (message.type) {
-            case SignalMessageType::EXIT: {
-                Logger::log(LogLevel::INFO, "Processing SIGINT in worker thread...");
-                if (daynight_switch) {
-                    daynight_switch->controlISP(DayNightState::DAY);
-                    daynight_switch->controlIRLed(DayNightState::DAY);
-                    daynight_switch->controlIRCut(DayNightState::DAY);
-                }
+    }
 
-                if (gpio_rgb_led) {
-                    gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
-                }
+    if (http_server_is_running()) {
+        http_server_stop();
+        http_server_deinit();
+    }
+    service::TcpEventService::getInstance()->stop();
+    mgmtServClient = nullptr;
+    storageServClient = nullptr;
 
-                std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
-                if (setting_file_path.empty()) {
-                    Logger::log(LogLevel::ERROR, "Failed to get setting file path");
-                    result.success = false;
-                } else {
-                    if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
-                        Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
-                        result.success = false;
-                    }
-                }
-
-                if (http_server_is_running()) {
-                    http_server_stop();
-                    http_server_deinit();
-                }
-                service::TcpEventService::getInstance()->stop();
-                mgmtServClient = nullptr;
-                storageServClient = nullptr;
-
-                break;
+    if (sig == SIGTERM) {
+        if (Power::getInstance()->isChangeModeRequested()) {
+            Logger::log(LogLevel::INFO, "Change mode requested, holding power on");
+            auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
+            if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
+                || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
+                Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
             }
-            
-            case SignalMessageType::SHUTDOWN: {
-                Logger::log(LogLevel::INFO, "Processing SIGTERM in worker thread...");
-                
-                if (daynight_switch) {
-                    daynight_switch->controlISP(DayNightState::DAY);
-                    daynight_switch->controlIRLed(DayNightState::DAY);
-                    daynight_switch->controlIRCut(DayNightState::DAY);
-                }
-
-                if (gpio_rgb_led) {
-                    gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
-                }
-
-                std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
-                if (setting_file_path.empty()) {
-                    Logger::log(LogLevel::ERROR, "Failed to get setting file path");
-                    result.success = false;
-                } else {
-                    if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
-                        Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
-                        result.success = false;
-                    }
-                }
-
-                if (http_server_is_running()) {
-                    http_server_stop();
-                    http_server_deinit();
-                }
-                service::TcpEventService::getInstance()->stop();
-                mgmtServClient = nullptr;
-                storageServClient = nullptr;
-            
-                if (Power::getInstance()->isChangeModeRequested()) {
-                    Logger::log(LogLevel::INFO, "Change mode requested, not powering off");
-                    auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
-                    if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
-                        || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
-                        Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
-                        result.success = false;
-                    }
-                } else {
-                    auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
-                    if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
-                        || !gpio_power_hold.setValue(GPIO_VALUE::LOW)) {
-                        Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
-                        result.success = false;
-                    }
-                }
-                break;
-            }
-            
-            case SignalMessageType::STOP_THREAD: {
-                Logger::log(LogLevel::INFO, "Stopping signal handler thread...");
-                return; // 退出线程
-            }
-            
-            default:
-                Logger::log(LogLevel::WARNING, "Unknown signal message type");
-                result.success = false;
-                break;
         }
-        
-        // 发送结果回signalHandler
-        {            
-            std::lock_guard<std::mutex> lock(resultMutex);
-            signalResult = result;
-            resultReady = true;
-        }
-        resultCondition.notify_one();
+        // Hardware poweroff for the non-change-mode SIGTERM case is handled
+        // by the existing main_exit path (Misc::poweroff at the bottom of
+        // main()). Nothing to do here.
     }
 }
 
-static void signalHandler(int signal)
-{
+// signalHandler is the ONLY function that runs in signal-delivered context.
+// It does only two things, both async-signal-safe per POSIX.1-2017:
+//   1. g_pending_signal = signal;          (sig_atomic_t store)
+//   2. write(g_signal_pipe[1], "x", 1);    (write(2) is in the safe list)
+// No Logger::log, no std::mutex, no std::condition_variable, no malloc.
+static void signalHandler(int signal) {
     if (already_in_exit_flow) {
         return;
     }
-    SignalMessage message;
-    if (signal == SIGINT) {
-        Logger::log(LogLevel::INFO, "Received SIGINT, sending to worker thread...");
-        message.type = SignalMessageType::EXIT;
+    g_pending_signal = signal;
+    int saved_errno = errno;
+    if (g_signal_pipe[1] >= 0) {
+        char c = 'x';
+        ssize_t r = write(g_signal_pipe[1], &c, 1);
+        (void)r;
     }
-    else if (signal == SIGTERM) {
-        Logger::log(LogLevel::INFO, "Received SIGTERM, sending to worker thread...");
-        message.type = SignalMessageType::SHUTDOWN;
-    }
-    else {
-        Logger::log(LogLevel::WARNING, "Received unhandled signal: %d", signal);
-        return;
-    }
-    
-    // 将消息放入队列
-    {        
-        std::lock_guard<std::mutex> lock(messageMutex);
-        signalMessageQueue.push(message);
-    }
-    messageCondition.notify_one();
-    
-    // 等待工作线程完成处理并返回结果，最多等待2秒
-    {        
-        std::unique_lock<std::mutex> lock(resultMutex);
-        auto waitResult = resultCondition.wait_for(lock, std::chrono::seconds(2), []{ return resultReady; });
-        
-        if (!waitResult) {
-            Logger::log(LogLevel::WARNING, "Signal processing timed out after 2 seconds");
-        } else {
-            if (signalResult.success) {
-                Logger::log(LogLevel::INFO, "Signal processing completed successfully");
-            } else {
-                Logger::log(LogLevel::ERROR, "Signal processing completed with errors");
-            }
-            
-            resultReady = false;
-        }
-    }
-    already_in_exit_flow = true;
-#ifdef BUILD_FOR_SIMULATION
-    // PC 模拟模式下，SIGTERM 不执行 poweroff/reboot，让程序正常退出
-    if (signal == SIGTERM) {
-        Logger::log(LogLevel::INFO, "[SIM] SIGTERM received, program will exit normally");
-    }
-#else
-    if (signal == SIGTERM) {
-        if (Power::getInstance()->isChangeModeRequested()) {
-            Logger::log(LogLevel::INFO, "Waiting 2 seconds before reboot...");
-            DeviceConfig::getInstance()->flush();
-            sleep(2);
-            Misc::reboot();
-            while(1);
-        } else {
-            Logger::log(LogLevel::INFO, "Waiting 2 seconds before power off...");
-            DeviceConfig::getInstance()->flush();
-            #if POWER_MANAGER_ON
-            sleep(2);
-            Misc::poweroff();
-            while(1);
-            #endif 
-        }
-    }
-#endif
+    errno = saved_errno;
 }
-
-// 工作线程全局变量
-std::thread signalHandlerThread;
 
 int main(int argc, char* argv[])
 {
@@ -1183,18 +1068,29 @@ int main(int argc, char* argv[])
         }
     });
     
-    // Register signal handler for CTRL+C
+    // Create the self-pipe used for async-signal-safe signal delivery.
+    // Must be done before registering signal handlers.
+    if (pipe(g_signal_pipe) != 0) {
+        fprintf(stderr, "Failed to create self-pipe for signal handling\n");
+        return -1;
+    }
+    // Make both ends non-blocking: the signal handler does a single short
+    // write(2) which is guaranteed atomic for size <= PIPE_BUF; the read end
+    // is drained in non-blocking mode from the main loop.
+    int flags = fcntl(g_signal_pipe[0], F_GETFL, 0);
+    fcntl(g_signal_pipe[0], F_SETFL, flags | O_NONBLOCK);
+    flags = fcntl(g_signal_pipe[1], F_GETFL, 0);
+    fcntl(g_signal_pipe[1], F_SETFL, flags | O_NONBLOCK);
+
+    // Register signal handler for CTRL+C / SIGTERM
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
 
     int command = CMD_HELP;
-    if (argc < 2 || std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help") {  
+    if (argc < 2 || std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help") {
         printUsage(argv);
         return -1;
     }
-
-    // 启动信号处理工作线程
-    signalHandlerThread = std::thread(signalHandlerThreadFunc);
 
     const bool is_work_mode_cmd = (std::string(argv[1]) == "-wm" || std::string(argv[1]) == "--work-mode");
     if (!is_work_mode_cmd) {
@@ -1636,11 +1532,6 @@ int main(int argc, char* argv[])
     if (command & CMD_MOBILE) {
         setenv("HTC_TEST_MODE", "1", 1);
 
-        // Start McuService polling before the HTTP server so request handlers
-        // see a warm cache. 5s is the default; queries are O(atomic load) on
-        // the HTTP thread, I2C stays on the polling thread.
-        service::McuService::getInstance().startPolling(5000);
-
         // Day/Night initialization for CMD_MOBILE (covers both -m and -wm 3 paths)
         if (daynight_switch) {
             const char* forceDay = std::getenv("HTC_FORCE_RECORD_DAY_MODE");
@@ -1741,7 +1632,7 @@ int main(int argc, char* argv[])
         }
 
         while (!already_in_exit_flow) {
-            sleep(1);
+            (void)waitForSignalOrTimeout(1000);
         }
 
         service::MdnsService::getInstance()->stop();
@@ -1775,7 +1666,7 @@ int main(int argc, char* argv[])
         }
         /* RTSP 服务器持续运行，等待退出信号 */
         while (!already_in_exit_flow) {
-            sleep(1);
+            (void)waitForSignalOrTimeout(1000);
         }
         RtspServer::getInstance()->stop();
     }
@@ -1931,28 +1822,22 @@ int main(int argc, char* argv[])
     }
 
 main_exit:
-    // Stop the MCU polling thread first so any other shutdown code that
-    // touches the I2C bus (e.g. syncWithMCU) does not race with the poller.
-    service::McuService::getInstance().stopPolling();
     service::TcpEventService::getInstance()->stop();
     service::MdnsService::getInstance()->stop();
-    // 停止信号处理工作线程
-    if (signalHandlerThread.joinable()) {
-        Logger::log(LogLevel::INFO, "Stopping signal handler thread...");
-        // 发送停止线程的消息
-        {
-            std::lock_guard<std::mutex> lock(messageMutex);
-            signalMessageQueue.push({SignalMessageType::STOP_THREAD});
-        }
-        messageCondition.notify_one();
-        
-        // 等待线程结束
-        signalHandlerThread.join();
-        Logger::log(LogLevel::INFO, "Signal handler thread stopped");
+
+    // Close the signal self-pipe. The signal handler does a guarded write
+    // to g_signal_pipe[1] before checking >= 0, so closing here is safe.
+    if (g_signal_pipe[0] >= 0) {
+        ::close(g_signal_pipe[0]);
+        g_signal_pipe[0] = -1;
     }
-    
+    if (g_signal_pipe[1] >= 0) {
+        ::close(g_signal_pipe[1]);
+        g_signal_pipe[1] = -1;
+    }
+
     Settings::getInstance()->saveToJsonFile(setting_file_path);
-    
+
     Logger::log(LogLevel::INFO, "Power off From Main function");
 #ifndef BUILD_FOR_SIMULATION
     auto gpio_power_hold = GPIO(POWER_HOLD_PIN);

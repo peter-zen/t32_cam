@@ -21,6 +21,7 @@ target_link_libraries(camera_service PUBLIC
     media_snap
     media_recorder
     daynight
+    mcu_service
     jsoncpp
     setting
     devconf

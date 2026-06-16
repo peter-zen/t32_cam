@@ -1,34 +1,23 @@
 #ifndef MCU_SERVICE_H
 #define MCU_SERVICE_H
 
-#include <atomic>
 #include <string>
-#include <thread>
-
-#include "McuCache.h"
 
 namespace service {
 
-// Process-internal singleton facade over the hardware MCU class. In test
-// mode the optional background polling thread (see startPolling/stopPolling)
-// keeps an McuCache warm so query methods never block on I2C. In work mode
-// and in PC simulation no thread is started and queries fall through to a
-// synchronous MCU::getInstance()->readXxx() call (the underlying I2C bus
-// is bypassed at build time in sim).
+// Process-internal singleton facade over the hardware MCU class. Query methods
+// are synchronous: every getter issues the underlying I2C read directly via
+// MCU::getInstance()->readXxx(). There is no background polling thread and no
+// cache — the freshness/cadence of MCU data is driven entirely by whoever
+// calls these getters. In the -m app that is the HTTP request handlers, so the
+// connected app decides how often data is refreshed (by how often it polls the
+// HTTP endpoints). In PC simulation the I2C bus is bypassed at build time and
+// reads return 0.
 class McuService {
 public:
     static McuService& getInstance();
 
-    // Idempotent. Caller is responsible for only calling this in long-lived
-    // modes (htc_main_app with CMD_MOBILE). In work / sim mode leave it
-    // un-called so query methods stay synchronous.
-    void startPolling(int periodMs);
-
-    // Idempotent. Joins the polling thread if running. Safe to call from
-    // main's exit path even if startPolling was never invoked.
-    void stopPolling();
-
-    // ---- Read-side query API (identical surface in all modes) -----------
+    // ---- Read-side query API (synchronous, on-demand) -----------------
     int getBattery1Voltage() const;
     int getBattery2Voltage() const;
     int getBatteryType() const;
@@ -60,22 +49,11 @@ public:
     // parse failure.
     bool setDatetime(const std::string& iso8601);
 
-    // ---- Test seams -----------------------------------------------------
-    McuCache& cacheForTest() { return cache_; }
-    bool isPolling() const { return running_.load(); }
-
 private:
     McuService();
     ~McuService();
     McuService(const McuService&) = delete;
     McuService& operator=(const McuService&) = delete;
-
-    void pollingLoop(int periodMs);
-
-    McuCache cache_;
-    std::thread thread_;
-    std::atomic<bool> running_{false};
-    std::atomic<bool> stopRequested_{false};
 };
 
 } // namespace service
