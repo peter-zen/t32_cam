@@ -224,7 +224,7 @@ bool DayNightSwitch::startAutoSwithch()
 bool DayNightSwitch::stopAutoSwitch()
 {
     if (this->autoSwitchThread == nullptr) {
-        Logger::log(LogLevel::ERROR, "auto switch thread is not running");
+        Logger::log(LogLevel::DEBUG, "auto switch thread is not running");
         return true;
     }
 
@@ -252,7 +252,7 @@ bool DayNightSwitch::stopAutoSwitch()
 bool DayNightSwitch::suspendAutoSwitch()
 {
     if (this->autoSwitchThread == nullptr) {
-        Logger::log(LogLevel::ERROR, "auto switch thread is not running");
+        Logger::log(LogLevel::DEBUG, "auto switch thread is not running");
         return false;
     }
 
@@ -268,7 +268,7 @@ bool DayNightSwitch::suspendAutoSwitch()
 bool DayNightSwitch::resumeAutoSwitch()
 {
     if (this->autoSwitchThread == nullptr) {
-        Logger::log(LogLevel::ERROR, "auto switch thread is not running");
+        Logger::log(LogLevel::DEBUG, "auto switch thread is not running");
         return false;
     }
 

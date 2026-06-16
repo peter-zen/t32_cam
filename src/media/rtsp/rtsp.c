@@ -1710,7 +1710,7 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
         }
 
         if (ctx->frame_count % 30 == 0) {
-            elog_i(RTSP_LOG_TAG, "[VIDEO] Pull result: %d, capture_ts=%" PRIu64, pull_result, timestamp);
+            elog_d(RTSP_LOG_TAG, "[VIDEO] Pull result: %d, capture_ts=%" PRIu64, pull_result, timestamp);
         }
         if (pull_result) {
             ctx->pull_fail_count++;

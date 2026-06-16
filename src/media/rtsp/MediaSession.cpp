@@ -308,7 +308,7 @@ void MediaSession::producerLoop()
             uint64_t consumed = consumedCount_.load();
             uint64_t pullTimeouts = pullTimeoutCount_.load();
             size_t fifoDrops = fifo_->getDropCount();
-            elog_i(LOG_TAG,
+            elog_d(LOG_TAG,
                    "[%s] Stats: produced=%llu/s consumed=%llu/s pull_timeout=%llu/s fifo=%zu/%zu fifo_drops=%zu(+%zu)",
                    sessionType_.c_str(),
                    (unsigned long long)(produced - lastProduced),
