@@ -29,12 +29,22 @@ Both are gitignored. If a `build_t32/` (or similar) dir exists, it is **stale** 
 
 ### Toolchain location (T32 only)
 
-The cross-compile toolchain lives at `toolchain/mips-gcc540-glibc222-r3.3.7.mxu2.cve/` (relative to project root, set in `toolchain.cmake:10`). If the directory is missing, extract it from `ref/Tassadar-T32-1.0.6-20250613.7z`.
+The cross-compile toolchain is **already present on the build host** at `toolchain/mips-gcc540-glibc222-r3.3.7.mxu2.cve/` (relative to project root; referenced from `toolchain.cmake:10`). It is gitignored — not committed, but installed on this dev machine — so a normal T32 cross-build works out of the box. `build/` on this host is already configured for T32 (`BUILD_FOR_SIMULATION=OFF` + `toolchain.cmake`) and holds prior artifacts, so `cmake --build build -j$(nproc)` rebuilds in place.
+
+**Do not conclude "toolchain missing" just because a path probe failed.** Paths like `toolchain/...` and `build/...` are relative to the project root and resolve against the current working directory. If you `cd`'d into `build/` or `build_sim/` (e.g. to run a built binary), those probes look for `build/toolchain/...` and come back empty — check `pwd` (or use an absolute path) before concluding anything is absent.
+
+The toolchain ships two compiler variants, selected by `USE_UCLIBC` in `toolchain.cmake` (default `USE_UCLIBC=1`):
+- `mips-linux-uclibc-gnu-gcc` (uClibc) — the **default** T32 target actually used by `build/`
+- `mips-linux-gnu-gcc` (glibc) — alternate
+
+On a fresh machine where the directory genuinely is absent, the toolchain is shipped as a nested `.tar.bz2` inside the release archive — extract the 7z, then untar into `toolchain/`:
 
 ```bash
-# One-time, if needed
-7z x ref/Tassadar-T32-1.0.6-20250613.7z -oref/
-mv ref/mips-gcc540-glibc222-r3.3.7.mxu2.cve toolchain/
+# One-time, only if toolchain/mips-gcc540-glibc222-r3.3.7.mxu2.cve/ is absent
+7z x ref/Tassadar-T32-1.0.6-20250613.7z -oref/ \
+  Tassadar-T32-1.0.6-20250613/software/pc/toolchain/mips-gcc540-glibc222-r3.3.7.mxu2.cve.tar.bz2
+tar xjf ref/Tassadar-T32-1.0.6-20250613/software/pc/toolchain/mips-gcc540-glibc222-r3.3.7.mxu2.cve.tar.bz2 \
+  -C toolchain/
 ```
 
 ### T32 hardware build (NFS-shared, deployed to T32)
