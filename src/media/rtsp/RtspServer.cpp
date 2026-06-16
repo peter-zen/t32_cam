@@ -187,7 +187,7 @@ bool RtspServer::initialize()
     if (enableAudio_) {
         if (!initAudio()) {
             Logger::log(LogLevel::ERROR, "Audio init failed, continue without audio");
-            return false;
+            enableAudio_ = false;
         }
     }
     Logger::log(LogLevel::DEBUG, "Video init success");
