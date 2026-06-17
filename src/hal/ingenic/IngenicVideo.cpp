@@ -9,6 +9,7 @@
 #include <atomic>
 #include <mutex>
 #include <map>
+#include <vector>
 #include "Logger.h"
 #include "sensor-config.h"
 namespace hal {
@@ -879,11 +880,21 @@ IngenicVideoStream::IngenicVideoStream()
 }
 IngenicVideoStream::~IngenicVideoStream() {
     if (configured_) {
-        IMPEncoderCHNStat st;
-        memset(&st, 0, sizeof(st));
-        if (IMP_Encoder_Query(channel_id_, &st) >= 0) {
-            if (st.registered) { IMP_Encoder_UnRegisterChn(channel_id_); }
+        // Flush in-flight encoder frames BEFORE teardown so IMP_System_Exit() is
+        // never called while the encoder still holds an unreleased stream. Order
+        // follows imp_system.h: StopRecv -> drain/release cached stream -> UnBind
+        // (needs FS disabled first; releaseFrameSource does DisableChn) ->
+        // DestroyChn -> DestroyGroup. UnRegister/Destroy are unconditional: IMP
+        // tolerates calling them on an already-freed channel (returns <0, harmless).
+        // The earlier IMP_Encoder_Query(st.registered) gate is unreliable after
+        // teardown and was removed (see artifacts/T3-analyst-evidence.md 缺陷 B).
+        if (last_stream_valid_) {
+            IMP_Encoder_ReleaseStream(channel_id_, &last_stream_);
+            last_stream_valid_ = false;
         }
+        IMP_Encoder_StopRecvPic(channel_id_);
+        releaseFrameSource(group_id_);
+        IMP_Encoder_UnRegisterChn(channel_id_);
         releaseBind(group_id_, &fs_cell_, &enc_cell_);
         IMP_Encoder_DestroyChn(channel_id_);
         releaseGroup(group_id_);
@@ -1182,10 +1193,100 @@ bool IngenicVideo::exit() {
         Logger::log(LogLevel::INFO, "IngenicVideo still in use, ref=%d", g_video_init_ref_count.load());
         return true;
     }
+    // SDK teardown ordering (sdk/include/imp/imp_system.h:130-131):
+    //   L130: UnBind must happen AFTER FrameSource is Disabled.
+    //   L131: DestroyGroup must happen AFTER UnBind.
+    // exit() is the last reliable teardown point (the IngenicVideo destructor
+    // is skipped when main() ends via Misc::poweroff()/while(1)). The per-stream
+    // destructor (~IngenicVideoStream) normally already releases its own
+    // group/bind/channel AND erases from the ref-count maps; exit() here only
+    // sweeps residuals left in the file-static maps, so empty maps => no-op and
+    // there is no double-destroy vs the stream destructor. Order enforced:
+    //   1. Disable FrameSource (all channels)  -> allows UnBind
+    //   2. Flush/stop encoder in-flight frames  -> clean encoder state
+    //   3. UnBind (g_bind_ref_count)            -> allows DestroyGroup
+    //   4. UnRegisterChn/DestroyChn/DestroyGroup (g_group_ref_count)
+    //   5. ISP/OSD teardown
+    //   6. fsMgr.destroy() (DestroyChn FrameSource) -> IMP_System_Exit -> sensor/ISP
+    Logger::log(LogLevel::INFO, "[HAL] exit: teardown begin (FS disable -> flush -> UnBind -> DestroyGroup -> ISP/System)");
+    // 1. Disable FrameSource so UnBind is legal (imp_system.h:130).
+    fsMgr.disable();
+    // 2. Stop encoder recv / flush in-flight frames for any residual channel so
+    //    IMP_System_Exit() is never called while the encoder holds a stream.
+    {
+        std::vector<int> groups;
+        {
+            std::lock_guard<std::mutex> lock(g_group_mutex);
+            for (const auto& kv : g_group_ref_count) {
+                groups.push_back(kv.first);
+            }
+        }
+        for (int grp : groups) {
+            // RTSP uses H264 where channel_id == group_id (see configure()).
+            int chn = grp;
+            Logger::log(LogLevel::INFO, "[HAL] exit: flush/StopRecvPic(chn=%d)", chn);
+            IMP_Encoder_StopRecvPic(chn);
+        }
+    }
+    // 3. UnBind (after FS disabled). IMP_System_UnBind on an unbound pair is
+    //    tolerated (returns <0, harmless). No Query gate — see stream destructor.
+    {
+        std::vector<int> bind_groups;
+        {
+            std::lock_guard<std::mutex> lock(g_bind_mutex);
+            for (const auto& kv : g_bind_ref_count) {
+                bind_groups.push_back(kv.first);
+            }
+        }
+        for (int grp : bind_groups) {
+            IMPCell fs_cell;
+            IMPCell enc_cell;
+            memset(&fs_cell, 0, sizeof(fs_cell));
+            memset(&enc_cell, 0, sizeof(enc_cell));
+            fs_cell.deviceID = DEV_ID_FS;
+            fs_cell.groupID = grp;
+            fs_cell.outputID = 0;
+            enc_cell.deviceID = DEV_ID_ENC;
+            enc_cell.groupID = grp;
+            enc_cell.outputID = 0;
+            Logger::log(LogLevel::INFO, "[HAL] exit: fallback UnBind(group=%d)", grp);
+            IMP_System_UnBind(&fs_cell, &enc_cell);
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_bind_mutex);
+            g_bind_ref_count.clear();
+        }
+    }
+    // 4. DestroyGroup/Chn (after UnBind, imp_system.h:131). Unconditional
+    //    UnRegisterChn — IMP_Encoder_Query(st.registered) is unreliable after
+    //    teardown; calling UnRegister/Destroy on an already-freed channel is
+    //    harmless (returns <0).
+    {
+        std::vector<int> groups;
+        {
+            std::lock_guard<std::mutex> lock(g_group_mutex);
+            for (const auto& kv : g_group_ref_count) {
+                groups.push_back(kv.first);
+            }
+        }
+        for (int grp : groups) {
+            int chn = grp;
+            Logger::log(LogLevel::INFO, "[HAL] exit: fallback destroy chn/group (group=%d, chn=%d)", grp, chn);
+            IMP_Encoder_UnRegisterChn(chn);
+            IMP_Encoder_DestroyChn(chn);
+            IMP_Encoder_DestroyGroup(grp);
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_group_mutex);
+            g_group_ref_count.clear();
+        }
+    }
+    // 5. ISP/OSD teardown.
     if (ispOsdMgr_) {
         ispOsdMgr_->exit();
         ispOsdMgr_.reset();
     }
+    // 6. Destroy FrameSource channels, then IMP_System_Exit, then sensor/ISP.
     if (fsMgr.destroy() < 0) return false;
     IMP_System_Exit();
     auto sensors = loadSensors();
@@ -1196,6 +1297,7 @@ bool IngenicVideo::exit() {
     }
     if (sensorMgr.closeISP() < 0) return false;
     IMP_Encoder_MultiProcessExit();
+    Logger::log(LogLevel::INFO, "[HAL] exit: teardown complete");
     return true;
 }
 std::shared_ptr<IVideoStream> IngenicVideo::createVideoStream() {
