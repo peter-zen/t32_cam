@@ -29,6 +29,11 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T6
+  title: WiFi 连接管理独立应用:driver 单次加载+按参数/MCU 连接+DHCP+可选回写 MCU
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -48,4 +53,14 @@ risks:
   2 次起出现 ''WiFi already connected, skip connectWifi'' + ''already has IP, skip DHCP'',无
   insmod/File exists/ctrl_iface exists/oops,dmesg 无 DbusProcess/robust-futex,退出后 pgrep
   wpa_supplicant + lsmod|grep 8189fs 仍在)需设备侧执行,见 evidence 第 9 节脚本。"}'
-active_task: T5
+- '{''key'': ''T6-shell-injection-preexisting'', ''severity'': ''low'', ''description'':
+  ''wifi_reconnect.cpp reconnectSSID 把凭据以 shell 拼接方式喂给 wpa_passphrase/wpa_cli set_network（:157/186/192），经
+  Misc::popencall→popen/system→sh -c。含 shell 元字符的 ssid/password 可被注入。但该风险与既有 wpa_conn.cpp:105
+  generate_wifi_config（裸 + 拼接同款凭据进同款 shell 路径） 等价，main_app.cpp connectWifi 也经此；凭据源为本地
+  CLI/MCU 寄存器非远程可达。故 severity low， 归入后续 WiFi 凭据安全加固，不阻塞 T6 merge。''}'
+- '{''key'': ''T6-hw-unverified'', ''severity'': ''medium'', ''description'': ''reviewer
+  仅做代码审计 + sim 冒烟 + 产物 file 核验（PC 不能跑 MIPS）。真机 WiFi 实连回归（script/regress_wifi_real.sh
+  用例 A-F：A 首连 / B 优雅切 SSID 且 wpa_supplicant PID 恒定 / C --write-mcu 回写 MCU / D 错密码
+  exit 3 / E 无参读 MCU / F 5 轮 A↔B PID 恒定 + dmesg 无 oops）需 T32 硬件手动跑。关键不变量：用例 B/F 的
+  wpa_supplicant PID 跨 SSID 切换恒定是 T5 不回归的唯一可观测证明。''}'
+active_task: T6
