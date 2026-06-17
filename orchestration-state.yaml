@@ -63,6 +63,11 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T13
+  title: 'Root-fix: declare daynight dep on media_rtsp (fix htc_media_app link break)'
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -103,4 +108,4 @@ risks:
   T32) link failure for htc_media_app (undefined DayNightSwitch::* refs). Same class
   as the crc16/T10 issue. Fix: target_link_libraries(media_rtsp PRIVATE ... daynight)
   at the source. Pre-existing, not introduced by T9-T12.'
-active_task: T12
+active_task: T13
