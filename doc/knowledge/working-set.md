@@ -92,6 +92,7 @@
 **参考文档**：
 - `doc/knowledge/decisions/mcu-service-architecture.md` — 架构决策
 - `doc/api/device-and-system-api.md` — 4 个端点契约
+- `doc/knowledge/refs/mcu-api-and-register-inventory.md` — **MCU API 完整清单 + 寄存器映射 + HTTP 使用对照 + 未用 API 清单**（132 方法逐项，23 个经 HTTP / 45 个总用 / 88 个未用）
 
 **遗留问题**（follow-up）：
 - `MCU::readFirmwareVersion()` 等仍是 stub（返 "1.0.0"），需 MCU 固件侧配合

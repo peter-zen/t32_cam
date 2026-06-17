@@ -1,0 +1,51 @@
+project:
+  goal: <项目目标,一句话>
+  acceptance:
+  - <验收标准 1>
+  - <验收标准 2>
+tasks:
+- id: T1
+  title: <首个任务标题>
+  status: todo
+  assignee: implementer
+  deliverables: []
+- id: T2
+  title: 第二次启动 htc_main_app -m 卡在 RTSP 初始化,未到监听端口日志
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T3
+  title: 第三次启动 htc_main_app -m 仍卡死(T2 teardown 修复后)
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T4
+  title: 编写 MCU.h 全量 API 测试程序：先穷举读，再写+读回验证（仅 T32 真机）
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T5
+  title: WiFi 驱动/连接状态复用:重启不再重复 insmod/重连(根治 DbusProcess oops)
+  status: done
+  assignee: implementer
+  deliverables: []
+decisions: []
+risks:
+- '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
+  ''静态链路 + 双平台编译已过,但 T32 硬件真实 IMP 驱动下第二次启动是否不再卡在 configure() 尚未在设备验证,留给用户做设备侧回归。''}'
+- '{''key'': ''T3-hw-regression-pending-user'', ''severity'': ''medium'', ''description'':
+  ''双平台编译已过，连续 5 次 kill+重启(第3次卡死)回归待 T32 硬件执行(imp_stub 全 no-op，PC 无真实 IMP 驱动)；analyst
+  §8 已给脚本，留用户。''}'
+- '{''key'': ''T3-hw-regression-pending-user'', ''severity'': ''medium'', ''description'':
+  ''双平台编译已过，连续 5 次 kill+重启(第3次卡死)回归待 T32 硬件执行(imp_stub 全 no-op，PC 无真实 IMP 驱动)；analyst
+  §8 已给脚本，留用户。''}'
+- '{''key'': ''T4-hw-unverified'', ''severity'': ''medium'', ''description'': ''reviewer
+  复跑仅限 sim 冒烟 + 代码审计（PC 不能跑 MIPS）。真机 Phase1（read 实数据 range 分类）、 Phase2（write+回读，定位
+  writeESOR_WID 2B 截断）、--restore 回路（写后回读≈快照）需 T32 硬件验证，留用户执行 （见 doc/knowledge/playbooks/mcu-api-test-runbook.md）。另
+  writeGps 地址错配在真机会恒显 readback mismatch FAIL， 非 writeESOR_WID 同类 bug，runbook 应区分说明。''}'
+- '{''key'': ''T5-hw-unverified'', ''severity'': ''medium'', ''description'': "PC
+  侧验证齐备(双平台 build exit 0 + 代码审计 + grep 校验),但 T32 真机连跑回归(htc_main_app -m 连跑 ≥6 次:第
+  2 次起出现 ''WiFi already connected, skip connectWifi'' + ''already has IP, skip DHCP'',无
+  insmod/File exists/ctrl_iface exists/oops,dmesg 无 DbusProcess/robust-futex,退出后 pgrep
+  wpa_supplicant + lsmod|grep 8189fs 仍在)需设备侧执行,见 evidence 第 9 节脚本。"}'
+active_task: T5

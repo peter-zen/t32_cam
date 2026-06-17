@@ -91,5 +91,6 @@
 ## 7. 相关文档
 
 - `doc/api/device-and-system-api.md` — 本轮填实的 4 个端点契约
+- `doc/knowledge/refs/mcu-api-and-register-inventory.md` — MCU API 完整清单（132 方法）+ 寄存器映射 + HTTP↔MCU 使用对照 + 未用 API 清单（含 IIC→MCU→McuService→HTTP 调用架构图）
 - `doc/knowledge/decisions/service-interface-layering-analysis.md` — 4 service interface 拆分决策
 - `doc/knowledge/decisions/asymmetric-snap-vs-record-design.md` — work mode vs test mode 行为差异背景
