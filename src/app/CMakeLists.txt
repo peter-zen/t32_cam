@@ -41,6 +41,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../service/discovery
         ${CMAKE_CURRENT_SOURCE_DIR}/../service/event
         ${CMAKE_CURRENT_SOURCE_DIR}/../storage
+        ${CMAKE_CURRENT_SOURCE_DIR}/../manifest
         ${CMAKE_CURRENT_SOURCE_DIR}/../hal/include
         ${THIRD_PARTY_PATH}/jsoncpp/include
         ${THIRD_PARTY_PATH}/sqlite
@@ -133,6 +134,7 @@ if(BUILD_FOR_SIMULATION)
         jsoncpp
         daynight
         app_workmode
+        manifest
         logger
         #misc libs
         mcu
@@ -286,6 +288,7 @@ target_link_libraries(htc_main_app
     jsoncpp
     daynight
     app_workmode
+    manifest
     logger
 
     #misc libs

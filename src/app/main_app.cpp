@@ -58,10 +58,12 @@
 #include "DatabaseManager.h"
 #include "MediaScanner.h"
 #include "MdnsService.h"
+#include "MdnsParams.h"
 #include "TcpEventService.h"
 #include "Timezone.h"
 #include "UsbDongle.h"
 #include "CameraFactoryConfigImporter.h"
+#include "manifest/Manifest.h"
 
 using namespace network;
 
@@ -78,47 +80,6 @@ static std::string getCurrentTimeFormatted()
     ss << std::put_time(nowtime, "%Y%m%d_%H%M%S");
     Misc::getDateTime();
     return ss.str();
-}
-
-static bool getFileCreationTime(const std::string& filename, std::string& time_str)
-{
-    struct stat attr;
-    if (stat(filename.c_str(), &attr) == 0) {
-        time_str = Timezone::getFormattedTimeWithTimezone(attr.st_ctime);
-        if (time_str.empty()) {
-            Logger::log(LogLevel::ERROR, "Failed to get file creation time");
-            return false;
-        }
-        char year[5] = {0}, mon[3] = {0}, day[3] = {0}, hour[3] = {0}, min[3] = {0}, sec[3] = {0};
-        auto filename_no_path = filename.substr(filename.find_last_of('/') + 1);
-        memset( year, 0, 5 );
-        strncpy(year, filename_no_path.c_str(), 4);
-        memset( mon, 0, 3 );
-        strncpy(mon, filename_no_path.c_str() + 4, 2);
-        memset( day, 0, 3 );
-        strncpy(day, filename_no_path.c_str() + 6, 2);
-        memset( hour, 0, 3 );
-        strncpy(hour, filename_no_path.c_str() + 9, 2);
-        memset( min, 0, 3 );
-        strncpy(min, filename_no_path.c_str() + 11, 2);
-        memset( sec, 0, 3 );
-        strncpy(sec, filename_no_path.c_str() + 13, 2);
-        
-        // Create a time_t object from parsed components
-        struct tm tm_info = {0};
-        tm_info.tm_year = atoi(year) - YEAR_OFFSET;  // Years since 1900
-        tm_info.tm_mon = atoi(mon) - MONTH_OFFSET;       // Months (0-11)
-        tm_info.tm_mday = atoi(day);          // Day of month
-        tm_info.tm_hour = atoi(hour);         // Hour
-        tm_info.tm_min = atoi(min);           // Minute
-        tm_info.tm_sec = atoi(sec);           // Second
-        
-        // Convert to time_t and use the function with timezone
-        time_t parsed_time = mktime(&tm_info);
-        time_str = Timezone::getFormattedTimeWithTimezone(parsed_time);
-    }
-
-    return true;
 }
 
 static std::string trimConfigString(const std::string& value)
@@ -199,275 +160,6 @@ static uint16_t getConfiguredPort(const std::shared_ptr<DeviceConfig>& config,
         return default_port;
     }
     return static_cast<uint16_t>(configured_port);
-}
-
-static std::string getDefaultMdnsInstanceName(const std::shared_ptr<DeviceConfig>& config)
-{
-    std::string instance_name = trimConfigString(config->get(INI_SECTION_MDNS, INI_KEY_MDNS_INSTANCE_NAME, ""));
-    if (!instance_name.empty()) {
-        return instance_name;
-    }
-
-    instance_name = trimConfigString(config->get(INI_SECTION_BOOT, INI_KEY_PNAME, ""));
-    if (!instance_name.empty()) {
-        return instance_name;
-    }
-
-    instance_name = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
-    if (!instance_name.empty()) {
-        return instance_name;
-    }
-
-    return "T32Camera";
-}
-
-static std::string getDefaultMdnsHostName(const std::shared_ptr<DeviceConfig>& config)
-{
-    std::string host_name = trimConfigString(config->get(INI_SECTION_MDNS, INI_KEY_MDNS_HOST_NAME, ""));
-    if (!host_name.empty()) {
-        return host_name;
-    }
-
-    host_name = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
-    if (!host_name.empty()) {
-        return host_name;
-    }
-
-    return "t32cam";
-}
-
-static service::MdnsServiceParams buildMdnsParams(const std::shared_ptr<DeviceConfig>& config,
-                                                  const std::string& interface_name,
-                                                  const std::string& ip_address,
-                                                  uint16_t ctrl_port,
-                                                  uint16_t rtsp_port)
-{
-    service::MdnsServiceParams params;
-    params.interfaceName = interface_name;
-    params.ipAddress = ip_address;
-    params.serviceType = trimConfigString(
-        config->get(INI_SECTION_MDNS, INI_KEY_MDNS_SERVICE_TYPE, "_t32cam._tcp"));
-    params.instanceName = getDefaultMdnsInstanceName(config);
-    params.hostName = getDefaultMdnsHostName(config);
-    params.txt.deviceFamily = service::kDefaultMdnsDeviceFamily;
-    params.txt.model = trimConfigString(config->get(INI_SECTION_BOOT, INI_KEY_PMODEL, "T32"));
-    params.txt.serialNumber = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
-    params.txt.firmwareVersion = CAMERA_VERSION;
-    params.txt.rtspPort = rtsp_port;
-    params.txt.ctrlPort = ctrl_port;
-    params.txt.macAddress = Misc::getMACAddress(interface_name);
-    params.txt.status = "ready";
-    return params;
-}
-
-static bool isMdnsEnabled(const std::shared_ptr<DeviceConfig>& config)
-{
-    return config->get(INI_SECTION_MDNS, INI_KEY_MDNS_ENABLE, 1) != 0;
-}
-
-static int generateDescInfo(std::vector<std::string>& files, std::string& desc_info)
-{
-    auto settings = Settings::getInstance();
-    char temp_buf[32] = {0};
-    auto mcu = MCU::getInstance();
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    
-    // Use the reusable function to format current time with dynamic timezone
-    std::string current_time_str = Timezone::getFormattedTimeWithTimezone(tv.tv_sec);
-    if (current_time_str.empty()) {
-        Logger::log(LogLevel::ERROR, "Failed to get current time string");
-        return -1;
-    }
-
-    Json::Value json_root;
-    json_root["F_UploadedTag"] = 0;
-    Json::Value file_inf_array(Json::arrayValue);
-
-    for ( auto& filename : files ) {
-        if (filename.empty()) { 
-            Logger::log(LogLevel::INFO, "empty file name");
-            continue;
-        }
-        std::string file_creation_time;    
-        if (!getFileCreationTime(filename, file_creation_time)) {
-            Logger::log(LogLevel::INFO, "Failed to get file creation time for %s", filename.c_str());
-            continue;
-        }
-
-        Json::Value file_item;
-        file_item["F_FilePath"] = Misc::getFilepath(filename);
-        file_item["F_FileName"] = Misc::getFilename(filename);
-        file_item["F_FileTime"] = file_creation_time;
-        file_item["F_UploadedTag"] = 0;
-
-        uint16_t check_code = 0x0000;
-        if (CRC::calculate_crc16(filename, check_code)) {
-            file_item["F_CheckCode"] = static_cast<int>(check_code);
-        }
-
-        file_inf_array.append(file_item);
-    }
-    json_root["file_inf"] = file_inf_array;
-
-    //device
-    Json::Value device_obj;
-    {
-        device_obj["PID"] = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
-        device_obj["EUID"] = "";
-        device_obj["IP"] = Misc::getIPAddress(Misc::getNetworkInterfaceName());
-        device_obj["GP"] = mcu->readGps();
-
-        auto lowpower_volte = mcu->readLowPowerVoltage();
-        auto battery1_volte = mcu->readBattery1Voltage();
-        auto battery2_volte = mcu->readBattery2Voltage();
-        device_obj["Battery1"] = mcu->convertVoltage(battery1_volte);
-        device_obj["Battery2"] = mcu->convertVoltage(battery2_volte);
-
-        auto ext_volte = mcu->readExternalVoltage();
-        auto shutdown_volte = mcu->readShutdownVoltage();
-        if ( ext_volte <= 14 || battery1_volte <= shutdown_volte ) {
-            device_obj["SPower"] = "0";
-            device_obj["EPower"] = mcu->convertVoltage(ext_volte);
-        } else {
-            device_obj["EPower"] = "0";
-            device_obj["SPower"] = mcu->convertVoltage(ext_volte);
-        }
-
-        auto disk_info = Disk::getInfo(DISK_PATHNAME);
-        int used = (disk_info.total - disk_info.free) * 10 / 1024;
-        int total = disk_info.total * 10 / 1024;
-        
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%d/%d.%d G", used / 10, used % 10, total / 10, total % 10 );
-        device_obj["Memory"] = temp_buf;
-        device_obj["WMode"] = 0;
-        device_obj["ONTime"] = settings->onTime_0 + (settings->onTime_1 << 8);
-
-        device_obj["NStatus"] = 0;
-
-        if ( 1 ) {
-            device_obj["AStatus"] = 22;
-        }
-        else if ( battery1_volte <= shutdown_volte && ext_volte <= shutdown_volte ) {
-            device_obj["AStatus"] = 23;  /*powroff*/
-        }
-        else if ( battery1_volte <= lowpower_volte && ext_volte <= lowpower_volte  ) {
-            device_obj["AStatus"] = 21;  /*low*/
-        }
-        else {
-            device_obj["AStatus"] = 11;
-        }
-
-        auto battery1_level = mcu->readBatteryLevel();
-        device_obj["BAT1_Level"] = battery1_level;
-
-        device_obj["Low_PWR_Val"] = mcu->convertVoltage(lowpower_volte);
-        device_obj["Loff_PWR_Val"] = mcu->convertVoltage(shutdown_volte);
-
-        device_obj["UTime"] = current_time_str;
-
-    }
-    json_root["device"] = device_obj;
-
-    //data
-    Json::Value data_obj;
-    {
-        #if USER_CONFIG_WPWS
-        data_obj["D_Type"] = mcu->readEventType();
-        data_obj["D_Id"] = mcu->readEventID();
-        data_obj["D_Num"] = mcu->readEventNum();
-        #else
-        data_obj["D_Temperature"] = to_string_custom(mcu->readTemperature());
-        data_obj["D_Humidity"] = to_string_custom(mcu->readHumidity());
-        data_obj["D_Atmos"] = to_string_custom(mcu->readAtmosPressure());
-
-        snprintf(temp_buf, sizeof(temp_buf), "%08X", mcu->readRMID());
-        data_obj["D_SensorPID"] = temp_buf;
-        data_obj["D_SensorType"] = mcu->readRMType();
-        data_obj["D_SensorValue"] = mcu->readRMValue();
-        auto rm_bat_v = mcu->readBatteryVoltage();
-        auto rm_bat1_v = mcu->readBattery1Voltage();
-        auto rm_bat2_v = mcu->readBattery2Voltage();
-        data_obj["D_SensorBattery"] = mcu->convertVoltage(rm_bat_v);
-        data_obj["D_SensorBattery1"] = mcu->convertVoltage(rm_bat1_v);
-        data_obj["D_SensorBattery2"] = mcu->convertVoltage(rm_bat2_v);
-        data_obj["D_SensorGP"] = "";
-        data_obj["D_SensorCount"] = mcu->readRMCount();
-        auto rm_sp_v = mcu->readRMSunPowerValue();
-        data_obj["D_SensorSP"] = mcu->convertVoltage(rm_sp_v);
-        #endif
-    }
-    json_root["data"] = data_obj;
-
-    //network
-    Json::Value network_obj;
-    {
-        network_obj["N_UPID"] = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_UPID, "CKVISON");
-        network_obj["N_UIP"] = "0";
-        network_obj["N_CStatus"] = 0;
-        network_obj["N_CIP"] = "0";
-        network_obj["N_MStatus"] = 0;
-        network_obj["N_MIP"] = "0";
-    }
-    json_root["network"] = network_obj;
-
-    //signal
-    Json::Value signal_obj;
-    {
-        auto IsWifiStationReady = mcu->IsWifiStationReady();
-        if (IsWifiStationReady) {
-            signal_obj["S_CF"] = mcu->readSignalCF();
-            signal_obj["S_RSSI"] = mcu->readSignalRSSI();
-            signal_obj["S_RL"] = 0;
-            signal_obj["S_RSRP"] = mcu->readSignalRSRP();
-            signal_obj["S_RSRQ"] = mcu->readSignalRSRQ();
-            signal_obj["S_SNR"] = mcu->readSignalSNR();
-            signal_obj["S_TD"] = mcu->readSignalTD();
-            signal_obj["S_TP"] = mcu->readSignalTP();
-        } else {
-            auto program_type = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
-            if (PTYPE_USB_DONGLE == program_type && mcu->Is4gExist()) {
-                signal_obj["S_RSSI"] = mcu->readSignalRSSI();
-                signal_obj["S_CF"] = mcu->readSignalCF();
-            } else {
-                signal_obj["S_RSSI"] = 0;
-                signal_obj["S_CF"] = 0;
-            }
-
-            signal_obj["S_RL"] = 0;
-            signal_obj["S_RSRP"] = 0;
-            signal_obj["S_RSRQ"] = 0;
-            signal_obj["S_SNR"] = 0;
-            signal_obj["S_TD"] = 0;
-            signal_obj["S_TP"] = 0;
-        }
-    }
-    json_root["signal"] = signal_obj;
-
-    Json::StreamWriterBuilder writer_builder;
-    desc_info = Json::writeString(writer_builder, json_root);
-
-    return EC_SUCCESS;
-}
-
-static int createDescInfoFile(std::vector<std::string>& media_files, const std::string &desc_filename)
-{
-    std::string desc_info;
-    int ret = generateDescInfo(media_files, desc_info);
-    if (ret != EC_SUCCESS) {
-        return ret;
-    }
-
-    auto fp = fopen(desc_filename.c_str(), "w+");
-    if (!fp) {
-        return EC_OPEN_FILE_FAILED;
-    }
-
-    fwrite(desc_info.c_str(), 1, desc_info.length(), fp);
-
-    fclose(fp);
-
-    return EC_SUCCESS;
 }
 
 static bool syncWithMCU()
@@ -606,7 +298,7 @@ static bool processCmdSnap(bool is_rtc_work_well) {
         }
 
         auto desc_filename = upload_path + ".json";
-        createDescInfoFile(file_names, desc_filename);
+        manifest::createDescInfoFile(file_names, desc_filename);
     }
 
     if (file_names.empty()) {//only for test
@@ -618,7 +310,7 @@ static bool processCmdSnap(bool is_rtc_work_well) {
         auto snap_param = ImageSnapParams();
         auto imageSnap = std::make_shared<ImageSnap>(snap_param);
         imageSnap->snap(file_names);
-        createDescInfoFile(file_names, "./res/20250620_101358.json");
+        manifest::createDescInfoFile(file_names, "./res/20250620_101358.json");
     }
     return true;
 }
@@ -713,7 +405,7 @@ static bool processCmdVideoRecord(bool is_rtc_work_well) {
     // 3) 写 desc JSON(generateDescInfo 走 IIC/MCU,不依赖 SDK 缓冲)
     std::vector<std::string> files = { record_path };
     std::string desc_info;
-    if (generateDescInfo(files, desc_info) == 0) {
+    if (manifest::generateDescInfo(files, desc_info) == 0) {
         std::string desc_filename = std::string(MEDIA_UPLOAD_PATH) + getCurrentTimeFormatted() + ".json";
         service::camera::RecordingPostProcess::writeWorkModeDescJson(desc_info, desc_filename);
     } else {
@@ -787,7 +479,7 @@ static bool processCmdConcurrentSnapRecord(bool is_rtc_work_well) {
     if (!Misc::createDirectory(MEDIA_UPLOAD_PATH)) {
         Logger::log(LogLevel::ERROR, "Failed to create upload directory");
     }
-    createDescInfoFile(all_files, desc_filename);
+    manifest::createDescInfoFile(all_files, desc_filename);
     return true;
 }
 static void printUsage(char *argv[])
@@ -1415,40 +1107,13 @@ int main(int argc, char* argv[])
             Logger::log(LogLevel::ERROR, "ntp server is empty");
             goto main_exit;
         }
-        if (!Misc::ntpSync(ntp_server)) {
-            Logger::log(LogLevel::ERROR, "ntp sync error");
-            goto main_exit;
-        }
-        
-        // Wait until system time is synchronized (year > YEAR_MIN(2000))
-        const int MAX_WAIT_SECONDS = 30; // Maximum wait time 30 seconds
-        const int CHECK_INTERVAL = 2;    // Check every 2 seconds
-        int wait_time = 0;
-        struct tm* nowtime = nullptr;
-        while (wait_time < MAX_WAIT_SECONDS) {
-            time_t now = time(nullptr);
-            nowtime = localtime(&now);
-            
-            // Check if year is greater than YEAR_MIN
-            if (nowtime->tm_year + YEAR_OFFSET > YEAR_MIN) {
-                Logger::log(LogLevel::INFO, "System time synchronized: %d-%02d-%02d %02d:%02d:%02d",
-                           nowtime->tm_year + YEAR_OFFSET, nowtime->tm_mon + MONTH_OFFSET, nowtime->tm_mday,
-                           nowtime->tm_hour, nowtime->tm_min, nowtime->tm_sec);
-                break;
-            }
-            
-            Logger::log(LogLevel::INFO, "Waiting for system time synchronization, current year: %d, waited %d seconds", 
-                       nowtime->tm_year + YEAR_OFFSET, wait_time);
-            sleep(CHECK_INTERVAL);
-            wait_time += CHECK_INTERVAL;
-        }
-        
-        if (wait_time >= MAX_WAIT_SECONDS) {
-            Logger::log(LogLevel::WARNING, "Timeout waiting for system time synchronization after %d seconds", MAX_WAIT_SECONDS);
+        if (!Misc::ntpSyncAndWait(ntp_server)) {
             goto main_exit;
         }
 
         if (is_rtc_work_well) {
+            time_t now = time(nullptr);
+            struct tm* nowtime = localtime(&now);
             RTC::getInstance()->setTime(*nowtime);
         }
     }
@@ -1596,8 +1261,8 @@ int main(int argc, char* argv[])
             goto main_exit;
         }
 
-        if (isMdnsEnabled(config)) {
-            auto mdns_params = buildMdnsParams(config, interface_name, ip_address, http_port, rtsp_port);
+        if (service::isMdnsEnabled(config)) {
+            auto mdns_params = service::buildMdnsParams(config, interface_name, ip_address, http_port, rtsp_port);
             if (!service::MdnsService::getInstance()->start(mdns_params)) {
                 Logger::log(LogLevel::ERROR, "Failed to start mDNS service");
                 goto main_exit;

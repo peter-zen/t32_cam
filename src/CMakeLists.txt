@@ -34,6 +34,7 @@ add_subdirectory(hardware)
 add_subdirectory(platform)
 add_subdirectory(service)
 add_subdirectory(storage)
+add_subdirectory(manifest)
 
 add_subdirectory(app)
 

@@ -34,6 +34,29 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T8
+  title: 'Work-mode(-wm) extraction Phase A: SDK+thin-app direction doc & capability/work-mode
+    inventory'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T9
+  title: 'Phase B-1: extract generateDescInfo/createDescInfoFile into a manifest library
+    (behavior-preserving)'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T10
+  title: 'Root-fix: declare crc16 dep on common_utils_crc; drop manifest workaround'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T11
+  title: 'Phase B-2: sink app-inline orchestration into SDK libs (NTP wait-loop, buildMdnsParams,
+    RTSP start/run/stop)'
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -63,4 +86,9 @@ risks:
   用例 A-F：A 首连 / B 优雅切 SSID 且 wpa_supplicant PID 恒定 / C --write-mcu 回写 MCU / D 错密码
   exit 3 / E 无参读 MCU / F 5 轮 A↔B PID 恒定 + dmesg 无 oops）需 T32 硬件手动跑。关键不变量：用例 B/F 的
   wpa_supplicant PID 跨 SSID 切换恒定是 T5 不回归的唯一可观测证明。''}'
-active_task: T6
+- 'common_utils_crc (src/common/utils/crc/CMakeLists.txt) depends on cal_crc16 from
+  the crc16 lib but does not link it; latent missing-dep masked because htc_main_app
+  links crc16 directly. Follow-up: declare `target_link_libraries(common_utils_crc
+  PUBLIC logger crc16)` at the source so consumers inherit it transitively instead
+  of each consumer re-adding crc16 (as manifest now does).'
+active_task: T11
