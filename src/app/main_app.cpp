@@ -829,6 +829,12 @@ static void printUsage(char *argv[])
 static bool already_in_exit_flow = false;
 static bool rtsp_audio_enabled = true;  // RTSP 音频默认开启
 static bool mobile_rtsp_enabled = true; // Mobile 模式默认启动 RTSP，调试录像 FPS 时可关闭
+// True once RtspServer::getInstance() has been used (mobile / rtsp-server mode).
+// Drives the process-level HAL teardown at main_exit so IMP encoder channel/
+// group/bind + ISP/OSD region are released before Misc::poweroff()/while(1)
+// freezes the process (the RtspServer singleton destructor never runs because
+// main() does not return on T32 hardware).
+static bool rtsp_singleton_used = false;
 static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
 static std::shared_ptr<StorageServClient> storageServClient = nullptr;
 
@@ -879,6 +885,14 @@ static int waitForSignalOrTimeout(int timeoutMs) {
 
 // Perform shutdown work that was previously the worker thread's job. Runs on
 // the main thread after the self-pipe wakes the main loop.
+//
+// NOTE (WiFi reuse): this exit path INTENTIONALLY does not rmmod the WiFi
+// driver, does not kill wpa_supplicant, and does not clear /tmp/wpa_supplicant.
+// Leaving them in place lets the next app boot reuse the already-loaded driver
+// and running supplicant. Re-entry is now safe and state-driven: on the next
+// boot Misc::isWifiDriverLoaded()/isWifiConnected() short-circuit connectWifi
+// and startDHCP, so we never re-insmod (no "File exists") and never re-spawn
+// wpa_supplicant (no ctrl_iface collision).
 static void performCleanup(int sig) {
     Logger::log(LogLevel::INFO, "Processing signal %d on main thread", sig);
 
@@ -1613,6 +1627,7 @@ int main(int argc, char* argv[])
                http_port, interface_name.c_str(), ip_address.c_str());
         
         if (mobile_rtsp_enabled) {
+            rtsp_singleton_used = true;
             RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
                 Logger::log(LogLevel::INFO, "RTSP session closed in mobile mode, waiting for new connection...");
             });
@@ -1656,6 +1671,7 @@ int main(int argc, char* argv[])
         //Misc::connectWifi(wifi_ssid, wifi_pwd);
         //Misc::startDHCP();
         uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
+        rtsp_singleton_used = true;
         RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
             Logger::log(LogLevel::INFO, "RTSP session closed, waiting for new connection...");
         });
@@ -1822,8 +1838,24 @@ int main(int argc, char* argv[])
     }
 
 main_exit:
+    // NOTE (WiFi reuse): this final exit path INTENTIONALLY does not rmmod the
+    // WiFi driver, does not kill wpa_supplicant, and does not clear
+    // /tmp/wpa_supplicant. Keeping them lets the next boot reuse the live
+    // driver/supplicant; re-entry is state-driven via
+    // Misc::isWifiDriverLoaded()/isWifiConnected() which short-circuit
+    // connectWifi/startDHCP, so no re-insmod and no wpa_supplicant re-spawn.
     service::TcpEventService::getInstance()->stop();
     service::MdnsService::getInstance()->stop();
+
+    // Process-level IMP teardown: release encoder channel/group/bind, ISP and
+    // OSD region before the process is frozen by Misc::poweroff()/while(1)
+    // (or _exit(0) under SIM). Must run BEFORE the freeze so the next process
+    // boot does not hang in configure() on stale IMP driver state. Only run
+    // when the RTSP singleton was actually used; otherwise getInstance() would
+    // spuriously construct + init the HAL in unrelated modes.
+    if (rtsp_singleton_used) {
+        RtspServer::getInstance()->shutdown();
+    }
 
     // Close the signal self-pipe. The signal handler does a guarded write
     // to g_signal_pipe[1] before checking >= 0, so closing here is safe.

@@ -33,6 +33,15 @@ class RtspServer {
         bool stop();
         bool isRunning();
 
+        // Process-level teardown. Distinct from session-level stop() (which is
+        // reused by onSessionClosed/~RtspServer and only halts the RTSP server
+        // + media sessions). shutdown() additionally releases the HAL (via
+        // deinitialize() -> uninitVideo() -> ~IngenicVideoStream +
+        // video_->exit()) so IMP encoder channel/group/bind and ISP/OSD region
+        // are torn down before the process is frozen by Misc::poweroff()/while(1).
+        // Idempotent and null-safe: safe to call when uninitialized or repeatedly.
+        void shutdown();
+
     public:
         ~RtspServer();
 
@@ -53,6 +62,7 @@ class RtspServer {
         bool extractSpsPps(const uint8_t* h264Data, size_t dataSize, std::vector<uint8_t>& sps, std::vector<uint8_t>& pps);
         bool daynight_switch(bool on);
         bool initialized;
+        bool deinitialized_;
         bool pullFrameThreadRun;
         std::shared_ptr<std::thread> pullFrameThread;
         void *rtsp_server;
