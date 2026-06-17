@@ -91,7 +91,23 @@ void IspOsdManager::exit() {
     if (s_instance == this) {
         s_instance = nullptr;
     }
+    // stop() already destroys any created OSD region (timeHandle_ /
+    // reservedHandle_) via IMP_ISP_Tuning_DestroyOsdRgn. This covers the
+    // "prepare() created a region but start() was skipped" path too, because
+    // stop() tears down whenever a handle is >= 0. Running exit() here is the
+    // last reliable teardown point: the IngenicVideo singleton destructor is
+    // skipped when main() ends via Misc::poweroff()/while(1).
     stop();
+    // Defensive fallback: if a future code path leaves a handle set after
+    // stop(), force-destroy it so no region leaks across process restarts.
+    if (timeHandle_ >= 0) {
+        IMP_ISP_Tuning_DestroyOsdRgn(0, timeHandle_);
+        timeHandle_ = -1;
+    }
+    if (reservedHandle_ >= 0) {
+        IMP_ISP_Tuning_DestroyOsdRgn(0, reservedHandle_);
+        reservedHandle_ = -1;
+    }
     buffer_.clear();
     Logger::log(LogLevel::INFO, "IspOsdManager: exit done");
 }

@@ -1,0 +1,43 @@
+# Flow: refactor —— 重构流水线 (playbook §4)
+#
+# 前提:已有 golden 测试(原行为的完整覆盖)。重构 = 保持行为等价 + 提升可维护性。
+# planner 规划(源→目标 / 影响范围 / 策略 / 回滚点)
+#   → implementer 重构(最小改动,保持行为)
+#   → tester 对照 golden 验证等价(原测试全绿)
+#   → reviewer 审查(语义等价 + 可维护性 + 回归)
+# golden 失败 → 打回 implementer;reviewer 发现语义改变/可维护性倒退 → 打回 implementer。
+name: refactor
+trigger:
+  task_type: refactor
+nodes:
+  - id: planner
+    output_contract: report-card@v1
+  - id: implementer
+    output_contract: report-card@v1
+  - id: tester
+    output_contract: report-card@v1
+  - id: reviewer
+    output_contract: report-card@v1
+edges:
+  - from: planner
+    to: implementer
+  - from: implementer
+    to: tester
+  - from: tester
+    to: implementer
+    when: tests_failed
+    type: loopback
+  - from: tester
+    to: reviewer
+  - from: reviewer
+    to: implementer
+    when: tests_failed
+    type: loopback
+  - from: reviewer
+    to: :end
+    when: passed
+audit:
+  c1_per_handoff: true
+  c2_terminal: true
+safety:
+  max_loopback: 3

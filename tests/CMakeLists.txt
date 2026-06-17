@@ -84,3 +84,43 @@ target_include_directories(test_tcp_event_service PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
     ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
 )
+
+add_executable(test_mcu_service test_mcu_service.cpp)
+
+target_link_libraries(test_mcu_service
+    PRIVATE
+    mcu_service
+    mcu
+    easylogger
+    pthread
+)
+
+target_include_directories(test_mcu_service PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/hardware/mcu
+    ${CMAKE_SOURCE_DIR}/src/service/mcu
+    ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
+)
+
+# htc_wifi_app pure-logic unit test (no syscalls; only links wifi_app_logic.cpp).
+add_executable(test_wifi_app_logic
+    test_wifi_app_logic.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/wifi_app_logic.cpp
+)
+
+target_include_directories(test_wifi_app_logic PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/app
+)
+
+target_link_libraries(test_wifi_app_logic
+    PRIVATE
+    pthread
+    rt
+    gcc
+    stdc++
+)
+
+set_target_properties(test_wifi_app_logic PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)

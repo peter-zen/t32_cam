@@ -2,11 +2,17 @@
 file(GLOB MAIN_APP_SOURCES "${SOURCES}/app/main_app.cpp")
 file(GLOB MEDIA_APP_SOURCES "${SOURCES}/app/media_app.cpp")
 file (GLOB DAEMON_APP_SOURCES "${SOURCES}/app/daemon_app.cpp")
+file (GLOB WIFI_APP_SOURCES "${SOURCES}/app/wifi_app.cpp")
+set(WIFI_APP_HELPER_SOURCES
+    "${SOURCES}/app/wifi_app_logic.cpp"
+    "${SOURCES}/app/wifi_reconnect.cpp"
+)
 
 include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../logger
         ${CMAKE_CURRENT_SOURCE_DIR}/../common
+        ${CMAKE_CURRENT_SOURCE_DIR}/../common/misc
         ${CMAKE_CURRENT_SOURCE_DIR}/../config/setting
         ${CMAKE_CURRENT_SOURCE_DIR}/../config/env
         ${CMAKE_CURRENT_SOURCE_DIR}/../config/devconf
@@ -51,6 +57,7 @@ add_subdirectory(workmode)
 add_executable(htc_main_app ${MAIN_APP_SOURCES})
 add_executable(htc_media_app ${MEDIA_APP_SOURCES})
 add_executable(htc_daemon_app ${DAEMON_APP_SOURCES})
+add_executable(htc_wifi_app ${WIFI_APP_SOURCES} ${WIFI_APP_HELPER_SOURCES})
 add_executable(snap_test ${CMAKE_CURRENT_SOURCE_DIR}/snap_test.cpp)
 
 # ============================================================================
@@ -129,6 +136,7 @@ if(BUILD_FOR_SIMULATION)
         logger
         #misc libs
         mcu
+        mcu_service
         power
         disk
         common_time_rtc
@@ -176,6 +184,25 @@ if(BUILD_FOR_SIMULATION)
         gpio
         jsoncpp
         logger
+        pthread
+        rt
+        gcc
+        stdc++
+    )
+
+    # htc_wifi_app (SIM): links common_misc (connectWifi/isWifi*/startDHCP) +
+    # mcu (readUPID/readUPWD/writeUPID/writeUPWD via getInstance). Graceful
+    # reconnect primitives live in wifi_reconnect.cpp compiled into the target
+    # (sim stubs return empty/false). No system_call needed on sim (sdk_stub).
+    target_link_libraries(htc_wifi_app
+        PRIVATE
+        common_misc
+        mcu
+        logger
+        common_utils_base64
+        crc16
+        jsoncpp
+        sdk_stub
         pthread
         rt
         gcc
@@ -263,6 +290,7 @@ target_link_libraries(htc_main_app
 
     #misc libs
     mcu
+    mcu_service
     power
     disk
     gpio
@@ -324,6 +352,23 @@ target_link_libraries(snap_test
     gcc
     stdc++
 )
+# htc_wifi_app (T32): common_misc links system_call internally (for
+# popencall/syscall used by wifi_reconnect); we link mcu + system_call
+# explicitly to mirror daemon_app. No HAL / media deps needed.
+target_link_libraries(htc_wifi_app
+    PRIVATE
+    common_misc
+    mcu
+    logger
+    common_utils_base64
+    crc16
+    jsoncpp
+    system_call
+    pthread
+    rt
+    gcc
+    stdc++
+)
 endif()
 
 # Set output directory
@@ -340,7 +385,12 @@ set_target_properties(snap_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-set_target_properties(htc_daemon_app PROPERTIES 
+set_target_properties(htc_daemon_app PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+set_target_properties(htc_wifi_app PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

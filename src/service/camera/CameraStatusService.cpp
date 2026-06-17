@@ -82,6 +82,13 @@ Json::Value readStatusValue(const ParameterDefinition& definition) {
 #endif
     }
 
+    if (definition.storage.kind == ParameterStorageKind::MCU) {
+        Json::Value v = readMcuValue(definition.storage.member);
+        if (!v.isNull()) {
+            return v;
+        }
+    }
+
     return definition.defaultValue;
 }
 

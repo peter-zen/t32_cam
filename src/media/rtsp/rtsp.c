@@ -400,7 +400,7 @@ static int stream_prime_first_frame(
             stream->primed_size = size;
             stream->primed_timestamp = timestamp;
             stream->has_primed_frame = true;
-            elog_i(
+            elog_d(
                 RTSP_LOG_TAG,
                 "PLAY: primed %s stream_id=%zu size=%zu ts=%" PRIu64,
                 is_audio ? "audio" : "video",
@@ -703,7 +703,7 @@ static void server_reserve_active_session(
 
     server->active_client = client;
     server->active_session_id = session_id;
-    elog_i(RTSP_LOG_TAG, "Active preview reserved for session=%" PRIu64, session_id);
+    elog_d(RTSP_LOG_TAG, "Active preview reserved for session=%" PRIu64, session_id);
 }
 
 static void server_release_active_session(
@@ -722,13 +722,13 @@ static void server_release_active_session(
     server->active_session_id = 0;
 
     if (reason && reason[0] != '\0') {
-        elog_i(
+        elog_d(
             RTSP_LOG_TAG,
             "Active preview released for session=%" PRIu64 " (%s)",
             active_session_id,
             reason);
     } else {
-        elog_i(
+        elog_d(
             RTSP_LOG_TAG,
             "Active preview released for session=%" PRIu64,
             active_session_id);
@@ -782,7 +782,7 @@ static void client_start_playback(Client *self, uint64_t session_id) {
         return;
     }
 
-    elog_i(RTSP_LOG_TAG, "PLAY: deferred start fired for session=%" PRIu64, session_id);
+    elog_d(RTSP_LOG_TAG, "PLAY: deferred start fired for session=%" PRIu64, session_id);
 
     if (self->peer->funcs[FUNC_ID_ON_SESSION_PLAY]) {
         self->peer->funcs[FUNC_ID_ON_SESSION_PLAY](NULL, NULL, NULL);
@@ -794,7 +794,7 @@ static void client_start_playback(Client *self, uint64_t session_id) {
         }
 
         if (rtsp_param.audio_stream_id == i) {
-            elog_i(RTSP_LOG_TAG, "PLAY: deferred select audio stream_id=%zu", i);
+            elog_d(RTSP_LOG_TAG, "PLAY: deferred select audio stream_id=%zu", i);
             self->streams[i].ctx = play_audio(
                 rtsp_param.audio_sample_rate, rtsp_param.audio_samples_per_packet,
                 rtsp_param.audio_codec, rtsp_param.audio_channels,
@@ -803,7 +803,7 @@ static void client_start_playback(Client *self, uint64_t session_id) {
                 self->base, self->bev, self->streams[i].transport, &self->streams[i],
                 &self->streams[i].ev, &self->streams_playing);
         } else {
-            elog_i(RTSP_LOG_TAG, "PLAY: deferred select video stream_id=%zu", i);
+            elog_d(RTSP_LOG_TAG, "PLAY: deferred select video stream_id=%zu", i);
             self->streams[i].ctx = play_video(
                 self->peer->param.video_fps,
                 self->peer->param.video_sample_rate,
@@ -909,7 +909,7 @@ Client_describe(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     (void)req;
 
     struct rtsp_server_param rtsp_param = self->peer->param;
-    elog_i(RTSP_LOG_TAG, "DESCRIBE: video=%d sps_len=%zu pps_len=%zu audio=%d asr=%d",
+    elog_d(RTSP_LOG_TAG, "DESCRIBE: video=%d sps_len=%zu pps_len=%zu audio=%d asr=%d",
            rtsp_param.video_enable, rtsp_param.video_sps_len, rtsp_param.video_pps_len,
            rtsp_param.audio_enable, rtsp_param.audio_sample_rate);
 
@@ -1038,7 +1038,7 @@ Client_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     } else {
         stream->session_id = (uint64_t)rand();
     }
-    elog_i(RTSP_LOG_TAG, "SETUP: stream_id=%zu session_id=%" PRIu64, stream_id, stream->session_id);
+    elog_d(RTSP_LOG_TAG, "SETUP: stream_id=%zu session_id=%" PRIu64, stream_id, stream->session_id);
 
     if (rtsp_param.audio_stream_id == stream_id) {
         int audio_pt;
@@ -1051,11 +1051,11 @@ Client_setup(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         }
         stream->transport = SmolRTSP_RtpTransport_new(
             transport, audio_pt, rtsp_param.audio_sample_rate);
-        elog_i(RTSP_LOG_TAG, "SETUP: audio transport created pt=%d sr=%d", audio_pt, rtsp_param.audio_sample_rate);
+        elog_d(RTSP_LOG_TAG, "SETUP: audio transport created pt=%d sr=%d", audio_pt, rtsp_param.audio_sample_rate);
     } else {
         stream->transport = SmolRTSP_RtpTransport_new(
             transport, VIDEO_PAYLOAD_TYPE, rtsp_param.video_sample_rate);
-        elog_i(RTSP_LOG_TAG, "SETUP: video transport created pt=%d sr=%d", VIDEO_PAYLOAD_TYPE, rtsp_param.video_sample_rate);
+        elog_d(RTSP_LOG_TAG, "SETUP: video transport created pt=%d sr=%d", VIDEO_PAYLOAD_TYPE, rtsp_param.video_sample_rate);
     }
 
     stream->control_uri = dup_rtsp_uri(req->start_line.uri);
@@ -1087,7 +1087,7 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
             ctx, SMOLRTSP_STATUS_BAD_REQUEST, "Malformed `Session'");
         return;
     }
-    elog_i(RTSP_LOG_TAG, "PLAY: session=%" PRIu64, session_id);
+    elog_d(RTSP_LOG_TAG, "PLAY: session=%" PRIu64, session_id);
 
     bool played = false;
     bool already_active = false;
@@ -1163,7 +1163,7 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
         }
         return;
     }
-    elog_i(
+    elog_d(
         RTSP_LOG_TAG,
         "PLAY: 200 OK queued for session=%" PRIu64 ", output_pending=%zu",
         session_id,
@@ -1171,7 +1171,7 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
 
     if (self->deferred_play_ev != NULL) {
         if (self->deferred_play_session_id == session_id) {
-            elog_i(RTSP_LOG_TAG, "PLAY: deferred start already scheduled for session=%" PRIu64, session_id);
+            elog_d(RTSP_LOG_TAG, "PLAY: deferred start already scheduled for session=%" PRIu64, session_id);
             return;
         }
 
@@ -1184,7 +1184,7 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     }
 
     if (already_active) {
-        elog_i(RTSP_LOG_TAG, "PLAY: session already active %" PRIu64, session_id);
+        elog_d(RTSP_LOG_TAG, "PLAY: session already active %" PRIu64, session_id);
         return;
     }
 
@@ -1192,7 +1192,7 @@ Client_play(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     self->deferred_play_ev = event_new(self->base, -1, EV_TIMEOUT, client_deferred_play_cb, self);
     assert(self->deferred_play_ev);
     event_add_after_us(self->deferred_play_ev, 1);
-    elog_i(RTSP_LOG_TAG, "PLAY: deferred start scheduled for session=%" PRIu64, session_id);
+    elog_d(RTSP_LOG_TAG, "PLAY: deferred start scheduled for session=%" PRIu64, session_id);
 }
 
 static void
@@ -1217,7 +1217,7 @@ Client_teardown(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     }
 
     if (self->deferred_play_session_id == session_id) {
-        elog_i(RTSP_LOG_TAG, "TEARDOWN: cancel deferred start for session=%" PRIu64, session_id);
+        elog_d(RTSP_LOG_TAG, "TEARDOWN: cancel deferred start for session=%" PRIu64, session_id);
         client_cancel_deferred_play(self);
         teardowned = true;
     }
@@ -1250,7 +1250,7 @@ Client_before(VSelf, SmolRTSP_Context *ctx, const SmolRTSP_Request *req) {
     (void)self;
     (void)ctx;
 
-    elog_i(RTSP_LOG_TAG, "%s %s CSeq=%" PRIu32,
+    elog_d(RTSP_LOG_TAG, "%s %s CSeq=%" PRIu32,
            CharSlice99_alloca_c_str(req->start_line.method),
            CharSlice99_alloca_c_str(req->start_line.uri), req->cseq);
 
@@ -1284,7 +1284,7 @@ static int setup_transport(
         return -1;
     }
 
-    elog_i(RTSP_LOG_TAG, "SETUP: Transport request=%s",
+    elog_d(RTSP_LOG_TAG, "SETUP: Transport request=%s",
            CharSlice99_alloca_c_str(transport_val));
 
     SmolRTSP_TransportConfig config;
@@ -1296,14 +1296,14 @@ static int setup_transport(
 
     switch (config.lower) {
     case SmolRTSP_LowerTransport_TCP:
-        elog_i(RTSP_LOG_TAG, "SETUP: transport lower=TCP");
+        elog_d(RTSP_LOG_TAG, "SETUP: transport lower=TCP");
         if (setup_tcp(ctx, t, config) == -1) {
             smolrtsp_respond_internal_error(ctx);
             return -1;
         }
         break;
     case SmolRTSP_LowerTransport_UDP:
-        elog_i(RTSP_LOG_TAG, "SETUP: transport lower=UDP");
+        elog_d(RTSP_LOG_TAG, "SETUP: transport lower=UDP");
         if (setup_udp((const struct sockaddr *)&self->addr, ctx, t, config) ==
             -1) {
             smolrtsp_respond_internal_error(ctx);
@@ -1319,7 +1319,7 @@ static int setup_tcp(
     SmolRTSP_Context *ctx, SmolRTSP_Transport *t,
     SmolRTSP_TransportConfig config) {
     ifLet(config.interleaved, SmolRTSP_ChannelPair_Some, interleaved) {
-        elog_i(RTSP_LOG_TAG, "SETUP: TCP interleaved=%" PRIu8 "-%" PRIu8,
+        elog_d(RTSP_LOG_TAG, "SETUP: TCP interleaved=%" PRIu8 "-%" PRIu8,
                interleaved->rtp_channel, interleaved->rtcp_channel);
         *t = smolrtsp_transport_tcp(
             SmolRTSP_Context_get_writer(ctx), interleaved->rtp_channel, 512 * 1024);
@@ -1341,7 +1341,7 @@ static int setup_udp(
     SmolRTSP_TransportConfig config) {
 
     ifLet(config.client_port, SmolRTSP_PortPair_Some, client_port) {
-        elog_i(RTSP_LOG_TAG, "SETUP: UDP client_port=%" PRIu16 "-%" PRIu16,
+        elog_d(RTSP_LOG_TAG, "SETUP: UDP client_port=%" PRIu16 "-%" PRIu16,
                client_port->rtp_port, client_port->rtcp_port);
         int fd;
         if ((fd = smolrtsp_dgram_socket(
@@ -1630,7 +1630,7 @@ static SmolRTSP_Droppable play_video(
         };
     }
 
-    elog_i(RTSP_LOG_TAG, "[VIDEO] pacing=%u us, au_retry_us=%" PRIu64 ", pace_no_skip=%d",
+    elog_d(RTSP_LOG_TAG, "[VIDEO] pacing=%u us, au_retry_us=%" PRIu64 ", pace_no_skip=%d",
            interval_us, au_retry_us, pace_no_skip ? 1 : 0);
 
 
@@ -1710,7 +1710,7 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
         }
 
         if (ctx->frame_count % 30 == 0) {
-            elog_i(RTSP_LOG_TAG, "[VIDEO] Pull result: %d, capture_ts=%" PRIu64, pull_result, timestamp);
+            elog_d(RTSP_LOG_TAG, "[VIDEO] Pull result: %d, capture_ts=%" PRIu64, pull_result, timestamp);
         }
         if (pull_result) {
             ctx->pull_fail_count++;
@@ -1829,7 +1829,7 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
             const double avg_retry_lag_us =
                 (retry_lag_count_delta > 0) ? ((double)retry_lag_total_delta_us / (double)retry_lag_count_delta) : 0.0;
 
-            elog_i(RTSP_LOG_TAG,
+            elog_d(RTSP_LOG_TAG,
                    "[VIDEO] sent=%d, ts=%u, size=%zu, fps=%d, obs{frame=%" PRIu64 ", nal_avg=%.2f nal_max=%" PRIu64 ", cbpf_avg=%.2f cbpf_max=%" PRIu64 ", frame_ms_avg=%.2f frame_ms_max=%.2f, cb_us_avg=%.2f cb_us_max=%.2f, lag_us_avg=%.2f lag_us_max=%.2f lag2ms=%" PRIu64 ", pace_lag_us_avg=%.2f pace_lag2ms=%" PRIu64 ", retry_lag_us_avg=%.2f retry_lag2ms=%" PRIu64 "}",
                    ctx->frame_count, ctx->timestamp, video_size, ctx->fps,
                    frame_delta,

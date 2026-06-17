@@ -552,7 +552,13 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     // Reset last timestamp for new recording
     lastVideoTimestamp = 0;
 
-    /* Capture thumbnail from CH2 at recording start (CH2 is free, no concurrent photo) */
+    /* Capture thumbnail from CH2 at recording start (CH2 is free, no concurrent photo)
+     * 注:2026-06-09 短暂尝试过 std::async 异步抓取来消除 220ms 启动期阻塞,但
+     * 引入 zram 风暴回归(详见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md
+     * 异步缩略图回退一节)。根因:Ingenic SDK 不是线程安全的,并发 SDK 调用
+     * 导致 release 时 driver 状态不一致,触发 zram 压缩池失败。
+     * 220ms 启动期阻塞本身不影响 wall_fps(encoder buffer 预热够 30 fps),保留同步。
+     */
     if (concurrentSnapEnabled_) {
         Logger::log(LogLevel::INFO, "record: capturing thumbnail from CH2...");
         if (captureThumbnail()) {

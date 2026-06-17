@@ -107,6 +107,20 @@ static void send_http_error(struct mg_connection* conn, int status_code, const s
     send_json_response(conn, status_code, root);
 }
 
+// Variant of send_http_error that ships a non-null `data` payload, so the
+// client can see structured context alongside the HTTP status (e.g. a
+// 501 with the requested mode echoed back).
+static void send_http_error_with_data(struct mg_connection* conn,
+                                      int status_code,
+                                      const std::string& message,
+                                      const Json::Value& data) {
+    Json::Value root;
+    root["code"] = status_code;
+    root["message"] = message;
+    root["data"] = data;
+    send_json_response(conn, status_code, root);
+}
+
 static void send_binary_response(struct mg_connection* conn,
                                  const char* content_type,
                                  const std::vector<uint8_t>& data) {
@@ -499,7 +513,8 @@ static const std::map<std::string, PropertyMap>& get_preset_definitions() {
     static const std::map<std::string, PropertyMap> presets = {
         {"default", {{"resolution", Json::Value("1920x1080")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(4000)}}},
         {"high_quality", {{"resolution", Json::Value("2560x1440")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(6000)}}},
-        {"low_power", {{"resolution", Json::Value("1280x720")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(8192)}}},
+        // 2026-06-10: 8192→2048, 跟 mapping table 720P=2Mbps 对齐
+        {"low_power", {{"resolution", Json::Value("1280x720")}, {"fps", Json::Value(30)}, {"bitrate", Json::Value(2048)}}},
     };
     return presets;
 }
@@ -785,8 +800,9 @@ static int api_v1_system_workmode(struct mg_connection* conn, void* cbdata) {
     Json::Value data(Json::objectValue);
     data["mode"] = result.mode;
     data["accepted"] = result.accepted;
-    send_success_response(conn, data);
-    return 200;
+    data["reason"] = "work mode is firmware-set via GPIO/MCU firmware, not writable via I2C";
+    send_http_error_with_data(conn, 501, data["reason"].asString(), data);
+    return 501;
 }
 
 static int api_v1_storage_info(struct mg_connection* conn, void* cbdata) {

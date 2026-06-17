@@ -1,0 +1,37 @@
+# Flow: feature —— 功能任务的标准流水线 (contracts.md §8)
+#
+# 注意:本文件是声明性流程定义。M3 之前由 PM(主会话)参照它手动依次
+# spawn 工人 subagent(planner→implementer→tester→reviewer);M3 将实现
+# 自动按 edges 推进。两级审计:C1 每次交接格式校验(已实现)、C2 末端
+# 深度审计(M5)。
+name: feature
+trigger:
+  task_type: feature
+nodes:
+  - id: planner
+    output_contract: report-card@v1
+  - id: implementer
+    output_contract: report-card@v1
+  - id: tester
+    output_contract: report-card@v1
+  - id: reviewer
+    output_contract: report-card@v1
+edges:
+  - from: planner
+    to: implementer
+  - from: implementer
+    to: tester
+  - from: tester
+    to: implementer
+    when: tests_failed
+    type: loopback
+  - from: tester
+    to: reviewer
+  - from: reviewer
+    to: :end
+    when: passed
+audit:
+  c1_per_handoff: true
+  c2_terminal: true
+safety:
+  max_loopback: 3

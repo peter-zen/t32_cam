@@ -1,0 +1,30 @@
+# Flow: bug —— bug 解决流水线 (playbook §5)
+# analyst 定位根因(对照代码) → implementer 修复 → reviewer 审查
+# reviewer 发现问题 → loopback 打回 implementer;通过 → 结束
+name: bug
+trigger:
+  task_type: bug
+nodes:
+  - id: analyst
+    output_contract: report-card@v1
+  - id: implementer
+    output_contract: report-card@v1
+  - id: reviewer
+    output_contract: report-card@v1
+edges:
+  - from: analyst
+    to: implementer
+  - from: implementer
+    to: reviewer
+  - from: reviewer
+    to: implementer
+    when: tests_failed
+    type: loopback
+  - from: reviewer
+    to: :end
+    when: passed
+audit:
+  c1_per_handoff: true
+  c2_terminal: true
+safety:
+  max_loopback: 3

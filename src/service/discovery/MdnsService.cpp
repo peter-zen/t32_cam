@@ -117,7 +117,7 @@ bool isValidIpv4Address(const std::string& ipAddress) {
 std::string normalizeMdnsModelValue(const std::string& model) {
     std::string normalized = trimQuotes(model);
     if (normalized.empty()) {
-        elog_w(kTag, "mDNS model is empty, fallback to T32");
+        elog_d(kTag, "mDNS model is empty, fallback to T32");
         return "T32";
     }
 
@@ -128,7 +128,7 @@ std::string normalizeMdnsModelValue(const std::string& model) {
     }
 
     if (upperModel == "CXXX") {
-        elog_w(kTag, "mDNS model %s is invalid, fallback to T32", normalized.c_str());
+        elog_d(kTag, "mDNS model %s is invalid, fallback to T32", normalized.c_str());
         return "T32";
     }
 

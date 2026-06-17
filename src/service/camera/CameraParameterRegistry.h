@@ -44,6 +44,7 @@ enum class ParameterStorageKind {
     COMPUTED,
     PLACEHOLDER,
     COMMAND,
+    MCU,
 };
 
 struct ParameterRange {
@@ -98,5 +99,16 @@ const char* parameterValueTypeToString(ParameterValueType type);
 const char* parameterPermissionToString(ParameterPermission permission);
 const char* parameterAvailabilityToString(ParameterAvailability availability);
 const char* parameterStorageKindToString(ParameterStorageKind kind);
+
+// Binding factory for a STATUS / PROPERTY field whose live value comes
+// from McuService. The `member` string is the McuService getter name
+// (e.g. "battery1Voltage", "cds", "mcuVersion") and is resolved by
+// readMcuValue() in CameraStatusService / CameraPropertyService.
+ParameterStorageBinding mcuBinding(const std::string& member);
+
+// Resolve a `member` set by mcuBinding() into a Json::Value. Returns an
+// empty Json::Value if the name is unknown. Defined in the .cpp so callers
+// don't need to pull in McuService.h.
+Json::Value readMcuValue(const std::string& member);
 
 } // namespace service

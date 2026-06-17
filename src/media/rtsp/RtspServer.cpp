@@ -148,7 +148,8 @@ std::shared_ptr<RtspServer> RtspServer::getInstance()
 }
 
 RtspServer::RtspServer()
-    : pullFrameThread(nullptr)
+    : deinitialized_(false)
+    , pullFrameThread(nullptr)
 	, pullFrameThreadRun(false)
 	, alreadyGetSpsPps(false)
     , port_(DEFAULT_RTSP_PORT)
@@ -187,7 +188,7 @@ bool RtspServer::initialize()
     if (enableAudio_) {
         if (!initAudio()) {
             Logger::log(LogLevel::ERROR, "Audio init failed, continue without audio");
-            return false;
+            enableAudio_ = false;
         }
     }
     Logger::log(LogLevel::DEBUG, "Video init success");
@@ -196,6 +197,10 @@ bool RtspServer::initialize()
 
 void RtspServer::deinitialize()
 {
+    if (deinitialized_) {
+        return;
+    }
+    deinitialized_ = true;
     if (initialized) {
         if (!uninitVideo()) {
             Logger::log(LogLevel::ERROR, "Video uninit failed");
@@ -204,6 +209,19 @@ void RtspServer::deinitialize()
             Logger::log(LogLevel::ERROR, "Audio uninit failed");
         }
     }
+}
+
+void RtspServer::shutdown()
+{
+    Logger::log(LogLevel::INFO, "RtspServer::shutdown: process-level teardown (stop + deinitialize)");
+    // stop() is session-level: halts pull thread, media sessions, rtsp server.
+    // It is null-safe and idempotent, so safe even if already stopped.
+    stop();
+    // deinitialize() releases the HAL: reset videoSession_ (~IngenicVideoStream
+    // -> DestroyChn/UnBind/DestroyGroup) then video_->exit() (IMP global exit +
+    // OSD region destroy). Idempotent via deinitialized_ guard.
+    deinitialize();
+    Logger::log(LogLevel::INFO, "RtspServer::shutdown: teardown complete");
 }
 
 bool RtspServer::stop()

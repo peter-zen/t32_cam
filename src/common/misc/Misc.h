@@ -30,6 +30,9 @@ public:
 	static void setNetworkInterfaceName(std::string name);
     static bool connectWifi(const std::string &ssid, const std::string &password);
     static bool startDHCP(const std::string &ifname="");
+    // Read-only POSIX probes (SIM-safe, idempotent, no side effects).
+    static bool isWifiDriverLoaded();
+    static bool isWifiConnected(const std::string &ifname="wlan0");
     static bool ntpSync(const std::string& ntp_server);
 
     //misc
@@ -47,7 +50,6 @@ private:
     static bool syscall_inited;
     static std::mutex syscall_mutex;
     static bool already_insmod_mmc;
-    static bool already_inited_wifi;
 };
 
 #endif // MISC_H
