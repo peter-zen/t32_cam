@@ -29,6 +29,7 @@
 
 #include "MgmtServClient.h"
 #include "RtspServer.h"
+#include "RtspWorkMode.h"
 #include "http_server.h"
 #include "DeviceConfig.h"
 #include "Common.h"
@@ -1331,25 +1332,13 @@ int main(int argc, char* argv[])
     }
 
     if (command & CMD_RTSP_SERVER) {
-        //auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
-        //auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
-        //Misc::connectWifi(wifi_ssid, wifi_pwd);
-        //Misc::startDHCP();
         uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
         rtsp_singleton_used = true;
-        RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
-            Logger::log(LogLevel::INFO, "RTSP session closed, waiting for new connection...");
-        });
-        RtspServer::getInstance()->setPort(static_cast<int>(rtsp_port));
-        if (!RtspServer::getInstance()->start()) {
-            Logger::log(LogLevel::ERROR, "Failed to start RTSP server");
+        if (!app_workmode::runRtspServerUntilSignal(rtsp_port,
+                []{ return !already_in_exit_flow; },
+                [](int ms){ (void)waitForSignalOrTimeout(ms); })) {
             goto main_exit;
         }
-        /* RTSP 服务器持续运行，等待退出信号 */
-        while (!already_in_exit_flow) {
-            (void)waitForSignalOrTimeout(1000);
-        }
-        RtspServer::getInstance()->stop();
     }
 
     if (command & CMD_AUTH || command & CMD_HEARTBEAT || command & CMD_UPLOAD) {
