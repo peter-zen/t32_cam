@@ -23,7 +23,6 @@ std::string Misc::netifname;
 std::mutex Misc::syscall_mutex;
 bool Misc::syscall_inited = false;
 bool Misc::already_insmod_mmc = false;
-bool Misc::already_inited_wifi = false;
 
 namespace {
 
@@ -282,6 +281,31 @@ std::string Misc::getGatewayAddress(const std::string &interface_name)
     return "";
 }
 
+bool Misc::isWifiDriverLoaded()
+{
+	// Read-only POSIX probe: grep the kernel module list (/proc/modules) for the
+	// compiled-in WiFi module name. Same idiom as UsbDongle::loaded but inlined
+	// here to avoid a header dependency cycle. Returns true iff the module is
+	// currently loaded. Idempotent and side-effect free.
+#if defined(WIFI_TYPE_CYW43012)
+	std::string command = "grep -q '^cywdhd' /proc/modules";
+#elif defined(WIFI_TYPE_RTL8189FS)
+	std::string command = "grep -q '^8189fs' /proc/modules";
+#else
+	#error "Unknown WiFi type"
+#endif
+	return syscall(command.c_str(), 1000) == 0;
+}
+
+bool Misc::isWifiConnected(const std::string &ifname)
+{
+	// Read-only POSIX probe: a non-empty IPv4 address AND a non-empty default
+	// gateway on the interface means the link is actually up (guards against
+	// mistaking a link-local address for a connection). Pure POSIX (getifaddrs +
+	// /proc/net/route via getIPAddress/getGatewayAddress), SIM-safe.
+	return !getIPAddress(ifname).empty() && !getGatewayAddress(ifname).empty();
+}
+
 std::string Misc::getMACAddress(const std::string &interface_name)
 {
     if (interface_name.empty()) {
@@ -402,7 +426,12 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 {
 	int ret;
 
-	if (!already_inited_wifi) {
+	if (isWifiConnected()) {
+		Logger::log(LogLevel::INFO, "WiFi already connected, skip connectWifi");
+		return true;
+	}
+
+	if (!isWifiDriverLoaded()) {
 #if defined(WIFI_TYPE_CYW43012)
 		std::string command = "insmod /system/bin/wifi/cywdhd.ko firmware_path=/system/bin/wifi/cyfmac43012-sdio.bin nvram_path=/system/bin/wifi/cyfmac43012-sdio.txt clm_path=/system/bin/wifi/cyfmac43012-sdio.clm_blob";
 #elif defined(WIFI_TYPE_RTL8189FS)
@@ -415,7 +444,13 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 			Logger::log(LogLevel::ERROR, "%s error", command.c_str());
 			return false;
 		}
-		already_inited_wifi = true;
+		// Re-check after insmod to absorb the EEXIST race: the kernel may report
+		// "File exists" while the module is genuinely loaded. Treat a real load
+		// as success and only fail if the module is still absent.
+		if (!isWifiDriverLoaded()) {
+			Logger::log(LogLevel::ERROR, "WiFi driver failed to load (%s)", command.c_str());
+			return false;
+		}
 	}
 	int timeout = 15;
 	Logger::log(LogLevel::INFO, "Connecting to WiFi: %s ", ssid.c_str());
@@ -438,6 +473,11 @@ bool Misc::connectWifi(const std::string &ssid, const std::string &password)
 bool Misc::startDHCP(const std::string &ifname)
 {
 	std::string netif = ifname.empty() ? netifname : ifname;
+
+	if (!getIPAddress(netif).empty()) {
+		Logger::log(LogLevel::INFO, "%s already has IP, skip DHCP", netif.c_str());
+		return true;
+	}
 
 	int ret;
 	
