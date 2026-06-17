@@ -101,3 +101,6 @@ add_subdirectory(third_party)
 if(BUILD_FOR_SIMULATION)
     add_subdirectory(tests)
 endif()
+
+# 诊断/离线工具（MCU API 遍历器等）。两平台都构建，不门控 BUILD_FOR_SIMULATION。
+add_subdirectory(tools)
