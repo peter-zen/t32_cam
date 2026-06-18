@@ -124,18 +124,15 @@ bool ImageSnap::initialize()
     Logger::log(LogLevel::INFO, "initialize: target=%dx%d ch0cfg=%dx%d isLargeImage=%d",
                 w, h, cfgW, cfgH, isLargeImage_ ? 1 : 0);
 
-    fprintf(stderr, "DBG[init]: createVideo...\n");
     video_ = hal::HalProvider::createVideo();
     if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
         return false;
     }
-    fprintf(stderr, "DBG[init]: video->init()...\n");
     if (!video_->init()) {
         Logger::log(LogLevel::ERROR, "initialize: video init failed");
         return false;
     }
-    fprintf(stderr, "DBG[init]: video init OK\n");
 
     /* Main JPEG stream: CH0
      * - ≤ 8M: IVDC enabled (hardware direct path, encoder captures directly)
@@ -158,14 +155,11 @@ bool ImageSnap::initialize()
     cfg.quality = 40;
     cfg.rc_mode = hal::VideoRcMode::FIXQP;
     cfg.enable_ivdc = !isLargeImage_;
-    fprintf(stderr, "DBG[init]: configure CH0 %dx%d ivdc=%d...\n", cfgW, cfgH, cfg.enable_ivdc ? 1 : 0);
     if (!stream_->configure(cfg)) {
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
         return false;
     }
-    fprintf(stderr, "DBG[init]: CH0 configured OK\n");
 
-    fprintf(stderr, "DBG[init]: configure thumbnail CH2...\n");
     /* Thumbnail JPEG stream: CH2 (hardware scaler, 320 wide, IVDC) */
     thumbVideo_ = hal::HalProvider::createVideo();
     if (thumbVideo_ && thumbVideo_->init()) {
@@ -196,7 +190,6 @@ bool ImageSnap::initialize()
         Logger::log(LogLevel::WARNING, "initialize: createVideoStream for thumb failed (thumbnail disabled)");
     }
 
-    fprintf(stderr, "DBG[init]: initialize done OK\n");
     return true;
 }
 
@@ -507,19 +500,15 @@ bool ImageSnap::snapLargeStrip(const std::string &filename, int quality, bool ra
     params.getImageSize(dstW, dstH);
 
     /* Enable CH0 (sensor native NV12, no IVDC) so LargeImageSnap can GetFrame */
-    fprintf(stderr, "DBG[snapLargeStrip]: EnableChn(%d)...\n", SNAP_SENSOR_ID);
     if (IMP_FrameSource_EnableChn(SNAP_SENSOR_ID) < 0) {
         Logger::log(LogLevel::ERROR, "snapLargeStrip: EnableChn(%d) failed", SNAP_SENSOR_ID);
         return false;
     }
-    fprintf(stderr, "DBG[snapLargeStrip]: EnableChn ok, wait 2s for AE to settle...\n");
     usleep(2 * 1000 * 1000);  /* let ISP auto-exposure converge before capturing */
-    fprintf(stderr, "DBG[snapLargeStrip]: AE settled, snapLarge dst=%dx%d\n", dstW, dstH);
 
     LargeImageSnap largeSnap;
     bool ok = raw ? largeSnap.snapRaw(filename, quality)
                   : largeSnap.snapLarge(filename, dstW, dstH, quality);
-    fprintf(stderr, "DBG[snapLargeStrip]: %s=%d\n", raw ? "snapRaw" : "snapLarge", ok);
 
     IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
     Logger::log(LogLevel::INFO, "snapLargeStrip: %s dst=%dx%d q=%d -> %s",

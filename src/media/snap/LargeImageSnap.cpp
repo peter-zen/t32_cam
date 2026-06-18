@@ -85,12 +85,10 @@ void LargeImageSnap::cropStrip(uint8_t* dst, const uint8_t* src,
     int src_w, int /*src_h*/, int stripIndex) {
     int rows = cropRowsPerStrip_;
     int offset = stripIndex * rows;
-    fprintf(stderr, "DBG[crop]: idx=%d rows=%d off=%d src=%p dst=%p\n", stripIndex, rows, offset, (void*)src, (void*)dst);
     // Y plane
     for (int i = 0; i < rows; i++) {
         memcpy(dst + i * src_w, src + (offset + i) * src_w, src_w);
     }
-    fprintf(stderr, "DBG[crop]: Y plane done\n");
     // UV plane
     int srcUvOffset = src_w * sensorH_;
     int dstUvOffset = src_w * rows;
@@ -148,7 +146,6 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
     // Get sensor frame (CH0 already enabled by caller)
     IMPFrameInfo *frame = nullptr;
     int sensorChn = 0;
-    fprintf(stderr, "DBG[snapLarge]: GetFrame(%d)...\n", sensorChn);
     int ret = IMP_FrameSource_GetFrameEx(sensorChn, &frame);
     if (ret < 0) {
         Logger::log(LogLevel::ERROR, "snapLarge: GetFrame failed");
@@ -158,8 +155,6 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
     int src_w = frame->width;
     int src_h = frame->height;
     const uint8_t* srcData = reinterpret_cast<const uint8_t*>(frame->virAddr);
-    fprintf(stderr, "DBG[snapLarge]: frame=%dx%d virAddr=%p phyAddr=%u\n",
-            src_w, src_h, (void*)srcData, (unsigned)frame->phyAddr);
 
     // Choose strip geometry: stripH divides dst_h and is 16-aligned; src rows
     // per strip must evenly divide src_h and be even (clean NV12 UV crop).
@@ -182,15 +177,12 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
 
     Logger::log(LogLevel::INFO, "snapLarge: src=%dx%d dst=%dx%d q=%d stripH=%d numStrips=%d cropRows=%d",
                 src_w, src_h, dst_w, dst_h, quality, stripH, numStrips, cropRows);
-    fprintf(stderr, "DBG[snapLarge]: geometry ok, allocateBuffers...\n");
 
     if (!allocateBuffers(src_w, src_h, dst_w, dst_h, stripH, cropRows)) {
         Logger::log(LogLevel::ERROR, "snapLarge: allocateBuffers failed (resizeBuf=%dx%d)", dst_w, stripH);
         IMP_FrameSource_ReleaseFrameEx(sensorChn, frame);
         return false;
     }
-    fprintf(stderr, "DBG[snapLarge]: buffers ok cropBuf=%p resizeBuf(VBM)=%p jpegBuf=%p\n",
-            (void*)cropBuf_, (void*)resizeBuf_, (void*)jpegBuf_);
 
     FILE* fp = fopen(filename.c_str(), "wb");
     if (!fp) {
@@ -199,7 +191,6 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
         freeBuffers();
         return false;
     }
-    fprintf(stderr, "DBG[snapLarge]: fopen ok, write header...\n");
 
     // JPEG header with DRI = MCUs per strip, so each strip seam is a restart
     // boundary and DC prediction resets cleanly between strips.
@@ -209,7 +200,6 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
     uint8_t headerBuf[1024];  /* JPEG header is ~611 bytes (4 DHT tables dominate) */
     uint32_t headerLen = jpegWriteHeader(headerBuf, dst_w, dst_h, quality, dri);
     fwrite(headerBuf, 1, headerLen, fp);
-    fprintf(stderr, "DBG[snapLarge]: header written dri=%d len=%u, strip loop\n", dri, headerLen);
 
     typedef std::chrono::steady_clock clock;
     long ms_crop = 0, ms_resize = 0, ms_encode = 0, ms_io = 0;
@@ -218,12 +208,8 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
     bool success = true;
     for (int i = 0; i < numStrips; i++) {
         auto t0 = clock::now();
-        if (i == 0) fprintf(stderr, "DBG[snapLarge]: strip0 cropStrip(src=%p dst=%p rows=%d)...\n",
-                            (void*)srcData, (void*)cropBuf_, cropRows);
         cropStrip(cropBuf_, srcData, src_w, src_h, i);
         auto t1 = clock::now();
-        if (i == 0) fprintf(stderr, "DBG[snapLarge]: strip0 cropped, resize %dx%d->%dx%d...\n",
-                            src_w, cropRows, dst_w, stripH);
 
         if (!resizeStrip(cropBuf_, resizeBuf_, src_w, cropRows, dst_w, stripH, dst_w, dst_h)) {
             Logger::log(LogLevel::ERROR, "snapLarge: SIMD resize failed at strip %d", i);
@@ -233,7 +219,6 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
         auto t2 = clock::now();
 
         int jpegLen = 0;
-        if (i == 0) fprintf(stderr, "DBG[snapLarge]: strip0 resized, InputJpege %dx%d...\n", dst_w, stripH);
         if (!encodeJpegStrip(resizeBuf_, jpegBuf_, dst_w, stripH, quality, jpegLen)) {
             Logger::log(LogLevel::ERROR, "snapLarge: InputJpege failed at strip %d", i);
             success = false;
@@ -241,13 +226,8 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
         }
         auto t3 = clock::now();
 
-        // Extract scan data (after SOS header). First run: confirm InputJpege
-        // terminates the strip with FFD9 so we can strip it for stitching.
-        if (i == 0 && jpegLen >= 2) {
-            Logger::log(LogLevel::INFO, "snapLarge: strip0 len=%d tail=%02x%02x%02x%02x",
-                jpegLen, jpegBuf_[jpegLen-4], jpegBuf_[jpegLen-3],
-                jpegBuf_[jpegLen-2], jpegBuf_[jpegLen-1]);
-        }
+        // Extract scan data (after SOS header); strip the per-strip EOI so
+        // strips re-stitch cleanly under our own DRI/EOI scheme.
         int scanOffset = findSosDataOffset(jpegBuf_, jpegLen);
         if (scanOffset < 0) {
             Logger::log(LogLevel::ERROR, "snapLarge: SOS not found at strip %d", i);
@@ -299,7 +279,6 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
 bool LargeImageSnap::snapRaw(const std::string& filename, int quality) {
     IMPFrameInfo *frame = nullptr;
     int sensorChn = 0;
-    fprintf(stderr, "DBG[snapRaw]: GetFrameEx(%d)...\n", sensorChn);
     if (IMP_FrameSource_GetFrameEx(sensorChn, &frame) < 0) {
         Logger::log(LogLevel::ERROR, "snapRaw: GetFrameEx failed");
         return false;
@@ -307,11 +286,9 @@ bool LargeImageSnap::snapRaw(const std::string& filename, int quality) {
     int w = frame->width;
     int h = frame->height;
     const uint8_t* srcData = reinterpret_cast<const uint8_t*>(frame->virAddr);
-    fprintf(stderr, "DBG[snapRaw]: frame=%dx%d virAddr=%p\n", w, h, (void*)srcData);
 
     /* InputJpege needs a VBM-backed (physically contiguous) source. */
     size_t nv12sz = static_cast<size_t>(w) * h * 3 / 2;
-    fprintf(stderr, "DBG[snapRaw]: VbmAlloc(%zu)...\n", nv12sz);
     uint8_t* vbm = static_cast<uint8_t*>(IMP_Encoder_VbmAlloc(nv12sz, 256));
     if (!vbm) {
         Logger::log(LogLevel::ERROR, "snapRaw: VbmAlloc(%zu) failed", nv12sz);
@@ -319,17 +296,14 @@ bool LargeImageSnap::snapRaw(const std::string& filename, int quality) {
         return false;
     }
 
-    fprintf(stderr, "DBG[snapRaw]: memcpy frame -> VBM...\n");
     memcpy(vbm, srcData, nv12sz);
     IMP_FrameSource_ReleaseFrameEx(sensorChn, frame);
-    fprintf(stderr, "DBG[snapRaw]: memcpy done, InputJpege %dx%d q=%d...\n", w, h, quality);
 
     uint8_t* jpeg = static_cast<uint8_t*>(malloc(nv12sz));
     if (!jpeg) { IMP_Encoder_VbmFree(vbm); return false; }
     int jpegLen = 0;
     int ret = IMP_Encoder_InputJpege(vbm, jpeg, w, h, quality, &jpegLen);
     IMP_Encoder_VbmFree(vbm);
-    fprintf(stderr, "DBG[snapRaw]: InputJpege ret=%d len=%d\n", ret, jpegLen);
     if (ret != 0 || jpegLen <= 0) {
         Logger::log(LogLevel::ERROR, "snapRaw: InputJpege failed ret=%d len=%d", ret, jpegLen);
         free(jpeg);
@@ -341,8 +315,6 @@ bool LargeImageSnap::snapRaw(const std::string& filename, int quality) {
     size_t written = fwrite(jpeg, 1, jpegLen, fp);
     fclose(fp);
     free(jpeg);
-    fprintf(stderr, "DBG[snapRaw]: saved %s (%d bytes, wrote=%zu) %dx%d\n",
-            filename.c_str(), jpegLen, written, w, h);
     return written == static_cast<size_t>(jpegLen);
 }
 

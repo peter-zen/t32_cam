@@ -76,13 +76,10 @@ int main(int argc, char** argv) {
     media::ImageSnapParams params;
     params.setImageSize(dstW, dstH);
     params.setSensorNativeSize(2560, 1440);
-    std::cerr << "DBG: constructing ImageSnap..." << std::endl;
     media::ImageSnap snap(params);
-    std::cerr << "DBG: ImageSnap constructed OK" << std::endl;
 
     auto t0 = std::chrono::steady_clock::now();
     bool ok = snap.snapLargeStrip(outFile, quality, raw);
-    std::cerr << "DBG: snapLargeStrip returned " << (ok ? 1 : 0) << std::endl;
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0).count();
 
