@@ -59,40 +59,6 @@ static std::string normalizePath(const std::string& path)
     return path;
 }
 
-static bool syncWithMCU()
-{
-    auto devconf = DeviceConfig::getInstance();
-    auto mcu = MCU::getInstance();
-    //PID
-    {
-        auto pid = mcu->readPID();
-        if (!pid.empty()) {
-            devconf->set(INI_SECTION_DEVICE, INI_KEY_PID, pid);
-        }
-    }
-
-    //UPID & UPWD
-    {
-        auto upid = mcu->readUPID();
-        auto upwd = mcu->readUPWD();
-        if (!upid.empty() && !upwd.empty()) {
-            devconf->set(INI_SECTION_SYS, INI_KEY_UPID, upid);
-            devconf->set(INI_SECTION_SYS, INI_KEY_UPWD, upwd);
-        }
-    }
-    devconf->flush();
-
-    //RTC
-    {
-        time_t now = time(nullptr);
-        struct tm* datetime = localtime(&now);
-        if (datetime != nullptr) {
-            mcu->setDatetime(datetime);
-        }
-    }
-    return true;
-}
-
 // 简单的 INI 配置解析器
 static std::unordered_map<std::string, std::unordered_map<std::string, std::string>> parseIniFile(const std::string& filename)
 {
@@ -308,6 +274,18 @@ int main(int argc, char* argv[])
                                       rtsp_audio_enabled, argc, argv,
                                       mgmtServClient, storageServClient};
 
+    // T16 Phase C-3: restore pre-C2 ordering. Post-C2 the switch(working_mode)
+    // →command map moved into runWorkMode (which runs AFTER
+    // commonStartupPostDispatch), so the -wm path reached S11 netif selection
+    // with command == CMD_HELP — a real regression for non-WIFI skus running
+    // `-wm 3` (WORKING_MODE_TEST_ONLY → CMD_MOBILE). Derive `command` here via
+    // the shared workModeToCommand (the same switch + RGB blink side effects)
+    // so commonStartupPostDispatch sees the correct command (e.g. CMD_MOBILE
+    // for `-wm 3`). The single-shot dispatch path already set `command` above.
+    if (is_work_mode_cmd) {
+        command = app_workmode::workModeToCommand(working_mode, ctx);
+    }
+
     // S9-S13 (daemon register / Settings / DeviceConfig + program_type /
     // SD-mount + netif / factory-config / update-config / timezone).
     if (!lc.commonStartupPostDispatch(cfg, command)) {
@@ -400,7 +378,7 @@ main_exit:
     Logger::log(LogLevel::INFO, "[SIM] Program exit normally");
     _exit(0);
 #else
-    syncWithMCU();
+    app_lifecycle::syncWithMCU();
     config->flush();
 #if POWER_MANAGER_ON
     Misc::poweroff();

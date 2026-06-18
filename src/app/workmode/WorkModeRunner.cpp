@@ -839,7 +839,7 @@ CascadeResult runCommands(int command, WorkModeContext& ctx)
     return CascadeResult::Continue;
 }
 
-CascadeResult runWorkMode(enum workingMode mode, WorkModeContext& ctx)
+int workModeToCommand(enum workingMode mode, WorkModeContext& ctx)
 {
     int command = CMD_HELP;
     switch (mode) {
@@ -867,10 +867,25 @@ CascadeResult runWorkMode(enum workingMode mode, WorkModeContext& ctx)
             command = CMD_CONN_NET | CMD_DHCP | CMD_RTSP_SERVER;
             break;
         default:
-            Logger::log(LogLevel::ERROR, "%s Invalid working mode %d, power off", __func__, mode);
-            //Power::getInstance()->requestShutdown();
-            sleep(10);
-            return CascadeResult::TerminalExit;
+            // Invalid mode: return CMD_HELP. runWorkMode's default case still
+            // owns the error log + sleep + TerminalExit (behavior-preserving);
+            // callers that only need the command bitmap get a sentinel they
+            // can decide on. Side effects (RGB blink) above are byte-identical
+            // to the factored switch.
+            command = CMD_HELP;
+            break;
+    }
+    return command;
+}
+
+CascadeResult runWorkMode(enum workingMode mode, WorkModeContext& ctx)
+{
+    int command = workModeToCommand(mode, ctx);
+    if (command == CMD_HELP) {
+        Logger::log(LogLevel::ERROR, "%s Invalid working mode %d, power off", __func__, mode);
+        //Power::getInstance()->requestShutdown();
+        sleep(10);
+        return CascadeResult::TerminalExit;
     }
 
     return runCommands(command, ctx);

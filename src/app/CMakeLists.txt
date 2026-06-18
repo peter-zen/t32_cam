@@ -3,6 +3,7 @@ file(GLOB MAIN_APP_SOURCES "${SOURCES}/app/main_app.cpp")
 file(GLOB MEDIA_APP_SOURCES "${SOURCES}/app/media_app.cpp")
 file (GLOB DAEMON_APP_SOURCES "${SOURCES}/app/daemon_app.cpp")
 file (GLOB WIFI_APP_SOURCES "${SOURCES}/app/wifi_app.cpp")
+file(GLOB WORKMODE_APP_SOURCES "${SOURCES}/app/workmode_app.cpp")
 set(WIFI_APP_HELPER_SOURCES
     "${SOURCES}/app/wifi_app_logic.cpp"
     "${SOURCES}/app/wifi_reconnect.cpp"
@@ -61,6 +62,7 @@ add_executable(htc_main_app ${MAIN_APP_SOURCES})
 add_executable(htc_media_app ${MEDIA_APP_SOURCES})
 add_executable(htc_daemon_app ${DAEMON_APP_SOURCES})
 add_executable(htc_wifi_app ${WIFI_APP_SOURCES} ${WIFI_APP_HELPER_SOURCES})
+add_executable(htc_workmode_app ${WORKMODE_APP_SOURCES})
 add_executable(snap_test ${CMAKE_CURRENT_SOURCE_DIR}/snap_test.cpp)
 
 # ============================================================================
@@ -208,6 +210,34 @@ if(BUILD_FOR_SIMULATION)
         crc16
         jsoncpp
         sdk_stub
+        pthread
+        rt
+        gcc
+        stdc++
+    )
+
+    # htc_workmode_app (SIM): thin -wm shell composing app_workmode +
+    # app_lifecycle. Both PUBLIC-link their deps (common_misc, setting, env,
+    # devconf, logger, daynight, gpio, mcu, power, storage, media_rtsp,
+    # http_server, event_service, discovery_service, daemon, camera_service,
+    # common_time_timezone, jsoncpp) so transitives cover most. The explicit
+    # floor below is the directly-called-by-main() set + uClibc-safe parse.
+    # No common_utils_string link (StringConvert.h is header-only static).
+    target_link_libraries(htc_workmode_app
+        PRIVATE
+        app_workmode
+        app_lifecycle
+        common_misc          # Misc::getExecutablePath (sim StartupConfig)
+        setting              # Settings::saveToJsonFile (cleanupHook)
+        env                  # EnvManager
+        devconf              # DeviceConfig (config alias)
+        power                # Power::getInstance (invalid-arg path)
+        daynight             # DayNightSwitch (cleanupHook body)
+        gpio                 # GPIO / POWER_HOLD_PIN (cleanupHook body)
+        mcu                  # app_lifecycle::syncWithMCU (transitive, kept explicit)
+        logger
+        jsoncpp              # WorkModeContext pulls jsoncpp headers
+        sdk_stub             # sim SDK stub
         pthread
         rt
         gcc
@@ -376,6 +406,35 @@ target_link_libraries(htc_wifi_app
     gcc
     stdc++
 )
+
+# htc_workmode_app (T32): same -wm shell, HW SDK. system_call replaces sdk_stub.
+# app_workmode + app_lifecycle PUBLIC-link the bulk of the cascade/lifecycle
+# deps (storage/media_rtsp/http_server/event_service/discovery_service/daemon/
+# camera_service/common_time_timezone/daynight/gpio/mcu/power/jsoncpp/...); the
+# explicit set below is the directly-called-by-main() floor + imp/alog (HW SDK
+# globals pulled transitively by the cascade). Append as the T32 link demands.
+target_link_libraries(htc_workmode_app
+    PRIVATE
+    app_workmode
+    app_lifecycle
+    common_misc
+    setting
+    env
+    devconf
+    power
+    daynight
+    gpio
+    mcu
+    logger
+    jsoncpp
+    system_call          # HW SDK (replaces sdk_stub)
+    imp
+    alog
+    pthread
+    rt
+    gcc
+    stdc++
+)
 endif()
 
 # Set output directory
@@ -398,6 +457,11 @@ set_target_properties(htc_daemon_app PROPERTIES
 )
 
 set_target_properties(htc_wifi_app PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+set_target_properties(htc_workmode_app PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

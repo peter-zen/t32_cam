@@ -80,6 +80,12 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T16
+  title: 'Phase C-3: create thin htc_workmode_app (uses app_lifecycle + app_workmode::runWorkMode);
+    exists but unspawned'
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -128,4 +134,4 @@ risks:
   hang in IMP configure(). Sim cannot surface this (Misc::poweroff no-op + _exit(0)).
   Do this before C5 retire; htc_main_app -wm remains the fallback/baseline through
   C4.'
-active_task: T15
+active_task: T16

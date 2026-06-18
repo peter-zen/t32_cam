@@ -57,9 +57,22 @@ enum class CascadeResult { Continue, TerminalExit };
 // normal completion returns Continue. runCommands never produces TerminalExit.
 CascadeResult runCommands(int command, WorkModeContext& ctx);
 
-// The switch(working_mode)→command-bitmap map (verbatim) + runCommands. The
-// invalid-mode `default:` returns TerminalExit (the caller does `return -1`,
-// skipping the tail, exactly as today's `return -1` from main).
+// Maps a workingMode to its CMD_* bitmap, WITH the exact side effects the
+// pre-C2 -wm switch had at the same source lines (RGB asyncBlink for
+// WORKING_MODE_UPLOAD_ONLY and WORKING_MODE_TEST_ONLY). Returns CMD_HELP for
+// an invalid mode WITHOUT sleeping/returning — the caller decides what to do
+// with CMD_HELP (runWorkMode's default case still owns the sleep+TerminalExit).
+// Exposed (T16 Phase C-3) so a caller can derive `command` for
+// commonStartupPostDispatch (which reads CMD_MOBILE at S11 netif selection)
+// BEFORE runWorkMode runs — restoring the pre-C2 ordering lost when the
+// switch moved into runWorkMode (C2/T15). Byte-identical to the factored
+// switch body inside runWorkMode.
+int workModeToCommand(enum workingMode mode, WorkModeContext& ctx);
+
+// workModeToCommand(mode) (returns CMD_HELP on invalid mode → sleep+TerminalExit,
+// matching today's `return -1` from main) + runCommands. The switch body now
+// lives in workModeToCommand (single source, shared with callers that need
+// `command` before runWorkMode). Behavior byte-identical to HEAD.
 CascadeResult runWorkMode(enum workingMode mode, WorkModeContext& ctx);
 
 }  // namespace app_workmode

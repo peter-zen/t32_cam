@@ -18,6 +18,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../config/setting       # Settings
         ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/daynight    # DayNightSwitch
         ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/gpio        # GPIO
+        ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/mcu         # MCU (syncWithMCU HW tail, T16 C-3)
         ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/power       # Power
         ${CMAKE_CURRENT_SOURCE_DIR}/../common/misc          # Misc
         ${CMAKE_CURRENT_SOURCE_DIR}/../common/time/timezone # Timezone (S13)
@@ -41,6 +42,7 @@ target_link_libraries(app_lifecycle PUBLIC
         daynight               # DayNightSwitch
         gpio                   # GPIO
         power                  # Power::getInstance()->isChangeModeRequested()
+        mcu                    # MCU::getInstance() in syncWithMCU (HW tail, T16 C-3)
         common_time_timezone   # Timezone (S13)
         http_server            # http_server_is_running/stop/deinit
         event_service          # TcpEventService (shutdown transport)

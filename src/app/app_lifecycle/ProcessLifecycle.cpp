@@ -32,6 +32,7 @@
 #include "EnvManager.h"
 #include "GPIO.h"
 #include "Logger.h"
+#include "MCU.h"
 #include "MediaScanner.h"
 #include "MdnsService.h"
 #include "MdnsParams.h"
@@ -602,6 +603,43 @@ void ProcessLifecycle::shutdown(ShutdownContext& ctx) {
     if (impl_->auto_release) {
         impl_->auto_release->release();
     }
+}
+
+// Moved verbatim from main_app.cpp's static syncWithMCU() (T16 Phase C-3).
+// Terminal HW step run by the caller AFTER shutdown(): read PID/UPID/UPWD
+// from the MCU into DeviceConfig, flush, and push localtime into the MCU RTC.
+bool syncWithMCU()
+{
+    auto devconf = DeviceConfig::getInstance();
+    auto mcu = MCU::getInstance();
+    //PID
+    {
+        auto pid = mcu->readPID();
+        if (!pid.empty()) {
+            devconf->set(INI_SECTION_DEVICE, INI_KEY_PID, pid);
+        }
+    }
+
+    //UPID & UPWD
+    {
+        auto upid = mcu->readUPID();
+        auto upwd = mcu->readUPWD();
+        if (!upid.empty() && !upwd.empty()) {
+            devconf->set(INI_SECTION_SYS, INI_KEY_UPID, upid);
+            devconf->set(INI_SECTION_SYS, INI_KEY_UPWD, upwd);
+        }
+    }
+    devconf->flush();
+
+    //RTC
+    {
+        time_t now = time(nullptr);
+        struct tm* datetime = localtime(&now);
+        if (datetime != nullptr) {
+            mcu->setDatetime(datetime);
+        }
+    }
+    return true;
 }
 
 }  // namespace app_lifecycle

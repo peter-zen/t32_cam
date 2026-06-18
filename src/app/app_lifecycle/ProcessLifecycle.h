@@ -119,4 +119,11 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// Terminal HW step run by the caller AFTER shutdown(), before poweroff/return.
+// Reads PID/UPID/UPWD from the MCU into DeviceConfig, flushes, and pushes the
+// local time into the MCU RTC. Moved verbatim from main_app.cpp (T16 Phase
+// C-3) so both htc_main_app and htc_workmode_app share the same body. A free
+// function — it touches only singletons (DeviceConfig + MCU), no Impl state.
+bool syncWithMCU();
+
 }  // namespace app_lifecycle
