@@ -281,6 +281,14 @@ bool MCU::Is4gExist()
 
 bool MCU::writeRemoteWakeup(int remote_wakeup)
 {
+	unsigned char buf[128] = { 0 };
+	memcpy(buf, &remote_wakeup, sizeof(remote_wakeup));
+	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UWS);
+	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UWS);
+	if (iic->write(reg_start, buf, nbytes) <= 0) {
+		Logger::log(LogLevel::ERROR, "[MCU]write remote wakeup failed");
+		return false;
+	}
 	return true;
 }
 
@@ -307,7 +315,8 @@ int MCU::readCds()
 
 bool MCU::IsRemoteWakeup()
 {
-	return false;
+	int value = readUWS();
+	return (value != 0);
 }
 
 int MCU::readRMID()
@@ -956,10 +965,10 @@ bool MCU::writeGps(const std::string &gps)
 		
 		// 写入经度数据
 		{
-			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_GPSL);
+			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_LOCTION_LON);
 			memset(buf, 0, sizeof(buf));
 			memcpy(buf, &longitude, nbytes);
-			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_ESOR_GPSL), buf, nbytes) <= 0) {
+			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_LOCTION_LON), buf, nbytes) <= 0) {
 				Logger::log(LogLevel::ERROR, "Failed to write longitude to MCU");
 				success = false;
 			}
@@ -967,12 +976,10 @@ bool MCU::writeGps(const std::string &gps)
 		
 		// 写入纬度数据
 		if (success) {
-			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_GPSA);
+			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_LOCTION_LAT);
 			memset(buf, 0, sizeof(buf));
 			memcpy(buf, &latitude, nbytes);
-			// 注意：这里读取使用的是PARAM_MCU_GPSL地址，但根据函数名应该写入到PARAM_MCU_GPSA
-			// 为保持一致性，这里使用与readGps相同的地址
-			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_ESOR_GPSL), buf, nbytes) <= 0) {
+			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_LOCTION_LAT), buf, nbytes) <= 0) {
 				Logger::log(LogLevel::ERROR, "Failed to write latitude to MCU");
 				success = false;
 			}
@@ -980,10 +987,10 @@ bool MCU::writeGps(const std::string &gps)
 		
 		// 写入高度数据
 		if (success) {
-			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_ESOR_GPSH);
+			nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_LOCTION_ELE);
 			memset(buf, 0, sizeof(buf));
 			memcpy(buf, &altitude, nbytes);
-			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_ESOR_GPSH), buf, nbytes) <= 0) {
+			if (iic->write(PARAM_UNPACK_START(PARAM_MCU_LOCTION_ELE), buf, nbytes) <= 0) {
 				Logger::log(LogLevel::ERROR, "Failed to write altitude to MCU");
 				success = false;
 			}
