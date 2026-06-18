@@ -30,6 +30,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../common/utils/string
         ${CMAKE_CURRENT_SOURCE_DIR}/../common/utils/serial
         ${CMAKE_CURRENT_SOURCE_DIR}/workmode
+        ${CMAKE_CURRENT_SOURCE_DIR}/app_lifecycle
         ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/daynight
         ${CMAKE_CURRENT_SOURCE_DIR}/../service/daemon
         ${CMAKE_CURRENT_SOURCE_DIR}/../media/snap
@@ -54,6 +55,7 @@ link_directories(
 )
 
 add_subdirectory(workmode)
+add_subdirectory(app_lifecycle)
 
 add_executable(htc_main_app ${MAIN_APP_SOURCES})
 add_executable(htc_media_app ${MEDIA_APP_SOURCES})
@@ -134,6 +136,7 @@ if(BUILD_FOR_SIMULATION)
         jsoncpp
         daynight
         app_workmode
+        app_lifecycle
         manifest
         logger
         #misc libs
@@ -288,6 +291,7 @@ target_link_libraries(htc_main_app
     jsoncpp
     daynight
     app_workmode
+    app_lifecycle
     manifest
     logger
 

@@ -51,6 +51,7 @@
 #include "StringConvert.h"
 #include "WorkMode.h"
 #include "app.h"
+#include "ProcessLifecycle.h"
 #include "DayNightSwitch.h"
 #include "Power.h"
 #include "utils/AutoRelease.h"
@@ -69,48 +70,20 @@
 using namespace network;
 
 using namespace media;
-static std::shared_ptr<DayNightSwitch> daynight_switch;
-std::shared_ptr<GPIO> gpio_rgb_led;
 
 static std::string getCurrentTimeFormatted()
 {
     time_t now = time(nullptr);
     struct tm* nowtime = localtime(&now);
-    
+
     std::stringstream ss;
     ss << std::put_time(nowtime, "%Y%m%d_%H%M%S");
     Misc::getDateTime();
     return ss.str();
 }
 
-static std::string trimConfigString(const std::string& value)
-{
-    size_t start = 0;
-    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
-        ++start;
-    }
-
-    size_t end = value.size();
-    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
-        --end;
-    }
-
-    std::string trimmed = value.substr(start, end - start);
-    if (trimmed.size() >= 2 && trimmed.front() == '"' && trimmed.back() == '"') {
-        return trimmed.substr(1, trimmed.size() - 2);
-    }
-    return trimmed;
-}
-
-static void setEnvIfEmpty(const std::shared_ptr<EnvManager>& env_manager,
-                          const std::string& key,
-                          const std::string& value)
-{
-    if (env_manager->getEnv(key, "").empty()) {
-        env_manager->setEnv(key, value);
-    }
-}
-
+// Used by main() to resolve the SIM path inputs that feed StartupConfig (S1).
+// (The lifecycle TU has its own copy for its post-startup paths.)
 static std::string normalizePath(const std::string& path)
 {
     char resolved[PATH_MAX];
@@ -118,37 +91,6 @@ static std::string normalizePath(const std::string& path)
         return std::string(resolved);
     }
     return path;
-}
-
-static std::string getParentPath(const std::string& path)
-{
-    if (path.empty()) {
-        return "";
-    }
-
-    std::string trimmed = path;
-    while (trimmed.size() > 1 && trimmed.back() == '/') {
-        trimmed.pop_back();
-    }
-
-    const size_t pos = trimmed.find_last_of('/');
-    if (pos == std::string::npos) {
-        return "";
-    }
-    if (pos == 0) {
-        return "/";
-    }
-    return trimmed.substr(0, pos);
-}
-
-static MediaScannerMode parseMediaScannerMode(const std::string& rawMode)
-{
-    std::string mode = trimConfigString(rawMode);
-    std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
-    if (mode == "full" || mode == "full_scan" || mode == "media") {
-        return MediaScannerMode::FullScan;
-    }
-    return MediaScannerMode::PendingThumbnails;
 }
 
 static uint16_t getConfiguredPort(const std::shared_ptr<DeviceConfig>& config,
@@ -519,281 +461,64 @@ static void printUsage(char *argv[])
 #define CMD_GET_RTC (1 << 11)
 #define CMD_SET_RTC (1 << 12)
 
-static bool already_in_exit_flow = false;
 static bool rtsp_audio_enabled = true;  // RTSP 音频默认开启
 static bool mobile_rtsp_enabled = true; // Mobile 模式默认启动 RTSP，调试录像 FPS 时可关闭
-// True once RtspServer::getInstance() has been used (mobile / rtsp-server mode).
-// Drives the process-level HAL teardown at main_exit so IMP encoder channel/
-// group/bind + ISP/OSD region are released before Misc::poweroff()/while(1)
-// freezes the process (the RtspServer singleton destructor never runs because
-// main() does not return on T32 hardware).
-static bool rtsp_singleton_used = false;
 static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
 static std::shared_ptr<StorageServClient> storageServClient = nullptr;
 
-// Async-signal-safe signal handling via self-pipe.
-// The signal handler does nothing but write(2) to g_signal_pipe[1].
-// The main loop polls g_signal_pipe[0] and runs cleanup on the main thread.
-static int g_signal_pipe[2] = {-1, -1};
-static volatile sig_atomic_t g_pending_signal = 0;
-
-static void performCleanup(int sig);  // forward decl (defined below)
-
-// Drain any pending bytes from g_signal_pipe[0] and return the most recent
-// signal number recorded by signalHandler. Safe to call from the main thread.
-static int drainSignalPipe() {
-    unsigned char buf[16];
-    while (true) {
-        ssize_t r = read(g_signal_pipe[0], buf, sizeof(buf));
-        if (r > 0) continue;
-        if (r == 0) break;
-        if (errno == EINTR) continue;
-        break;  // EAGAIN/other: nothing more to read
-    }
-    return static_cast<int>(g_pending_signal);
-}
-
-// Block for up to timeoutMs waiting for a signal. Returns the captured
-// signal number (e.g. SIGINT), or 0 on timeout. Side effect: if a signal
-// was caught, sets already_in_exit_flow and runs performCleanup so the
-// caller can break out of its loop immediately.
-static int waitForSignalOrTimeout(int timeoutMs) {
-    struct pollfd pfd;
-    pfd.fd = g_signal_pipe[0];
-    pfd.events = POLLIN;
-    int ret = poll(&pfd, 1, timeoutMs);
-    if (ret <= 0) {
-        return 0;  // timeout or error — caller will re-check the flag
-    }
-    int sig = drainSignalPipe();
-    if (sig == 0) {
-        return 0;  // spurious wakeup
-    }
-    if (!already_in_exit_flow) {
-        already_in_exit_flow = true;
-        performCleanup(sig);
-    }
-    return sig;
-}
-
-// Perform shutdown work that was previously the worker thread's job. Runs on
-// the main thread after the self-pipe wakes the main loop.
-//
-// NOTE (WiFi reuse): this exit path INTENTIONALLY does not rmmod the WiFi
-// driver, does not kill wpa_supplicant, and does not clear /tmp/wpa_supplicant.
-// Leaving them in place lets the next app boot reuse the already-loaded driver
-// and running supplicant. Re-entry is now safe and state-driven: on the next
-// boot Misc::isWifiDriverLoaded()/isWifiConnected() short-circuit connectWifi
-// and startDHCP, so we never re-insmod (no "File exists") and never re-spawn
-// wpa_supplicant (no ctrl_iface collision).
-static void performCleanup(int sig) {
-    Logger::log(LogLevel::INFO, "Processing signal %d on main thread", sig);
-
-    if (daynight_switch) {
-        daynight_switch->controlISP(DayNightState::DAY);
-        daynight_switch->controlIRLed(DayNightState::DAY);
-        daynight_switch->controlIRCut(DayNightState::DAY);
-    }
-
-    if (gpio_rgb_led) {
-        gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
-    }
-
-    std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", "");
-    if (setting_file_path.empty()) {
-        Logger::log(LogLevel::ERROR, "Failed to get setting file path");
-    } else {
-        if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
-            Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
-        }
-    }
-
-    if (http_server_is_running()) {
-        http_server_stop();
-        http_server_deinit();
-    }
-    service::TcpEventService::getInstance()->stop();
-    mgmtServClient = nullptr;
-    storageServClient = nullptr;
-
-    if (sig == SIGTERM) {
-        if (Power::getInstance()->isChangeModeRequested()) {
-            Logger::log(LogLevel::INFO, "Change mode requested, holding power on");
-            auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
-            if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
-                || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
-                Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
-            }
-        }
-        // Hardware poweroff for the non-change-mode SIGTERM case is handled
-        // by the existing main_exit path (Misc::poweroff at the bottom of
-        // main()). Nothing to do here.
-    }
-}
-
-// signalHandler is the ONLY function that runs in signal-delivered context.
-// It does only two things, both async-signal-safe per POSIX.1-2017:
-//   1. g_pending_signal = signal;          (sig_atomic_t store)
-//   2. write(g_signal_pipe[1], "x", 1);    (write(2) is in the safe list)
-// No Logger::log, no std::mutex, no std::condition_variable, no malloc.
-static void signalHandler(int signal) {
-    if (already_in_exit_flow) {
-        return;
-    }
-    g_pending_signal = signal;
-    int saved_errno = errno;
-    if (g_signal_pipe[1] >= 0) {
-        char c = 'x';
-        ssize_t r = write(g_signal_pipe[1], &c, 1);
-        (void)r;
-    }
-    errno = saved_errno;
-}
-
 int main(int argc, char* argv[])
 {
-    std::string timezone;
-    bool update_config_exists = false;
     bool is_rtc_work_well = true;
     enum workingMode working_mode = workingMode::WORKING_MODE_MAX;
+
+    // Declared up-front (and assigned after dispatch) so `goto main_exit` from
+    // the commonStartup / commonStartupPostDispatch failure paths does not cross
+    // a non-trivial initializer. Defaults match the original behavior on the
+    // early-fail path.
+    std::shared_ptr<DeviceConfig> config;
+    int program_type = PTYPE_NO_NET;
+    int command = CMD_HELP;
+
+    // --- S1 path inputs (computed here; feed StartupConfig) ---
+    app_lifecycle::StartupConfig cfg;
 #ifdef BUILD_FOR_SIMULATION
+    cfg.isSimulation = true;
     // 动态计算路径，确保文件生成在 build 目录下
     std::string exePath = Misc::getExecutablePath();
-    std::string projectRootPath = normalizePath(exePath + "/../..");  // build_sim/bin/../.. -> project_root
-    std::string defaultSimRootPath = normalizePath(projectRootPath + "/sim_sdcard_runtime");
+    cfg.projectRootPath = normalizePath(exePath + "/../..");  // build_sim/bin/../.. -> project_root
+    std::string defaultSimRootPath = normalizePath(cfg.projectRootPath + "/sim_sdcard_runtime");
     const char* envSimRoot = std::getenv("SIM_SD_ROOT");
-    std::string simRootPath = (envSimRoot && envSimRoot[0] != '\0')
+    cfg.simRootPath = (envSimRoot && envSimRoot[0] != '\0')
                                   ? normalizePath(envSimRoot)
                                   : defaultSimRootPath;
-    setenv("SIM_SD_ROOT", simRootPath.c_str(), 0);
-
-    auto env_manager = EnvManager::getInstance();
-    setEnvIfEmpty(env_manager, "CONFIG_FILE", projectRootPath + "/res/config.sim.ini");
-    setEnvIfEmpty(env_manager, "SETTING_FILE_PATH", projectRootPath + "/res/setting.json");
-    setEnvIfEmpty(env_manager, "BROADCAST_FILELIST_PATHNAME", simRootPath + "/media/audio/AUDIO_PLAY_LIST.txt");
-    setEnvIfEmpty(env_manager, "BROADCAST_FILE_PATH", simRootPath + "/media/audio/");
-    setEnvIfEmpty(env_manager, "ISP_FILE_PATH", simRootPath + "/media/audio/");
-#else
-    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
-#endif
-
-    // Initialize Database
-#ifdef BUILD_FOR_SIMULATION
-    std::string db_path = simRootPath + "/data/db";
-    std::string media_root = simRootPath + "/DCIM";
     const char* envLogDir = std::getenv("SIM_LOG_DIR");
-    std::string log_root = (envLogDir && envLogDir[0] != '\0')
-                           ? std::string(envLogDir)
-                           : (simRootPath + "/logs");
-    std::string log_file = log_root + "/app.log";
+    cfg.dbPath   = cfg.simRootPath + "/data/db";
+    cfg.mediaRoot = cfg.simRootPath + "/DCIM";
+    cfg.logRoot  = (envLogDir && envLogDir[0] != '\0')
+                   ? std::string(envLogDir)
+                   : (cfg.simRootPath + "/logs");
+    cfg.logFile  = cfg.logRoot + "/app.log";
 #else
-    std::string db_path = EnvManager::getInstance()->getEnv("DB_PATH", "/mnt/sdcard/data/db");
-    std::string media_root = "/mnt/sdcard/DCIM";
-    std::string log_root = "/mnt/sdcard/logs";
-    std::string log_file = log_root + "/app.log";
+    cfg.isSimulation = false;
+    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
+    cfg.dbPath   = EnvManager::getInstance()->getEnv("DB_PATH", "/mnt/sdcard/data/db");
+    cfg.mediaRoot = "/mnt/sdcard/DCIM";
+    cfg.logRoot  = "/mnt/sdcard/logs";
+    cfg.logFile  = cfg.logRoot + "/app.log";
 #endif
 
-    if (!DatabaseManager::getInstance().init(db_path)) {
-        fprintf(stderr, "Failed to initialize Database\n");
-    }
-
-    // Start Media Scanner (async). Default mode uses the small pending-thumbnail
-    // directory as a recovery queue; full scan is reserved for maintenance.
-    struct stat st;
-    if (stat(media_root.c_str(), &st) == 0) {
-        MediaScannerOptions scannerOptions;
-        scannerOptions.mediaRootDir = media_root;
-        scannerOptions.mode = parseMediaScannerMode(
-            EnvManager::getInstance()->getEnv("MEDIA_SCANNER_MODE", "pending_thumb"));
-
-        const std::string dataRoot = getParentPath(db_path);
-        const std::string defaultPendingThumbDir =
-            dataRoot.empty() ? (db_path + "/thumb_pending") : (dataRoot + "/thumb_pending");
-        scannerOptions.pendingThumbDir =
-            EnvManager::getInstance()->getEnv("THUMB_PENDING_DIR", defaultPendingThumbDir);
-
-        MediaScanner::getInstance().startScan(scannerOptions);
-    }
-    
-    // Initialize EasyLogger - must be called early before any logging
-#ifdef BUILD_FOR_SIMULATION
-
-    // Ensure log directory exists
-    Misc::createDirectory(log_root);
-
-    // PC 模拟环境：启用终端和文件日志，默认保存到 sim_sdcard_runtime/logs/
-    ElogConfig elog_config;
-    elog_config.enableTerminal = true;
-    elog_config.enableFile = true;
-    elog_config.logFilePath = log_file;
-    elog_config.logLevel = ELOG_LVL_DEBUG;
-    if (!elog_init_with_config(elog_config)) {
-        fprintf(stderr, "Failed to initialize EasyLogger\n");
-    }
-    
-    Logger::log(LogLevel::INFO, "[SIM] Simulation Root: %s", simRootPath.c_str());
-    Logger::log(LogLevel::INFO, "[SIM] Project Root: %s", projectRootPath.c_str());
-    Logger::log(LogLevel::INFO, "[SIM] Log Directory: %s", log_root.c_str());
-    Logger::log(LogLevel::INFO, "[SIM] Log File: %s", log_file.c_str());
-#else
-    // 真机环境：终端 + 文件输出
-    Misc::createDirectory(log_root);
-    ElogConfig elog_config;
-    elog_config.enableTerminal = true;
-    elog_config.enableFile = true;
-    elog_config.logFilePath = log_file;
-    elog_config.logLevel = ELOG_LVL_INFO;
-    if (!elog_init_with_config(elog_config)) {
-        fprintf(stderr, "Failed to initialize EasyLogger\n");
-    }
-    Logger::log(LogLevel::INFO, "Log File: %s", log_file.c_str());
-#endif
-    
-    daynight_switch = DayNightSwitch::getInstance();
-    if (daynight_switch) {
-        daynight_switch->setCdsPins(CDS_SENSOR_PIN);
-        daynight_switch->setIRLedPins(IR_LED_PIN);
-        daynight_switch->setIRCutPins(IR_CUT_ENABLE_PIN, IR_CUT_CTRL_PIN);
-    }
-
-    gpio_rgb_led = std::make_shared<GPIO>(RGB_LED_PIN);
-    if (!gpio_rgb_led->exportGPIO() || !gpio_rgb_led->setDirection(GPIO_DIRECTION::OUTPUT)) {
-        Logger::log(LogLevel::ERROR, "export or set gpio(%d) direction output failed", RGB_LED_PIN);
-        gpio_rgb_led = nullptr;
-    }
-
-    AutoRelease auto_release([]() {
-        // Use the static variable directly without capturing
-        if (daynight_switch) {
-            daynight_switch->controlISP(DayNightState::DAY);
-            daynight_switch->controlIRCut(DayNightState::DAY);
-            daynight_switch->controlIRLed(DayNightState::DAY);
-        }
-
-        if (gpio_rgb_led) {
-            gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
-        }
-    });
-    
-    // Create the self-pipe used for async-signal-safe signal delivery.
-    // Must be done before registering signal handlers.
-    if (pipe(g_signal_pipe) != 0) {
-        fprintf(stderr, "Failed to create self-pipe for signal handling\n");
+    app_lifecycle::ProcessLifecycle lc;
+    if (!lc.commonStartup(cfg)) {        // S1-S8 (pre-dispatch startup)
+        // Today commonStartup() cannot fail. Kept as a guard for future
+        // skipMediaScanner / fatal-step additions; on failure we bail before the
+        // dispatch locals are declared, so a goto main_exit would cross their
+        // initializers — bail directly (matches the original pipe()-fail return).
         return -1;
     }
-    // Make both ends non-blocking: the signal handler does a single short
-    // write(2) which is guaranteed atomic for size <= PIPE_BUF; the read end
-    // is drained in non-blocking mode from the main loop.
-    int flags = fcntl(g_signal_pipe[0], F_GETFL, 0);
-    fcntl(g_signal_pipe[0], F_SETFL, flags | O_NONBLOCK);
-    flags = fcntl(g_signal_pipe[1], F_GETFL, 0);
-    fcntl(g_signal_pipe[1], F_SETFL, flags | O_NONBLOCK);
+    if (!lc.installSignalHandlers()) {   // S8: pipe + signal()  (:778-794)
+        return -1;                       // pipe() failure — matches original bail
+    }
 
-    // Register signal handler for CTRL+C / SIGTERM
-    signal(SIGINT, signalHandler);
-    signal(SIGTERM, signalHandler);
-
-    int command = CMD_HELP;
     if (argc < 2 || std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help") {
         printUsage(argv);
         return -1;
@@ -862,14 +587,14 @@ int main(int argc, char* argv[])
                     break;
                 case WORKING_MODE_UPLOAD_ONLY:
                     command = CMD_CONN_NET | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
-                    if (gpio_rgb_led) {
-                        gpio_rgb_led->asyncBlink(60);
+                    if (lc.rgbLed()) {
+                        lc.rgbLed()->asyncBlink(60);
                     }
                     break;
                 case WORKING_MODE_TEST_ONLY:
                     {
-                        if (gpio_rgb_led) {
-                            gpio_rgb_led->asyncBlink(30);
+                        if (lc.rgbLed()) {
+                            lc.rgbLed()->asyncBlink(30);
                         }
                         command = CMD_MOBILE;
                     }
@@ -893,111 +618,64 @@ int main(int argc, char* argv[])
             return -1;
         }
     }
-    
-    #if DAEMON_ENABLE
-    // 注册到守护服务器
-    int pid = getpid();
-    int intervalMs = 2000;
-    if (registerToDaemonServer(pid, intervalMs)) {
-        Logger::log(LogLevel::INFO, "Registered to daemon server with PID=%d, interval=%dms", pid, intervalMs);
-    } else {
-        Logger::log(LogLevel::WARNING, "Failed to register to daemon server");
-    }
-    #endif
-    
-    std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
-    if (!setting_file_path.empty()) {
-        Settings::getInstance()->loadFromJsonFile(setting_file_path);
-    }
-    auto config = DeviceConfig::getInstance();
-    auto program_type = config->get(INI_SECTION_BOOT, INI_KEY_PTYPE, PTYPE_NO_NET);
-    Logger::log(LogLevel::INFO, "program type %d", program_type);
-    //mount sdcard
-#ifdef BUILD_FOR_SIMULATION
-    if (!Misc::mountSDCard(simRootPath)) {
-        Logger::log(LogLevel::ERROR, "mount sdcard error");
-        goto main_exit;
-    }
-    {
-        std::string interface_name = Misc::findUsableNetworkInterface(NETIF_NAME);
-        if (interface_name.empty()) {
-            interface_name = NETIF_NAME;
-        }
-        Misc::setNetworkInterfaceName(interface_name);
-        elog_i("MDNS", "[SIM] Selected network interface: %s", interface_name.c_str());
-    }
-#else
-    if (!Misc::mountSDCard(SD_CARD_PATH)) {
-        Logger::log(LogLevel::ERROR, "mount sdcard error");
+
+    // S9-S13 (daemon register / Settings / DeviceConfig + program_type /
+    // SD-mount + netif / factory-config / update-config / timezone).
+    if (!lc.commonStartupPostDispatch(cfg, command)) {
         goto main_exit;
     }
 
-    if (program_type == PTYPE_WIFI || command == CMD_MOBILE) {
-        Misc::setNetworkInterfaceName(WIFI_IFNAME);
-    } else if (program_type == PTYPE_ETHERNET) {
-        Misc::setNetworkInterfaceName(ETH_IFNAME);
-    } else if (program_type == PTYPE_USB_DONGLE) {
-        Misc::setNetworkInterfaceName(USB_DONGLE_IFNAME);
-    } else {
-        Logger::log(LogLevel::ERROR, "program type %d not support", program_type);
-        goto main_exit;
-    }
+    // Register the mode-local reset hook. Runs once, on the main thread, the
+    // first time lc.waitForSignal() catches a signal. Body is the verbatim
+    // performCleanup :590-609 (mode-local resets + setting save) + :616-617
+    // (client null) + :619-631 (SIGTERM power-hold). The transport teardown
+    // (:611-615) is NOT here — it lives in lc.shutdown() (idempotent stop()
+    // at main_exit, avoids a double-stop on the signal path).
+    lc.setCleanupHook([&lc](int sig) {
+        Logger::log(LogLevel::INFO, "Processing signal %d on main thread", sig);
 
-    {
-        service::CameraFactoryConfigImporter importer;
-        service::CameraFactoryImportResult import_result = importer.importFromSdRoot(SD_CARD_PATH);
-        if (import_result.selectedInput.find(service::CameraFactoryConfigImporter::kJsonFileName) != std::string::npos) {
-            if (!import_result.success) {
-                Json::StreamWriterBuilder writer;
-                writer["indentation"] = "";
-                Logger::log(LogLevel::ERROR,
-                            "Factory JSON import failed: decision=%s errors=%s",
-                            import_result.decision.c_str(),
-                            Json::writeString(writer, import_result.errors).c_str());
-                config->flush_control(false);
-                goto main_exit;
-            }
-
-            if (import_result.restartRequired) {
-                Logger::log(LogLevel::INFO,
-                            "Factory JSON import applied from %s, count=%d, restart required",
-                            import_result.selectedInput.c_str(),
-                            import_result.appliedCount);
-                config->flush_control(false);
-                goto main_exit;
-            }
+        if (lc.daynight()) {
+            lc.daynight()->controlISP(DayNightState::DAY);
+            lc.daynight()->controlIRLed(DayNightState::DAY);
+            lc.daynight()->controlIRCut(DayNightState::DAY);
         }
-    }
 
-    //update config
-    // First, check if update config file exists by opening it
-    {   // Use a scope to ensure file is closed before moving
-        std::fstream update_config_file(UPDATE_CONFIG_FILE_PATHNAME, std::ios::in);
-        update_config_exists = update_config_file.is_open();
-        if (update_config_exists) {
-            Logger::log(LogLevel::INFO, "Update config file exists, preparing to update config");
-            update_config_file.close();
+        if (lc.rgbLed()) {
+            lc.rgbLed()->setConstant(GPIO_VALUE::LOW);
         }
-    }
-    
-    // Now that file is closed, attempt to move it
-    if (update_config_exists) {
-        if (!Misc::moveFile(UPDATE_CONFIG_FILE_PATHNAME, CONFIG_FILE_PATHNAME)) {
-            Logger::log(LogLevel::ERROR, "Failed to update config file");
+
+        std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", "");
+        if (setting_file_path.empty()) {
+            Logger::log(LogLevel::ERROR, "Failed to get setting file path");
         } else {
-            Logger::log(LogLevel::INFO, "Successfully updated config file");
-            config->flush_control(false);
-            goto main_exit;
+            if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
+                Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
+            }
         }
-    }
-    //timezone
-    timezone = config->get(INI_SECTION_NTP, INI_KEY_TIMEZONE, "");
-    if (!timezone.empty()) {
-        Logger::log(LogLevel::INFO, "Set timezone to %s", timezone.c_str());
-        Timezone::setTimezone(timezone);
-    }
-    
-#endif
+
+        mgmtServClient = nullptr;
+        storageServClient = nullptr;
+
+        if (sig == SIGTERM) {
+            if (Power::getInstance()->isChangeModeRequested()) {
+                Logger::log(LogLevel::INFO, "Change mode requested, holding power on");
+                auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
+                if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
+                    || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
+                    Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
+                }
+            }
+            // Hardware poweroff for the non-change-mode SIGTERM case is handled
+            // by the existing main_exit path (Misc::poweroff at the bottom of
+            // main()). Nothing to do here.
+        }
+    });
+
+    // Cascade-local aliases over the lifecycle accessors (minimal-diff ref
+    // rewrites — see T14-planner-full.md §9). Assigned (not declared) here —
+    // they were declared up-front so early `goto main_exit` stays legal.
+    config = lc.config();
+    program_type = lc.programType();
 
     //RTC
     if (command & CMD_GET_RTC) {
@@ -1213,18 +891,18 @@ int main(int argc, char* argv[])
         setenv("HTC_TEST_MODE", "1", 1);
 
         // Day/Night initialization for CMD_MOBILE (covers both -m and -wm 3 paths)
-        if (daynight_switch) {
+        if (lc.daynight()) {
             const char* forceDay = std::getenv("HTC_FORCE_RECORD_DAY_MODE");
             if (forceDay && strcmp(forceDay, "1") == 0) {
                 Logger::log(LogLevel::INFO, "CMD_MOBILE: force DAY mode from --force-day");
-                daynight_switch->controlISP(DayNightState::DAY);
-                daynight_switch->controlIRCut(DayNightState::DAY);
-                daynight_switch->controlIRLed(DayNightState::DAY);
+                lc.daynight()->controlISP(DayNightState::DAY);
+                lc.daynight()->controlIRCut(DayNightState::DAY);
+                lc.daynight()->controlIRLed(DayNightState::DAY);
             } else {
-                auto daynight_state = daynight_switch->getDayNightState();
-                daynight_switch->controlISP(daynight_state);
-                daynight_switch->controlIRCut(daynight_state);
-                daynight_switch->controlIRLed(daynight_state);
+                auto daynight_state = lc.daynight()->getDayNightState();
+                lc.daynight()->controlISP(daynight_state);
+                lc.daynight()->controlIRCut(daynight_state);
+                lc.daynight()->controlIRLed(daynight_state);
             }
         }
 
@@ -1293,7 +971,7 @@ int main(int argc, char* argv[])
                http_port, interface_name.c_str(), ip_address.c_str());
         
         if (mobile_rtsp_enabled) {
-            rtsp_singleton_used = true;
+            lc.markRtspSingletonUsed();
             RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
                 Logger::log(LogLevel::INFO, "RTSP session closed in mobile mode, waiting for new connection...");
             });
@@ -1312,8 +990,8 @@ int main(int argc, char* argv[])
             Logger::log(LogLevel::INFO, "RTSP server disabled in mobile mode");
         }
 
-        while (!already_in_exit_flow) {
-            (void)waitForSignalOrTimeout(1000);
+        while (lc.keepRunning()) {
+            (void)lc.waitForSignal(1000);
         }
 
         service::MdnsService::getInstance()->stop();
@@ -1333,10 +1011,10 @@ int main(int argc, char* argv[])
 
     if (command & CMD_RTSP_SERVER) {
         uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
-        rtsp_singleton_used = true;
+        lc.markRtspSingletonUsed();
         if (!app_workmode::runRtspServerUntilSignal(rtsp_port,
-                []{ return !already_in_exit_flow; },
-                [](int ms){ (void)waitForSignalOrTimeout(ms); })) {
+                [&lc]{ return lc.keepRunning(); },
+                [&lc](int ms){ (void)lc.waitForSignal(ms); })) {
             goto main_exit;
         }
     }
@@ -1370,8 +1048,8 @@ int main(int argc, char* argv[])
     if (command & CMD_UPLOAD) {
         //assume we have a storage server same as mgmt server
         storageServClient = mgmtServClient->newStorageServClient();
-        if (gpio_rgb_led) {
-            gpio_rgb_led->setConstant(GPIO_VALUE::HIGH);
+        if (lc.rgbLed()) {
+            lc.rgbLed()->setConstant(GPIO_VALUE::HIGH);
         }
         bool descfile_uploaded = false;
         auto desc_filenames = Misc::listFilenames(MEDIA_UPLOAD_PATH);
@@ -1492,47 +1170,21 @@ int main(int argc, char* argv[])
     }
 
 main_exit:
-    // NOTE (WiFi reuse): this final exit path INTENTIONALLY does not rmmod the
-    // WiFi driver, does not kill wpa_supplicant, and does not clear
-    // /tmp/wpa_supplicant. Keeping them lets the next boot reuse the live
-    // driver/supplicant; re-entry is state-driven via
-    // Misc::isWifiDriverLoaded()/isWifiConnected() which short-circuit
-    // connectWifi/startDHCP, so no re-insmod and no wpa_supplicant re-spawn.
-    service::TcpEventService::getInstance()->stop();
-    service::MdnsService::getInstance()->stop();
-
-    // Process-level IMP teardown: release encoder channel/group/bind, ISP and
-    // OSD region before the process is frozen by Misc::poweroff()/while(1)
-    // (or _exit(0) under SIM). Must run BEFORE the freeze so the next process
-    // boot does not hang in configure() on stale IMP driver state. Only run
-    // when the RTSP singleton was actually used; otherwise getInstance() would
-    // spuriously construct + init the HAL in unrelated modes.
-    if (rtsp_singleton_used) {
-        RtspServer::getInstance()->shutdown();
+    // The main_exit tail (TcpEvent/Mdns stop, the rtsp_singleton_used-gated
+    // RtspServer::getInstance()->shutdown() "before the freeze", self-pipe
+    // close, Settings save, power-hold GPIO, auto_release.release()) is owned
+    // by the lifecycle. The terminal steps (sim _exit / HW syncWithMCU +
+    // config->flush + Misc::poweroff) stay here — they are process-terminal
+    // and app-specific. NOTE (WiFi reuse): this path INTENTIONALLY does not
+    // rmmod the WiFi driver / kill wpa_supplicant — see performCleanup comment
+    // moved into the cleanupHook below.
+    {
+        app_lifecycle::ShutdownContext sctx;
+        sctx.programType = lc.programType();
+        sctx.command     = command;
+        sctx.rtcWorkedWell = is_rtc_work_well;
+        lc.shutdown(sctx);
     }
-
-    // Close the signal self-pipe. The signal handler does a guarded write
-    // to g_signal_pipe[1] before checking >= 0, so closing here is safe.
-    if (g_signal_pipe[0] >= 0) {
-        ::close(g_signal_pipe[0]);
-        g_signal_pipe[0] = -1;
-    }
-    if (g_signal_pipe[1] >= 0) {
-        ::close(g_signal_pipe[1]);
-        g_signal_pipe[1] = -1;
-    }
-
-    Settings::getInstance()->saveToJsonFile(setting_file_path);
-
-    Logger::log(LogLevel::INFO, "Power off From Main function");
-#ifndef BUILD_FOR_SIMULATION
-    auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
-    if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
-        || !gpio_power_hold.setValue(GPIO_VALUE::LOW)) {
-        Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
-    }
-#endif
-    auto_release.release();
 #ifdef BUILD_FOR_SIMULATION
     Logger::log(LogLevel::INFO, "[SIM] Program exit normally");
     _exit(0);
