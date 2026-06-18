@@ -74,6 +74,12 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T15
+  title: 'Phase C-2: extract -wm execution into app_workmode::runWorkMode/runCommands
+    (behavior-preserving); htc_main_app calls it'
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -122,4 +128,4 @@ risks:
   hang in IMP configure(). Sim cannot surface this (Misc::poweroff no-op + _exit(0)).
   Do this before C5 retire; htc_main_app -wm remains the fallback/baseline through
   C4.'
-active_task: T14
+active_task: T15
