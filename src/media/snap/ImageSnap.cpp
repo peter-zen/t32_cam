@@ -2,6 +2,7 @@
 #include <mutex>
 #include <string.h>
 #include <cstdlib>
+#include <cstdio>
 #include <fstream>
 #include <sys/select.h>
 #include <sys/time.h>
@@ -22,6 +23,7 @@
 #ifndef SIMULATION_MODE
 #include <imp/imp_framesource.h>
 #include <imp/imp_encoder.h>
+#include "LargeImageSnap.h"
 #include "simd_resize_large.h"
 #include "simd_resize_large.c"
 #endif
@@ -37,6 +39,8 @@ ImageSnapParams::ImageSnapParams()
     this->nchannels = 1;
     this->width = 1920;
     this->height = 1080;
+    this->sensorW = 0;
+    this->sensorH = 0;
 }
 
 void ImageSnapParams::setImageSize(int width, int height)
@@ -49,6 +53,18 @@ void ImageSnapParams::getImageSize(int &width, int &height) const
 {
     width = this->width;
     height = this->height;
+}
+
+void ImageSnapParams::setSensorNativeSize(int width, int height)
+{
+    this->sensorW = width;
+    this->sensorH = height;
+}
+
+void ImageSnapParams::getSensorNativeSize(int &width, int &height) const
+{
+    width = this->sensorW;
+    height = this->sensorH;
 }
 
 int ImageSnapParams::getFrameSourceChnNum() const
@@ -89,17 +105,37 @@ bool ImageSnap::initialize()
 
     /* Determine if target resolution exceeds hardware scaler max (8M) */
     isLargeImage_ = (w > HW_SCALER_MAX_W || h > HW_SCALER_MAX_H);
-    Logger::log(LogLevel::INFO, "initialize: target=%dx%d isLargeImage=%d", w, h, isLargeImage_ ? 1 : 0);
 
+    /* Large-image path: CH0 cannot be configured at the target resolution â
+     * the IMP sensor channel's picWidth must stay at sensor-native (configuring
+     * 9216x5184 corrupts the channel and segfaults in SetChnAttr). Configure
+     * CH0 at sensor-native; LargeImageSnap upscales to the target in software. */
+    int cfgW = w, cfgH = h;
+    if (isLargeImage_) {
+        int sw = 0, sh = 0;
+        params.getSensorNativeSize(sw, sh);
+        if (sw > 0 && sh > 0) {
+            cfgW = sw;
+            cfgH = sh;
+        } else {
+            Logger::log(LogLevel::WARNING, "initialize: large target %dx%d but sensorNativeSize unset", w, h);
+        }
+    }
+    Logger::log(LogLevel::INFO, "initialize: target=%dx%d ch0cfg=%dx%d isLargeImage=%d",
+                w, h, cfgW, cfgH, isLargeImage_ ? 1 : 0);
+
+    fprintf(stderr, "DBG[init]: createVideo...\n");
     video_ = hal::HalProvider::createVideo();
     if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
         return false;
     }
+    fprintf(stderr, "DBG[init]: video->init()...\n");
     if (!video_->init()) {
         Logger::log(LogLevel::ERROR, "initialize: video init failed");
         return false;
     }
+    fprintf(stderr, "DBG[init]: video init OK\n");
 
     /* Main JPEG stream: CH0
      * - ≤ 8M: IVDC enabled (hardware direct path, encoder captures directly)
@@ -115,18 +151,21 @@ bool ImageSnap::initialize()
     cfg.payload = hal::VideoPayloadType::JPEG;
     cfg.channel.sensor_index = SNAP_SENSOR_ID;
     cfg.channel.stream_index = SNAP_STREAM_ID;
-    cfg.width = w;
-    cfg.height = h;
+    cfg.width = cfgW;
+    cfg.height = cfgH;
     cfg.fps_num = 15;
     cfg.fps_den = 1;
     cfg.quality = 40;
     cfg.rc_mode = hal::VideoRcMode::FIXQP;
     cfg.enable_ivdc = !isLargeImage_;
+    fprintf(stderr, "DBG[init]: configure CH0 %dx%d ivdc=%d...\n", cfgW, cfgH, cfg.enable_ivdc ? 1 : 0);
     if (!stream_->configure(cfg)) {
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
         return false;
     }
+    fprintf(stderr, "DBG[init]: CH0 configured OK\n");
 
+    fprintf(stderr, "DBG[init]: configure thumbnail CH2...\n");
     /* Thumbnail JPEG stream: CH2 (hardware scaler, 320 wide, IVDC) */
     thumbVideo_ = hal::HalProvider::createVideo();
     if (thumbVideo_ && thumbVideo_->init()) {
@@ -157,6 +196,7 @@ bool ImageSnap::initialize()
         Logger::log(LogLevel::WARNING, "initialize: createVideoStream for thumb failed (thumbnail disabled)");
     }
 
+    fprintf(stderr, "DBG[init]: initialize done OK\n");
     return true;
 }
 
@@ -453,6 +493,42 @@ bool ImageSnap::snap_large_internal(const std::vector<std::string> &filenames)
     IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
     return true;
 #else
+    return false;
+#endif
+}
+
+bool ImageSnap::snapLargeStrip(const std::string &filename, int quality, bool raw) {
+#ifndef SIMULATION_MODE
+    if (!initialized) {
+        Logger::log(LogLevel::ERROR, "snapLargeStrip: not initialized");
+        return false;
+    }
+    int dstW = 0, dstH = 0;
+    params.getImageSize(dstW, dstH);
+
+    /* Enable CH0 (sensor native NV12, no IVDC) so LargeImageSnap can GetFrame */
+    fprintf(stderr, "DBG[snapLargeStrip]: EnableChn(%d)...\n", SNAP_SENSOR_ID);
+    if (IMP_FrameSource_EnableChn(SNAP_SENSOR_ID) < 0) {
+        Logger::log(LogLevel::ERROR, "snapLargeStrip: EnableChn(%d) failed", SNAP_SENSOR_ID);
+        return false;
+    }
+    fprintf(stderr, "DBG[snapLargeStrip]: EnableChn ok, wait 2s for AE to settle...\n");
+    usleep(2 * 1000 * 1000);  /* let ISP auto-exposure converge before capturing */
+    fprintf(stderr, "DBG[snapLargeStrip]: AE settled, snapLarge dst=%dx%d\n", dstW, dstH);
+
+    LargeImageSnap largeSnap;
+    bool ok = raw ? largeSnap.snapRaw(filename, quality)
+                  : largeSnap.snapLarge(filename, dstW, dstH, quality);
+    fprintf(stderr, "DBG[snapLargeStrip]: %s=%d\n", raw ? "snapRaw" : "snapLarge", ok);
+
+    IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
+    Logger::log(LogLevel::INFO, "snapLargeStrip: %s dst=%dx%d q=%d -> %s",
+                filename.c_str(), dstW, dstH, quality, ok ? "OK" : "FAIL");
+    return ok;
+#else
+    (void)filename;
+    (void)quality;
+    (void)raw;
     return false;
 #endif
 }

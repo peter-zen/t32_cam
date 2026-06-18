@@ -26,6 +26,12 @@ class ImageSnapParams {
 	void setImageSize(int width, int height);
 	void getImageSize(int &width, int &height) const;
 
+	// Sensor-native resolution to configure CH0 on the large-image (>8M) path:
+	// the IMP sensor channel cannot be set above sensor resolution, so CH0
+	// outputs sensor-native NV12 and LargeImageSnap upscales in software.
+	void setSensorNativeSize(int width, int height);
+	void getSensorNativeSize(int &width, int &height) const;
+
 	int getFrameSourceChnNum() const;
 	void setFrameSourceChnNum(int nchannels);
 
@@ -34,6 +40,8 @@ class ImageSnapParams {
 	int nchannels;
 	int width;
 	int height;
+	int sensorW;
+	int sensorH;
 };
 
 class ImageSnap {
@@ -43,6 +51,11 @@ class ImageSnap {
         bool snap(const std::vector<std::string> &filenames);
 		bool snap(const std::string &filename, std::function<void(bool)> onSnapDone);
         bool snap(const std::vector<std::string> &filenames, std::function<void(bool)> onSnapDone);
+
+        // Capture a large (>8M) JPEG via strip stitching (LargeImageSnap). The
+        // target size is taken from ImageSnapParams (set >3840 or >2160).
+        // Hardware only — returns false in simulation builds.
+        bool snapLargeStrip(const std::string &filename, int quality, bool raw = false);
 
         // Get the thumbnail JPEG data captured during the last snap()
         const std::vector<uint8_t>& getThumbnailData() const { return thumbData_; }

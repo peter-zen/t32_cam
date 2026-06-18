@@ -142,6 +142,11 @@ void jpegMakeQuantTables(int quality, uint8_t* lumaQt, uint8_t* chromaQt) {
 }
 
 uint32_t jpegWriteHeader(uint8_t* buf, int width, int height, int quality) {
+    // Default restart interval: one restart per 256 pixels (legacy behaviour).
+    return jpegWriteHeader(buf, width, height, quality, width * height / 256);
+}
+
+uint32_t jpegWriteHeader(uint8_t* buf, int width, int height, int quality, int dri) {
     uint8_t* p = buf;
 
     // SOI
@@ -165,8 +170,8 @@ uint32_t jpegWriteHeader(uint8_t* buf, int width, int height, int quality) {
     writeByte(p, 0x01);  // Pq=0, Tq=1
     for (int i = 0; i < 64; i++) writeByte(p, chromaQt[i]);
 
-    // DRI
-    int restartInterval = width * height / 256;
+    // DRI (restart interval in MCUs; caller-controlled for strip stitching)
+    int restartInterval = dri;
     writeByte(p, 0xff);
     writeByte(p, M_DRI);
     writeWord(p, 4);  // length
@@ -226,7 +231,7 @@ uint32_t jpegWriteHeader(uint8_t* buf, int width, int height, int quality) {
 }
 
 uint32_t jpegWriteHeaderToFile(FILE* file, int width, int height, int quality) {
-    uint8_t buf[512];  // header is ~430 bytes
+    uint8_t buf[1024];  // header is ~611 bytes (4 DHT tables dominate)
     uint32_t len = jpegWriteHeader(buf, width, height, quality);
     fwrite(buf, 1, len, file);
     return len;

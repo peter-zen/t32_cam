@@ -49,6 +49,12 @@ void jpegMakeQuantTables(int quality, uint8_t* lumaQt, uint8_t* chromaQt);
 // Returns bytes written
 uint32_t jpegWriteHeader(uint8_t* buf, int width, int height, int quality);
 
+// Same as above but with an explicit restart interval (DRI), in MCUs per
+// restart interval. Used when stitching independently-encoded strips into one
+// large JPEG: DRI must equal the MCU count of one strip so each strip seam is
+// a restart boundary and DC prediction resets cleanly.
+uint32_t jpegWriteHeader(uint8_t* buf, int width, int height, int quality, int dri);
+
 // Write JPEG header to FILE
 uint32_t jpegWriteHeaderToFile(FILE* file, int width, int height, int quality);
 

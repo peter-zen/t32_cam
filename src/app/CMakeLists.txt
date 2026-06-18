@@ -403,6 +403,9 @@ target_link_libraries(snap_test
     gpio
     jsoncpp
     logger
+    imp
+    alog
+    pthread
     rt
     gcc
     stdc++
