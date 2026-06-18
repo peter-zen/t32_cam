@@ -39,6 +39,58 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T8
+  title: 'Work-mode(-wm) extraction Phase A: SDK+thin-app direction doc & capability/work-mode
+    inventory'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T9
+  title: 'Phase B-1: extract generateDescInfo/createDescInfoFile into a manifest library
+    (behavior-preserving)'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T10
+  title: 'Root-fix: declare crc16 dep on common_utils_crc; drop manifest workaround'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T11
+  title: 'Phase B-2: sink app-inline orchestration into SDK libs (NTP wait-loop, buildMdnsParams,
+    RTSP start/run/stop)'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T12
+  title: 'Phase B-3: lift CMD_RTSP_SERVER start/run/stop into app_workmode (signal
+    machinery via DI, behavior-preserving)'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T13
+  title: 'Root-fix: declare daynight dep on media_rtsp (fix htc_media_app link break)'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T14
+  title: 'Phase C-1: extract app_lifecycle lib (ProcessLifecycle: signal machinery
+    + common startup/shutdown); htc_main_app uses it, behavior-preserving'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T15
+  title: 'Phase C-2: extract -wm execution into app_workmode::runWorkMode/runCommands
+    (behavior-preserving); htc_main_app calls it'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T16
+  title: 'Phase C-3: create thin htc_workmode_app (uses app_lifecycle + app_workmode::runWorkMode);
+    exists but unspawned'
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -97,4 +149,23 @@ risks:
   分支代码原样搬到 net_app 的 runWifi()(只改 namespace/include/日志里的 app 名)；原 test_wifi_app_logic
   全部 case 迁到 test_net_app_logic 并保持断言；真机回归脚本(regress_wifi_real.sh) 换二进制名后重跑；--type
   wifi 默认即旧行为。''}'
-active_task: T7
+- 'common_utils_crc (src/common/utils/crc/CMakeLists.txt) depends on cal_crc16 from
+  the crc16 lib but does not link it; latent missing-dep masked because htc_main_app
+  links crc16 directly. Follow-up: declare `target_link_libraries(common_utils_crc
+  PUBLIC logger crc16)` at the source so consumers inherit it transitively instead
+  of each consumer re-adding crc16 (as manifest now does).'
+- 'media_rtsp (src/media/rtsp/CMakeLists.txt:36) uses DayNightSwitch (RtspServer.cpp:587-595,
+  NOT BUILD_FOR_SIMULATION-gated) but does not link the daynight target. Latent missing-dep
+  masked because htc_main_app links daynight directly; surfaces as a sim (and likely
+  T32) link failure for htc_media_app (undefined DayNightSwitch::* refs). Same class
+  as the crc16/T10 issue. Fix: target_link_libraries(media_rtsp PRIVATE ... daynight)
+  at the source. Pre-existing, not introduced by T9-T12.'
+- 'T14 (Phase C-1) PC-side verification complete (byte-identical refactor + dual-platform
+  build + sim smoke incl. signal→cleanupHook→R1-gated-teardown), but the R1 risk (rtsp_singleton_used
+  HAL-teardown gate drift → next cold boot hangs in IMP configure()) is ONLY verifiable
+  on T32 hardware. USER-RUN Tier-3 device A/B required: cold-boot -m / -wm 3 (CMD_MOBILE)
+  / -rs (CMD_RTSP_SERVER) vs HEAD build/bin/htc_main_app, confirm next boot does NOT
+  hang in IMP configure(). Sim cannot surface this (Misc::poweroff no-op + _exit(0)).
+  Do this before C5 retire; htc_main_app -wm remains the fallback/baseline through
+  C4.'
+active_task: T16

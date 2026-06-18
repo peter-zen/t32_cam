@@ -10,6 +10,7 @@ include_directories(
         ${SDK_INC_PATH}/systemcall
         ${SDK_INC_PATH}/sysutils
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
         ${CMAKE_CURRENT_SOURCE_DIR}/../utils/string
         ${CMAKE_CURRENT_SOURCE_DIR}/../../logger
         ${THIRD_PARTY_PATH}/crc16/include

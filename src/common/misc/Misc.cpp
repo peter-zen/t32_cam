@@ -8,12 +8,14 @@
 #include <unistd.h>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
 #include <dirent.h>
 #include "json/json.h"
+#include "Common.h"
 #include "Misc.h"
 #include "Logger.h"
 #include "system_call.h"
@@ -502,6 +504,44 @@ bool Misc::ntpSync(const std::string& ntp_server)
 			return false;
 	}
 	
+	return true;
+}
+
+bool Misc::ntpSyncAndWait(const std::string& ntp_server)
+{
+	if (!Misc::ntpSync(ntp_server)) {
+		Logger::log(LogLevel::ERROR, "ntp sync error");
+		return false;
+	}
+
+	// Wait until system time is synchronized (year > YEAR_MIN(2000))
+	const int MAX_WAIT_SECONDS = 30; // Maximum wait time 30 seconds
+	const int CHECK_INTERVAL = 2;    // Check every 2 seconds
+	int wait_time = 0;
+	struct tm* nowtime = nullptr;
+	while (wait_time < MAX_WAIT_SECONDS) {
+		time_t now = time(nullptr);
+		nowtime = localtime(&now);
+
+		// Check if year is greater than YEAR_MIN
+		if (nowtime->tm_year + YEAR_OFFSET > YEAR_MIN) {
+			Logger::log(LogLevel::INFO, "System time synchronized: %d-%02d-%02d %02d:%02d:%02d",
+			           nowtime->tm_year + YEAR_OFFSET, nowtime->tm_mon + MONTH_OFFSET, nowtime->tm_mday,
+			           nowtime->tm_hour, nowtime->tm_min, nowtime->tm_sec);
+			break;
+		}
+
+		Logger::log(LogLevel::INFO, "Waiting for system time synchronization, current year: %d, waited %d seconds",
+		           nowtime->tm_year + YEAR_OFFSET, wait_time);
+		sleep(CHECK_INTERVAL);
+		wait_time += CHECK_INTERVAL;
+	}
+
+	if (wait_time >= MAX_WAIT_SECONDS) {
+		Logger::log(LogLevel::WARNING, "Timeout waiting for system time synchronization after %d seconds", MAX_WAIT_SECONDS);
+		return false;
+	}
+
 	return true;
 }
 

@@ -20,6 +20,12 @@ endif()
 # Project name and version
 project(htc_firmware VERSION 1.0)
 
+# Compile all targets (including static libs) with -fPIC so they can be linked
+# into SHARED libraries (e.g. app_lifecycle/app_workmode which embed event/
+# http/discovery static deps). MIPS (T32) already uses PIC for shared libs;
+# x86_64 sim static libs need this to be relocatable. No behavior change.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # Set default definitions
 set(PROJECT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH "Path to SDK")
 set(SDK_PATH "${PROJECT_ROOT}/sdk" CACHE PATH "Path to SDK")

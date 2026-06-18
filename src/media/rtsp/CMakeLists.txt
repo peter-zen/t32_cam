@@ -33,7 +33,10 @@ include_directories(
 add_library(media_rtsp SHARED ${SOURCE_FILES})
 
 # link libraries
-target_link_libraries(media_rtsp PRIVATE media_base media_fifo audio_recorder smolrtsp smolrtsp-libevent event atomic)
+# daynight: RtspServer.cpp uses DayNightSwitch (not sim-gated); declare at the
+# source so consumers (htc_media_app etc.) inherit it (was a latent missing-dep,
+# masked by htc_main_app linking daynight directly).
+target_link_libraries(media_rtsp PRIVATE media_base media_fifo audio_recorder smolrtsp smolrtsp-libevent event atomic daynight)
 
 # 仿真模式不再依赖内置资源头，改由 SimAudio/SimVideo 合成数据
 

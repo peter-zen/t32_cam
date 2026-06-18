@@ -103,6 +103,13 @@
 
 ---
 
+### workmode-sdk-extraction（工作模式 SDK 抽离）
+
+**状态**：Phase A 设计文档已完成（T8），Phase B/C 待启动  
+**参考文档**：`doc/design/workmode-sdk-architecture.md`（方向 + 路线图），`doc/design/workmode-capability-inventory.md`（能力清单 + 缺口）
+
+---
+
 ## 8. 可能的下一步
 
 按优先级建议：

@@ -34,6 +34,11 @@ public:
     static bool isWifiDriverLoaded();
     static bool isWifiConnected(const std::string &ifname="wlan0");
     static bool ntpSync(const std::string& ntp_server);
+    // Synchronize via ntpd, then block until system time is valid
+    // (year > YEAR_MIN) or MAX_WAIT_SECONDS elapses. Returns true if time
+    // became valid, false on ntpSync failure OR timeout. RTC writeback is
+    // left to the CALLER (keeps common_misc free of a common_time_rtc dep).
+    static bool ntpSyncAndWait(const std::string& ntp_server);
 
     //misc
     static bool setDateTime(const std::string& date);

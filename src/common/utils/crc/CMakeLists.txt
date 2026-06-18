@@ -8,7 +8,9 @@ include_directories(
 )
 
 # link libraries
-target_link_libraries(common_utils_crc PRIVATE logger)
+# crc16 provides cal_crc16() called by CRC.cpp; declared here at the source so
+# every consumer inherits it transitively (was a latent missing-dep, T9 risk).
+target_link_libraries(common_utils_crc PRIVATE logger crc16)
 
 # Set the output directory for the library
 set_target_properties(common_utils_crc PROPERTIES

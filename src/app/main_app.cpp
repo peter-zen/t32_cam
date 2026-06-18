@@ -28,127 +28,28 @@
 
 
 #include "MgmtServClient.h"
-#include "RtspServer.h"
-#include "http_server.h"
+#include "WorkModeRunner.h"
 #include "DeviceConfig.h"
 #include "Common.h"
 #include "Logger.h"
 #include "ElogInit.h"
-#include "ImageSnap.h"
-#include "VideoRecorder.h"
-#include "CameraRecorder.h"
-#include "RecordingPostProcess.h"
-#include "MetadataDao.h"
 #include "EnvManager.h"
 #include "misc/Misc.h"
-#include "utils/crc/CRC.h"
 #include "Settings.h"
 #include "MCU.h"
-#include "Disk.h"
-#include "AudioRecorder.h"
-#include "AudioParams.h"
 #include "StringConvert.h"
 #include "WorkMode.h"
 #include "app.h"
-#include "DayNightSwitch.h"
+#include "ProcessLifecycle.h"
 #include "Power.h"
+#include "DayNightSwitch.h"
 #include "utils/AutoRelease.h"
-#include "time/rtc/RTC.h"
 #include "daemon_api.h"
-#include "DatabaseManager.h"
-#include "MediaScanner.h"
-#include "MdnsService.h"
-#include "TcpEventService.h"
-#include "Timezone.h"
-#include "UsbDongle.h"
-#include "CameraFactoryConfigImporter.h"
 
 using namespace network;
 
-using namespace media;
-static std::shared_ptr<DayNightSwitch> daynight_switch;
-std::shared_ptr<GPIO> gpio_rgb_led;
-
-static std::string getCurrentTimeFormatted()
-{
-    time_t now = time(nullptr);
-    struct tm* nowtime = localtime(&now);
-    
-    std::stringstream ss;
-    ss << std::put_time(nowtime, "%Y%m%d_%H%M%S");
-    Misc::getDateTime();
-    return ss.str();
-}
-
-static bool getFileCreationTime(const std::string& filename, std::string& time_str)
-{
-    struct stat attr;
-    if (stat(filename.c_str(), &attr) == 0) {
-        time_str = Timezone::getFormattedTimeWithTimezone(attr.st_ctime);
-        if (time_str.empty()) {
-            Logger::log(LogLevel::ERROR, "Failed to get file creation time");
-            return false;
-        }
-        char year[5] = {0}, mon[3] = {0}, day[3] = {0}, hour[3] = {0}, min[3] = {0}, sec[3] = {0};
-        auto filename_no_path = filename.substr(filename.find_last_of('/') + 1);
-        memset( year, 0, 5 );
-        strncpy(year, filename_no_path.c_str(), 4);
-        memset( mon, 0, 3 );
-        strncpy(mon, filename_no_path.c_str() + 4, 2);
-        memset( day, 0, 3 );
-        strncpy(day, filename_no_path.c_str() + 6, 2);
-        memset( hour, 0, 3 );
-        strncpy(hour, filename_no_path.c_str() + 9, 2);
-        memset( min, 0, 3 );
-        strncpy(min, filename_no_path.c_str() + 11, 2);
-        memset( sec, 0, 3 );
-        strncpy(sec, filename_no_path.c_str() + 13, 2);
-        
-        // Create a time_t object from parsed components
-        struct tm tm_info = {0};
-        tm_info.tm_year = atoi(year) - YEAR_OFFSET;  // Years since 1900
-        tm_info.tm_mon = atoi(mon) - MONTH_OFFSET;       // Months (0-11)
-        tm_info.tm_mday = atoi(day);          // Day of month
-        tm_info.tm_hour = atoi(hour);         // Hour
-        tm_info.tm_min = atoi(min);           // Minute
-        tm_info.tm_sec = atoi(sec);           // Second
-        
-        // Convert to time_t and use the function with timezone
-        time_t parsed_time = mktime(&tm_info);
-        time_str = Timezone::getFormattedTimeWithTimezone(parsed_time);
-    }
-
-    return true;
-}
-
-static std::string trimConfigString(const std::string& value)
-{
-    size_t start = 0;
-    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
-        ++start;
-    }
-
-    size_t end = value.size();
-    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
-        --end;
-    }
-
-    std::string trimmed = value.substr(start, end - start);
-    if (trimmed.size() >= 2 && trimmed.front() == '"' && trimmed.back() == '"') {
-        return trimmed.substr(1, trimmed.size() - 2);
-    }
-    return trimmed;
-}
-
-static void setEnvIfEmpty(const std::shared_ptr<EnvManager>& env_manager,
-                          const std::string& key,
-                          const std::string& value)
-{
-    if (env_manager->getEnv(key, "").empty()) {
-        env_manager->setEnv(key, value);
-    }
-}
-
+// Used by main() to resolve the SIM path inputs that feed StartupConfig (S1).
+// (The lifecycle TU has its own copy for its post-startup paths.)
 static std::string normalizePath(const std::string& path)
 {
     char resolved[PATH_MAX];
@@ -156,352 +57,6 @@ static std::string normalizePath(const std::string& path)
         return std::string(resolved);
     }
     return path;
-}
-
-static std::string getParentPath(const std::string& path)
-{
-    if (path.empty()) {
-        return "";
-    }
-
-    std::string trimmed = path;
-    while (trimmed.size() > 1 && trimmed.back() == '/') {
-        trimmed.pop_back();
-    }
-
-    const size_t pos = trimmed.find_last_of('/');
-    if (pos == std::string::npos) {
-        return "";
-    }
-    if (pos == 0) {
-        return "/";
-    }
-    return trimmed.substr(0, pos);
-}
-
-static MediaScannerMode parseMediaScannerMode(const std::string& rawMode)
-{
-    std::string mode = trimConfigString(rawMode);
-    std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
-    if (mode == "full" || mode == "full_scan" || mode == "media") {
-        return MediaScannerMode::FullScan;
-    }
-    return MediaScannerMode::PendingThumbnails;
-}
-
-static uint16_t getConfiguredPort(const std::shared_ptr<DeviceConfig>& config,
-                                  const std::string& section,
-                                  const std::string& key,
-                                  uint16_t default_port)
-{
-    int configured_port = config->get(section, key, static_cast<int>(default_port));
-    if (configured_port <= 0 || configured_port > 65535) {
-        return default_port;
-    }
-    return static_cast<uint16_t>(configured_port);
-}
-
-static std::string getDefaultMdnsInstanceName(const std::shared_ptr<DeviceConfig>& config)
-{
-    std::string instance_name = trimConfigString(config->get(INI_SECTION_MDNS, INI_KEY_MDNS_INSTANCE_NAME, ""));
-    if (!instance_name.empty()) {
-        return instance_name;
-    }
-
-    instance_name = trimConfigString(config->get(INI_SECTION_BOOT, INI_KEY_PNAME, ""));
-    if (!instance_name.empty()) {
-        return instance_name;
-    }
-
-    instance_name = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
-    if (!instance_name.empty()) {
-        return instance_name;
-    }
-
-    return "T32Camera";
-}
-
-static std::string getDefaultMdnsHostName(const std::shared_ptr<DeviceConfig>& config)
-{
-    std::string host_name = trimConfigString(config->get(INI_SECTION_MDNS, INI_KEY_MDNS_HOST_NAME, ""));
-    if (!host_name.empty()) {
-        return host_name;
-    }
-
-    host_name = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
-    if (!host_name.empty()) {
-        return host_name;
-    }
-
-    return "t32cam";
-}
-
-static service::MdnsServiceParams buildMdnsParams(const std::shared_ptr<DeviceConfig>& config,
-                                                  const std::string& interface_name,
-                                                  const std::string& ip_address,
-                                                  uint16_t ctrl_port,
-                                                  uint16_t rtsp_port)
-{
-    service::MdnsServiceParams params;
-    params.interfaceName = interface_name;
-    params.ipAddress = ip_address;
-    params.serviceType = trimConfigString(
-        config->get(INI_SECTION_MDNS, INI_KEY_MDNS_SERVICE_TYPE, "_t32cam._tcp"));
-    params.instanceName = getDefaultMdnsInstanceName(config);
-    params.hostName = getDefaultMdnsHostName(config);
-    params.txt.deviceFamily = service::kDefaultMdnsDeviceFamily;
-    params.txt.model = trimConfigString(config->get(INI_SECTION_BOOT, INI_KEY_PMODEL, "T32"));
-    params.txt.serialNumber = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
-    params.txt.firmwareVersion = CAMERA_VERSION;
-    params.txt.rtspPort = rtsp_port;
-    params.txt.ctrlPort = ctrl_port;
-    params.txt.macAddress = Misc::getMACAddress(interface_name);
-    params.txt.status = "ready";
-    return params;
-}
-
-static bool isMdnsEnabled(const std::shared_ptr<DeviceConfig>& config)
-{
-    return config->get(INI_SECTION_MDNS, INI_KEY_MDNS_ENABLE, 1) != 0;
-}
-
-static int generateDescInfo(std::vector<std::string>& files, std::string& desc_info)
-{
-    auto settings = Settings::getInstance();
-    char temp_buf[32] = {0};
-    auto mcu = MCU::getInstance();
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    
-    // Use the reusable function to format current time with dynamic timezone
-    std::string current_time_str = Timezone::getFormattedTimeWithTimezone(tv.tv_sec);
-    if (current_time_str.empty()) {
-        Logger::log(LogLevel::ERROR, "Failed to get current time string");
-        return -1;
-    }
-
-    Json::Value json_root;
-    json_root["F_UploadedTag"] = 0;
-    Json::Value file_inf_array(Json::arrayValue);
-
-    for ( auto& filename : files ) {
-        if (filename.empty()) { 
-            Logger::log(LogLevel::INFO, "empty file name");
-            continue;
-        }
-        std::string file_creation_time;    
-        if (!getFileCreationTime(filename, file_creation_time)) {
-            Logger::log(LogLevel::INFO, "Failed to get file creation time for %s", filename.c_str());
-            continue;
-        }
-
-        Json::Value file_item;
-        file_item["F_FilePath"] = Misc::getFilepath(filename);
-        file_item["F_FileName"] = Misc::getFilename(filename);
-        file_item["F_FileTime"] = file_creation_time;
-        file_item["F_UploadedTag"] = 0;
-
-        uint16_t check_code = 0x0000;
-        if (CRC::calculate_crc16(filename, check_code)) {
-            file_item["F_CheckCode"] = static_cast<int>(check_code);
-        }
-
-        file_inf_array.append(file_item);
-    }
-    json_root["file_inf"] = file_inf_array;
-
-    //device
-    Json::Value device_obj;
-    {
-        device_obj["PID"] = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
-        device_obj["EUID"] = "";
-        device_obj["IP"] = Misc::getIPAddress(Misc::getNetworkInterfaceName());
-        device_obj["GP"] = mcu->readGps();
-
-        auto lowpower_volte = mcu->readLowPowerVoltage();
-        auto battery1_volte = mcu->readBattery1Voltage();
-        auto battery2_volte = mcu->readBattery2Voltage();
-        device_obj["Battery1"] = mcu->convertVoltage(battery1_volte);
-        device_obj["Battery2"] = mcu->convertVoltage(battery2_volte);
-
-        auto ext_volte = mcu->readExternalVoltage();
-        auto shutdown_volte = mcu->readShutdownVoltage();
-        if ( ext_volte <= 14 || battery1_volte <= shutdown_volte ) {
-            device_obj["SPower"] = "0";
-            device_obj["EPower"] = mcu->convertVoltage(ext_volte);
-        } else {
-            device_obj["EPower"] = "0";
-            device_obj["SPower"] = mcu->convertVoltage(ext_volte);
-        }
-
-        auto disk_info = Disk::getInfo(DISK_PATHNAME);
-        int used = (disk_info.total - disk_info.free) * 10 / 1024;
-        int total = disk_info.total * 10 / 1024;
-        
-        snprintf(temp_buf, sizeof(temp_buf), "%d.%d/%d.%d G", used / 10, used % 10, total / 10, total % 10 );
-        device_obj["Memory"] = temp_buf;
-        device_obj["WMode"] = 0;
-        device_obj["ONTime"] = settings->onTime_0 + (settings->onTime_1 << 8);
-
-        device_obj["NStatus"] = 0;
-
-        if ( 1 ) {
-            device_obj["AStatus"] = 22;
-        }
-        else if ( battery1_volte <= shutdown_volte && ext_volte <= shutdown_volte ) {
-            device_obj["AStatus"] = 23;  /*powroff*/
-        }
-        else if ( battery1_volte <= lowpower_volte && ext_volte <= lowpower_volte  ) {
-            device_obj["AStatus"] = 21;  /*low*/
-        }
-        else {
-            device_obj["AStatus"] = 11;
-        }
-
-        auto battery1_level = mcu->readBatteryLevel();
-        device_obj["BAT1_Level"] = battery1_level;
-
-        device_obj["Low_PWR_Val"] = mcu->convertVoltage(lowpower_volte);
-        device_obj["Loff_PWR_Val"] = mcu->convertVoltage(shutdown_volte);
-
-        device_obj["UTime"] = current_time_str;
-
-    }
-    json_root["device"] = device_obj;
-
-    //data
-    Json::Value data_obj;
-    {
-        #if USER_CONFIG_WPWS
-        data_obj["D_Type"] = mcu->readEventType();
-        data_obj["D_Id"] = mcu->readEventID();
-        data_obj["D_Num"] = mcu->readEventNum();
-        #else
-        data_obj["D_Temperature"] = to_string_custom(mcu->readTemperature());
-        data_obj["D_Humidity"] = to_string_custom(mcu->readHumidity());
-        data_obj["D_Atmos"] = to_string_custom(mcu->readAtmosPressure());
-
-        snprintf(temp_buf, sizeof(temp_buf), "%08X", mcu->readRMID());
-        data_obj["D_SensorPID"] = temp_buf;
-        data_obj["D_SensorType"] = mcu->readRMType();
-        data_obj["D_SensorValue"] = mcu->readRMValue();
-        auto rm_bat_v = mcu->readBatteryVoltage();
-        auto rm_bat1_v = mcu->readBattery1Voltage();
-        auto rm_bat2_v = mcu->readBattery2Voltage();
-        data_obj["D_SensorBattery"] = mcu->convertVoltage(rm_bat_v);
-        data_obj["D_SensorBattery1"] = mcu->convertVoltage(rm_bat1_v);
-        data_obj["D_SensorBattery2"] = mcu->convertVoltage(rm_bat2_v);
-        data_obj["D_SensorGP"] = "";
-        data_obj["D_SensorCount"] = mcu->readRMCount();
-        auto rm_sp_v = mcu->readRMSunPowerValue();
-        data_obj["D_SensorSP"] = mcu->convertVoltage(rm_sp_v);
-        #endif
-    }
-    json_root["data"] = data_obj;
-
-    //network
-    Json::Value network_obj;
-    {
-        network_obj["N_UPID"] = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_UPID, "CKVISON");
-        network_obj["N_UIP"] = "0";
-        network_obj["N_CStatus"] = 0;
-        network_obj["N_CIP"] = "0";
-        network_obj["N_MStatus"] = 0;
-        network_obj["N_MIP"] = "0";
-    }
-    json_root["network"] = network_obj;
-
-    //signal
-    Json::Value signal_obj;
-    {
-        auto IsWifiStationReady = mcu->IsWifiStationReady();
-        if (IsWifiStationReady) {
-            signal_obj["S_CF"] = mcu->readSignalCF();
-            signal_obj["S_RSSI"] = mcu->readSignalRSSI();
-            signal_obj["S_RL"] = 0;
-            signal_obj["S_RSRP"] = mcu->readSignalRSRP();
-            signal_obj["S_RSRQ"] = mcu->readSignalRSRQ();
-            signal_obj["S_SNR"] = mcu->readSignalSNR();
-            signal_obj["S_TD"] = mcu->readSignalTD();
-            signal_obj["S_TP"] = mcu->readSignalTP();
-        } else {
-            auto program_type = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
-            if (PTYPE_USB_DONGLE == program_type && mcu->Is4gExist()) {
-                signal_obj["S_RSSI"] = mcu->readSignalRSSI();
-                signal_obj["S_CF"] = mcu->readSignalCF();
-            } else {
-                signal_obj["S_RSSI"] = 0;
-                signal_obj["S_CF"] = 0;
-            }
-
-            signal_obj["S_RL"] = 0;
-            signal_obj["S_RSRP"] = 0;
-            signal_obj["S_RSRQ"] = 0;
-            signal_obj["S_SNR"] = 0;
-            signal_obj["S_TD"] = 0;
-            signal_obj["S_TP"] = 0;
-        }
-    }
-    json_root["signal"] = signal_obj;
-
-    Json::StreamWriterBuilder writer_builder;
-    desc_info = Json::writeString(writer_builder, json_root);
-
-    return EC_SUCCESS;
-}
-
-static int createDescInfoFile(std::vector<std::string>& media_files, const std::string &desc_filename)
-{
-    std::string desc_info;
-    int ret = generateDescInfo(media_files, desc_info);
-    if (ret != EC_SUCCESS) {
-        return ret;
-    }
-
-    auto fp = fopen(desc_filename.c_str(), "w+");
-    if (!fp) {
-        return EC_OPEN_FILE_FAILED;
-    }
-
-    fwrite(desc_info.c_str(), 1, desc_info.length(), fp);
-
-    fclose(fp);
-
-    return EC_SUCCESS;
-}
-
-static bool syncWithMCU()
-{
-    auto devconf = DeviceConfig::getInstance();
-    auto mcu = MCU::getInstance();
-    //PID
-    {
-        auto pid = mcu->readPID();
-        if (!pid.empty()) {
-            devconf->set(INI_SECTION_DEVICE, INI_KEY_PID, pid);
-        }
-    }
-
-    //UPID & UPWD
-    {
-        auto upid = mcu->readUPID();
-        auto upwd = mcu->readUPWD();
-        if (!upid.empty() && !upwd.empty()) {
-            devconf->set(INI_SECTION_SYS, INI_KEY_UPID, upid);
-            devconf->set(INI_SECTION_SYS, INI_KEY_UPWD, upwd);
-        }
-    }
-    devconf->flush();
-
-    //RTC
-    {
-        time_t now = time(nullptr);
-        struct tm* datetime = localtime(&now);
-        if (datetime != nullptr) {
-            mcu->setDatetime(datetime);
-        }
-    }
-    return true;
 }
 
 // 简单的 INI 配置解析器
@@ -552,244 +107,6 @@ static std::unordered_map<std::string, std::unordered_map<std::string, std::stri
     return config;
 }
 
-static bool processCmdSnap(bool is_rtc_work_well) {
-    //move media file from /tmp to sdcard
-    std::vector<std::string> file_names;
-
-    std::ifstream jsonFile(QUICK_SNAP_INFO_FILE);
-    if (jsonFile.is_open()) {
-        Json::Value root;
-        Json::CharReaderBuilder readerBuilder;
-        std::string errs;
-        if (!Json::parseFromStream(readerBuilder, jsonFile, &root, &errs)) {
-            Logger::log(LogLevel::ERROR, "Parse json file failed");
-            return false;
-        }
-        auto dir = root["dir"].asString();
-        auto files = root["files"];
-        std::string oldpath = QUICK_SNAP_DIR + dir + "/*";
-        std::string newpath, upload_path, timeStr;
-        if (is_rtc_work_well) {
-            #if ALL_MEDIA_FILE_IN_ONE_FOLDER
-            newpath =  MEDIA_STORE_FOLDER_PATH;
-            #else
-            newpath =  MEDIA_TARGET_PATH + dir;
-            #endif
-            upload_path = MEDIA_UPLOAD_PATH + dir;
-        } else {
-            timeStr = getCurrentTimeFormatted();
-            #if ALL_MEDIA_FILE_IN_ONE_FOLDER
-            newpath =  MEDIA_STORE_FOLDER_PATH;
-            #else
-            newpath =  MEDIA_TARGET_PATH + timeStr;
-            #endif
-            upload_path = MEDIA_UPLOAD_PATH + timeStr;
-        }
-
-        if (!Misc::createDirectory(newpath) || !Misc::createDirectory(MEDIA_UPLOAD_PATH) || !Misc::moveFile(oldpath, newpath)) {
-            Logger::log(LogLevel::ERROR, "move %s to %s failed", oldpath.c_str(), newpath.c_str());
-            return false;
-        }
-
-        //create desc file
-        for (auto & file : files) {
-            std::string filename;
-            if (is_rtc_work_well) {
-                filename = newpath + "/" + file.asString();
-            } else {
-                auto oldname = newpath + "/" + file.asString();
-                filename = newpath + "/" + timeStr + "_" + file.asString();
-                Logger::log(LogLevel::INFO, "rename %s to %s", oldname.c_str(), filename.c_str());
-                Misc::moveFile(oldname, filename);
-            }
-            file_names.push_back(filename);
-        }
-
-        auto desc_filename = upload_path + ".json";
-        createDescInfoFile(file_names, desc_filename);
-    }
-
-    if (file_names.empty()) {//only for test
-        file_names = {
-            "./res/20250620_101358.JPG",
-            "./res/20250620_101458.JPG",
-            "./res/20250620_101558.JPG"
-        };
-        auto snap_param = ImageSnapParams();
-        auto imageSnap = std::make_shared<ImageSnap>(snap_param);
-        imageSnap->snap(file_names);
-        createDescInfoFile(file_names, "./res/20250620_101358.json");
-    }
-    return true;
-}
-
-static bool processCmdVideoRecord(bool is_rtc_work_well) {
-    (void)is_rtc_work_well;
-    using service::camera::CameraRecorder;
-    using service::camera::RecordError;
-    using service::camera::RecordOptions;
-    using service::camera::RecordResult;
-
-    // 同步等待异步录影完成
-    std::promise<RecordResult> done;
-    auto future = done.get_future();
-
-    // 诊断开关:HTC_RECORD_TMPFS=1 时把录影文件写到 /tmp,绕过 SD 卡,
-    // 用于验证 SD 卡写延迟是否为 FPS 瓶颈(见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md 第 6.4 节)。
-    // 默认行为不变:仍然写到 MEDIA_TARGET_PATH (SD 卡)。
-    std::string record_path;
-    {
-        const char* envTmpfs = std::getenv("HTC_RECORD_TMPFS");
-        if (envTmpfs && envTmpfs[0] == '1') {
-            record_path = std::string("/tmp/") + getCurrentTimeFormatted() + ".mp4";
-            Logger::log(LogLevel::INFO, "HTC_RECORD_TMPFS=1: writing mp4 to %s (bypassing SD card)", record_path.c_str());
-        } else {
-            record_path = std::string(MEDIA_TARGET_PATH) + getCurrentTimeFormatted() + ".mp4";
-        }
-    }
-    CameraRecorder recorder;
-    RecordOptions opts;
-    opts.audio = true;
-    opts.autoCover = false;  // work mode 不循环覆盖
-    {
-        // 诊断开关:HTC_RECORD_BITRATE_KBPS 直接覆盖编码器 bitrate,
-        // 用于验证 16 Mbps 是否为 FPS 瓶颈(见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md §6.5)。
-        // 默认 0 = 用 CPS 配置(目前 16384 kbps)。
-        const char* envBr = std::getenv("HTC_RECORD_BITRATE_KBPS");
-        if (envBr && envBr[0] != '\0') {
-            int kbps = std::atoi(envBr);
-            if (kbps > 0) {
-                opts.bitrateKbpsOverride = kbps;
-                Logger::log(LogLevel::INFO, "HTC_RECORD_BITRATE_KBPS=%d: bitrate override active", kbps);
-            }
-        }
-    }
-    opts.onComplete = [&done](const RecordResult& r) {
-        done.set_value(r);
-    };
-
-    Logger::log(LogLevel::INFO, "Work Mode record start: %s", record_path.c_str());
-    if (!recorder.record(record_path, /*durationSec=*/0, opts)) {
-        Logger::log(LogLevel::ERROR, "Work Mode record start failed (CameraRecorder rejected)");
-        return false;
-    }
-
-    RecordResult r = future.get();  // 阻塞直到录完
-
-    // 1) 立刻落盘缩略图(SDK 帧缓冲还在,但 thumbData_ 已经在 video_recorder_ 里)
-    //    WorkMode 路径下 CameraServiceT32 的 onComplete 不会被调用,
-    //    所以 saveThumbnail 必须在这里做。
-    if (recorder.hasThumbnail()) {
-        MetadataDao dao;
-        if (dao.saveThumbnail(record_path, recorder.getThumbnailData())) {
-            Logger::log(LogLevel::INFO, "Work Mode record: thumbnail saved for %s (%zu bytes)",
-                        record_path.c_str(), recorder.getThumbnailData().size());
-        } else {
-            Logger::log(LogLevel::ERROR, "Work Mode record: saveThumbnail failed for %s",
-                        record_path.c_str());
-        }
-    } else {
-        Logger::log(LogLevel::WARNING, "Work Mode record: no thumbnail data for %s",
-                    record_path.c_str());
-    }
-
-    // 2) 显式释放 SDK 帧缓冲池(~20-50MB),避免函数返回时一次性释放触发 zram swap 尖峰。
-    //    之后 recorder 不能再访问(thumbnail / duration 都已取过)。
-    //
-    // 修复兜底(2026-06-09,见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md §B.1+B.2):
-    //   - sync() 先把 page cache 里的脏数据刷盘,减少 SDK 池释放时与 FAT 写竞争
-    //   - 释放后 sleep 200ms 让 kswapd 先跑一波,避免瞬时水印骤变触发 zram 风暴
-    //   - malloc_trim(0) 把堆碎片归还 OS,减少内核 scan 时累积的匿名页
-    ::sync();
-    recorder.releaseVideoResources();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    ::malloc_trim(0);
-
-    if (r.error != RecordError::None && r.error != RecordError::UserStop) {
-        Logger::log(LogLevel::ERROR, "Work Mode record failed: %s", r.errorMessage.c_str());
-        return false;
-    }
-
-    // 3) 写 desc JSON(generateDescInfo 走 IIC/MCU,不依赖 SDK 缓冲)
-    std::vector<std::string> files = { record_path };
-    std::string desc_info;
-    if (generateDescInfo(files, desc_info) == 0) {
-        std::string desc_filename = std::string(MEDIA_UPLOAD_PATH) + getCurrentTimeFormatted() + ".json";
-        service::camera::RecordingPostProcess::writeWorkModeDescJson(desc_info, desc_filename);
-    } else {
-        Logger::log(LogLevel::ERROR, "Work Mode record: generateDescInfo failed");
-    }
-    return true;
-}
-
-static bool processCmdConcurrentSnapRecord(bool is_rtc_work_well) {
-    (void)is_rtc_work_well;
-    auto settings = Settings::getInstance();
-    int videoLength = settings->videoLength_l + (settings->videoLength_h << 8);
-    if (videoLength <= 0) videoLength = 10;
-    int burstNumber = settings->burstNumber;
-    if (burstNumber <= 0) burstNumber = 1;
-
-    auto videoParam = std::make_shared<VideoParams>();
-    videoParam->setResolution(2560, 1440);
-    videoParam->setFrameRate(30);
-    videoParam->setBitrate(4000);
-    videoParam->setCodecFormat(settings->videoCodec == 2 ? VideoCodecFormat::H265 : VideoCodecFormat::H264);
-    videoParam->setRcMode(VideoRcMode::CBR);
-    videoParam->setGop(60);
-
-    auto audioParam = std::make_shared<AudioParams>();
-    audioParam->setDeviceType(AudioDeviceType::AUDIO_IN);
-    audioParam->setDeviceId(1);
-    audioParam->setChannelId(0);
-    audioParam->setVolume(settings->audioRecordVolume);
-    audioParam->setGain(settings->audioRecordGain);
-    audioParam->setCodecFormat(AudioCodecFormat::AAC);
-    audioParam->setSampleRate(AudioSampleRate::SR_16000);
-    audioParam->setChannelCount(1);
-
-    auto recorder = std::make_shared<VideoRecorder>(videoParam, audioParam, true);
-
-    std::string record_path = std::string(MEDIA_TARGET_PATH) + getCurrentTimeFormatted() + ".mp4";
-    std::atomic<bool> record_done{false};
-
-    recorder->record(record_path, [&record_done](bool ok) {
-        record_done = true;
-        Logger::log(LogLevel::INFO, "Work Mode concurrent record done: ok=%d", ok);
-    }, videoLength);
-
-    sleep(1);
-
-    std::vector<std::string> snap_files;
-    for (int i = 0; i < burstNumber; i++) {
-        std::string snap_path = std::string(MEDIA_TARGET_PATH) + getCurrentTimeFormatted() + "_" + to_string_custom(i+1) + ".jpg";
-        int jpegQuality = 85;
-        if (recorder->captureJpeg(snap_path, jpegQuality)) {
-            snap_files.push_back(snap_path);
-            Logger::log(LogLevel::INFO, "Work Mode concurrent snap: %s", snap_path.c_str());
-        } else {
-            Logger::log(LogLevel::ERROR, "Work Mode concurrent snap failed: %s", snap_path.c_str());
-        }
-        if (i < burstNumber - 1) {
-            sleep(1);
-        }
-    }
-
-    int wait_count = 0;
-    while (!record_done && wait_count < videoLength + 10) {
-        sleep(1);
-        wait_count++;
-    }
-
-    std::vector<std::string> all_files = snap_files;
-    all_files.push_back(record_path);
-    std::string desc_filename = std::string(MEDIA_UPLOAD_PATH) + getCurrentTimeFormatted() + ".json";
-    if (!Misc::createDirectory(MEDIA_UPLOAD_PATH)) {
-        Logger::log(LogLevel::ERROR, "Failed to create upload directory");
-    }
-    createDescInfoFile(all_files, desc_filename);
-    return true;
-}
 static void printUsage(char *argv[])
 {
     std::cout << "Usage: " << argv[0] << " <command> [options]" << std::endl;
@@ -811,296 +128,69 @@ static void printUsage(char *argv[])
     std::cout << "  -uv, --uvc\t\tStart the UVC" << std::endl;
 }
 
-#define CMD_HELP 0
-#define CMD_CONN_NET (1 << 0)
-#define CMD_DHCP (1 << 1)
-#define CMD_SNAP (1 << 2)
-#define CMD_AUDIO_RECORD (1 << 3)
-#define CMD_VIDEO_RECORD (1 << 4)
-#define CMD_AUTH (1 << 5)
-#define CMD_HEARTBEAT (1 << 6)
-#define CMD_UPLOAD (1 << 7)
-#define CMD_MOBILE (1 << 8)
-#define CMD_RTSP_SERVER (1 << 9)
-#define CMD_NTP (1 << 10)
-#define CMD_GET_RTC (1 << 11)
-#define CMD_SET_RTC (1 << 12)
-
-static bool already_in_exit_flow = false;
-static bool rtsp_audio_enabled = true;  // RTSP 音频默认开启
-static bool mobile_rtsp_enabled = true; // Mobile 模式默认启动 RTSP，调试录像 FPS 时可关闭
-// True once RtspServer::getInstance() has been used (mobile / rtsp-server mode).
-// Drives the process-level HAL teardown at main_exit so IMP encoder channel/
-// group/bind + ISP/OSD region are released before Misc::poweroff()/while(1)
-// freezes the process (the RtspServer singleton destructor never runs because
-// main() does not return on T32 hardware).
-static bool rtsp_singleton_used = false;
-static std::shared_ptr<MgmtServClient> mgmtServClient = nullptr;
-static std::shared_ptr<StorageServClient> storageServClient = nullptr;
-
-// Async-signal-safe signal handling via self-pipe.
-// The signal handler does nothing but write(2) to g_signal_pipe[1].
-// The main loop polls g_signal_pipe[0] and runs cleanup on the main thread.
-static int g_signal_pipe[2] = {-1, -1};
-static volatile sig_atomic_t g_pending_signal = 0;
-
-static void performCleanup(int sig);  // forward decl (defined below)
-
-// Drain any pending bytes from g_signal_pipe[0] and return the most recent
-// signal number recorded by signalHandler. Safe to call from the main thread.
-static int drainSignalPipe() {
-    unsigned char buf[16];
-    while (true) {
-        ssize_t r = read(g_signal_pipe[0], buf, sizeof(buf));
-        if (r > 0) continue;
-        if (r == 0) break;
-        if (errno == EINTR) continue;
-        break;  // EAGAIN/other: nothing more to read
-    }
-    return static_cast<int>(g_pending_signal);
-}
-
-// Block for up to timeoutMs waiting for a signal. Returns the captured
-// signal number (e.g. SIGINT), or 0 on timeout. Side effect: if a signal
-// was caught, sets already_in_exit_flow and runs performCleanup so the
-// caller can break out of its loop immediately.
-static int waitForSignalOrTimeout(int timeoutMs) {
-    struct pollfd pfd;
-    pfd.fd = g_signal_pipe[0];
-    pfd.events = POLLIN;
-    int ret = poll(&pfd, 1, timeoutMs);
-    if (ret <= 0) {
-        return 0;  // timeout or error — caller will re-check the flag
-    }
-    int sig = drainSignalPipe();
-    if (sig == 0) {
-        return 0;  // spurious wakeup
-    }
-    if (!already_in_exit_flow) {
-        already_in_exit_flow = true;
-        performCleanup(sig);
-    }
-    return sig;
-}
-
-// Perform shutdown work that was previously the worker thread's job. Runs on
-// the main thread after the self-pipe wakes the main loop.
-//
-// NOTE (WiFi reuse): this exit path INTENTIONALLY does not rmmod the WiFi
-// driver, does not kill wpa_supplicant, and does not clear /tmp/wpa_supplicant.
-// Leaving them in place lets the next app boot reuse the already-loaded driver
-// and running supplicant. Re-entry is now safe and state-driven: on the next
-// boot Misc::isWifiDriverLoaded()/isWifiConnected() short-circuit connectWifi
-// and startDHCP, so we never re-insmod (no "File exists") and never re-spawn
-// wpa_supplicant (no ctrl_iface collision).
-static void performCleanup(int sig) {
-    Logger::log(LogLevel::INFO, "Processing signal %d on main thread", sig);
-
-    if (daynight_switch) {
-        daynight_switch->controlISP(DayNightState::DAY);
-        daynight_switch->controlIRLed(DayNightState::DAY);
-        daynight_switch->controlIRCut(DayNightState::DAY);
-    }
-
-    if (gpio_rgb_led) {
-        gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
-    }
-
-    std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", "");
-    if (setting_file_path.empty()) {
-        Logger::log(LogLevel::ERROR, "Failed to get setting file path");
-    } else {
-        if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
-            Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
-        }
-    }
-
-    if (http_server_is_running()) {
-        http_server_stop();
-        http_server_deinit();
-    }
-    service::TcpEventService::getInstance()->stop();
-    mgmtServClient = nullptr;
-    storageServClient = nullptr;
-
-    if (sig == SIGTERM) {
-        if (Power::getInstance()->isChangeModeRequested()) {
-            Logger::log(LogLevel::INFO, "Change mode requested, holding power on");
-            auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
-            if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
-                || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
-                Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
-            }
-        }
-        // Hardware poweroff for the non-change-mode SIGTERM case is handled
-        // by the existing main_exit path (Misc::poweroff at the bottom of
-        // main()). Nothing to do here.
-    }
-}
-
-// signalHandler is the ONLY function that runs in signal-delivered context.
-// It does only two things, both async-signal-safe per POSIX.1-2017:
-//   1. g_pending_signal = signal;          (sig_atomic_t store)
-//   2. write(g_signal_pipe[1], "x", 1);    (write(2) is in the safe list)
-// No Logger::log, no std::mutex, no std::condition_variable, no malloc.
-static void signalHandler(int signal) {
-    if (already_in_exit_flow) {
-        return;
-    }
-    g_pending_signal = signal;
-    int saved_errno = errno;
-    if (g_signal_pipe[1] >= 0) {
-        char c = 'x';
-        ssize_t r = write(g_signal_pipe[1], &c, 1);
-        (void)r;
-    }
-    errno = saved_errno;
-}
 
 int main(int argc, char* argv[])
 {
-    std::string timezone;
-    bool update_config_exists = false;
     bool is_rtc_work_well = true;
     enum workingMode working_mode = workingMode::WORKING_MODE_MAX;
+
+    // Declared up-front (and assigned after dispatch) so `goto main_exit` from
+    // the commonStartup / commonStartupPostDispatch failure paths does not cross
+    // a non-trivial initializer. Defaults match the original behavior on the
+    // early-fail path.
+    std::shared_ptr<DeviceConfig> config;
+    int command = CMD_HELP;
+
+    // TU-local state, now main()-locals (were file-static pre-T15). The cascade
+    // (moved to app_workmode::runCommands) reads mobile_rtsp_enabled via the
+    // WorkModeContext; rtsp_audio_enabled is set here but not read by the
+    // cascade (kept for intent). mgmtServClient/storageServClient are passed by
+    // REF into the ctx so the cleanupHook below nulls the SAME instances.
+    bool mobile_rtsp_enabled = true;
+    bool rtsp_audio_enabled  = true;
+    std::shared_ptr<MgmtServClient>   mgmtServClient   = nullptr;
+    std::shared_ptr<StorageServClient> storageServClient = nullptr;
+
+    // --- S1 path inputs (computed here; feed StartupConfig) ---
+    app_lifecycle::StartupConfig cfg;
 #ifdef BUILD_FOR_SIMULATION
+    cfg.isSimulation = true;
     // 动态计算路径，确保文件生成在 build 目录下
     std::string exePath = Misc::getExecutablePath();
-    std::string projectRootPath = normalizePath(exePath + "/../..");  // build_sim/bin/../.. -> project_root
-    std::string defaultSimRootPath = normalizePath(projectRootPath + "/sim_sdcard_runtime");
+    cfg.projectRootPath = normalizePath(exePath + "/../..");  // build_sim/bin/../.. -> project_root
+    std::string defaultSimRootPath = normalizePath(cfg.projectRootPath + "/sim_sdcard_runtime");
     const char* envSimRoot = std::getenv("SIM_SD_ROOT");
-    std::string simRootPath = (envSimRoot && envSimRoot[0] != '\0')
+    cfg.simRootPath = (envSimRoot && envSimRoot[0] != '\0')
                                   ? normalizePath(envSimRoot)
                                   : defaultSimRootPath;
-    setenv("SIM_SD_ROOT", simRootPath.c_str(), 0);
-
-    auto env_manager = EnvManager::getInstance();
-    setEnvIfEmpty(env_manager, "CONFIG_FILE", projectRootPath + "/res/config.sim.ini");
-    setEnvIfEmpty(env_manager, "SETTING_FILE_PATH", projectRootPath + "/res/setting.json");
-    setEnvIfEmpty(env_manager, "BROADCAST_FILELIST_PATHNAME", simRootPath + "/media/audio/AUDIO_PLAY_LIST.txt");
-    setEnvIfEmpty(env_manager, "BROADCAST_FILE_PATH", simRootPath + "/media/audio/");
-    setEnvIfEmpty(env_manager, "ISP_FILE_PATH", simRootPath + "/media/audio/");
-#else
-    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
-#endif
-
-    // Initialize Database
-#ifdef BUILD_FOR_SIMULATION
-    std::string db_path = simRootPath + "/data/db";
-    std::string media_root = simRootPath + "/DCIM";
     const char* envLogDir = std::getenv("SIM_LOG_DIR");
-    std::string log_root = (envLogDir && envLogDir[0] != '\0')
-                           ? std::string(envLogDir)
-                           : (simRootPath + "/logs");
-    std::string log_file = log_root + "/app.log";
+    cfg.dbPath   = cfg.simRootPath + "/data/db";
+    cfg.mediaRoot = cfg.simRootPath + "/DCIM";
+    cfg.logRoot  = (envLogDir && envLogDir[0] != '\0')
+                   ? std::string(envLogDir)
+                   : (cfg.simRootPath + "/logs");
+    cfg.logFile  = cfg.logRoot + "/app.log";
 #else
-    std::string db_path = EnvManager::getInstance()->getEnv("DB_PATH", "/mnt/sdcard/data/db");
-    std::string media_root = "/mnt/sdcard/DCIM";
-    std::string log_root = "/mnt/sdcard/logs";
-    std::string log_file = log_root + "/app.log";
+    cfg.isSimulation = false;
+    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
+    cfg.dbPath   = EnvManager::getInstance()->getEnv("DB_PATH", "/mnt/sdcard/data/db");
+    cfg.mediaRoot = "/mnt/sdcard/DCIM";
+    cfg.logRoot  = "/mnt/sdcard/logs";
+    cfg.logFile  = cfg.logRoot + "/app.log";
 #endif
 
-    if (!DatabaseManager::getInstance().init(db_path)) {
-        fprintf(stderr, "Failed to initialize Database\n");
-    }
-
-    // Start Media Scanner (async). Default mode uses the small pending-thumbnail
-    // directory as a recovery queue; full scan is reserved for maintenance.
-    struct stat st;
-    if (stat(media_root.c_str(), &st) == 0) {
-        MediaScannerOptions scannerOptions;
-        scannerOptions.mediaRootDir = media_root;
-        scannerOptions.mode = parseMediaScannerMode(
-            EnvManager::getInstance()->getEnv("MEDIA_SCANNER_MODE", "pending_thumb"));
-
-        const std::string dataRoot = getParentPath(db_path);
-        const std::string defaultPendingThumbDir =
-            dataRoot.empty() ? (db_path + "/thumb_pending") : (dataRoot + "/thumb_pending");
-        scannerOptions.pendingThumbDir =
-            EnvManager::getInstance()->getEnv("THUMB_PENDING_DIR", defaultPendingThumbDir);
-
-        MediaScanner::getInstance().startScan(scannerOptions);
-    }
-    
-    // Initialize EasyLogger - must be called early before any logging
-#ifdef BUILD_FOR_SIMULATION
-
-    // Ensure log directory exists
-    Misc::createDirectory(log_root);
-
-    // PC 模拟环境：启用终端和文件日志，默认保存到 sim_sdcard_runtime/logs/
-    ElogConfig elog_config;
-    elog_config.enableTerminal = true;
-    elog_config.enableFile = true;
-    elog_config.logFilePath = log_file;
-    elog_config.logLevel = ELOG_LVL_DEBUG;
-    if (!elog_init_with_config(elog_config)) {
-        fprintf(stderr, "Failed to initialize EasyLogger\n");
-    }
-    
-    Logger::log(LogLevel::INFO, "[SIM] Simulation Root: %s", simRootPath.c_str());
-    Logger::log(LogLevel::INFO, "[SIM] Project Root: %s", projectRootPath.c_str());
-    Logger::log(LogLevel::INFO, "[SIM] Log Directory: %s", log_root.c_str());
-    Logger::log(LogLevel::INFO, "[SIM] Log File: %s", log_file.c_str());
-#else
-    // 真机环境：终端 + 文件输出
-    Misc::createDirectory(log_root);
-    ElogConfig elog_config;
-    elog_config.enableTerminal = true;
-    elog_config.enableFile = true;
-    elog_config.logFilePath = log_file;
-    elog_config.logLevel = ELOG_LVL_INFO;
-    if (!elog_init_with_config(elog_config)) {
-        fprintf(stderr, "Failed to initialize EasyLogger\n");
-    }
-    Logger::log(LogLevel::INFO, "Log File: %s", log_file.c_str());
-#endif
-    
-    daynight_switch = DayNightSwitch::getInstance();
-    if (daynight_switch) {
-        daynight_switch->setCdsPins(CDS_SENSOR_PIN);
-        daynight_switch->setIRLedPins(IR_LED_PIN);
-        daynight_switch->setIRCutPins(IR_CUT_ENABLE_PIN, IR_CUT_CTRL_PIN);
-    }
-
-    gpio_rgb_led = std::make_shared<GPIO>(RGB_LED_PIN);
-    if (!gpio_rgb_led->exportGPIO() || !gpio_rgb_led->setDirection(GPIO_DIRECTION::OUTPUT)) {
-        Logger::log(LogLevel::ERROR, "export or set gpio(%d) direction output failed", RGB_LED_PIN);
-        gpio_rgb_led = nullptr;
-    }
-
-    AutoRelease auto_release([]() {
-        // Use the static variable directly without capturing
-        if (daynight_switch) {
-            daynight_switch->controlISP(DayNightState::DAY);
-            daynight_switch->controlIRCut(DayNightState::DAY);
-            daynight_switch->controlIRLed(DayNightState::DAY);
-        }
-
-        if (gpio_rgb_led) {
-            gpio_rgb_led->setConstant(GPIO_VALUE::LOW);
-        }
-    });
-    
-    // Create the self-pipe used for async-signal-safe signal delivery.
-    // Must be done before registering signal handlers.
-    if (pipe(g_signal_pipe) != 0) {
-        fprintf(stderr, "Failed to create self-pipe for signal handling\n");
+    app_lifecycle::ProcessLifecycle lc;
+    if (!lc.commonStartup(cfg)) {        // S1-S8 (pre-dispatch startup)
+        // Today commonStartup() cannot fail. Kept as a guard for future
+        // skipMediaScanner / fatal-step additions; on failure we bail before the
+        // dispatch locals are declared, so a goto main_exit would cross their
+        // initializers — bail directly (matches the original pipe()-fail return).
         return -1;
     }
-    // Make both ends non-blocking: the signal handler does a single short
-    // write(2) which is guaranteed atomic for size <= PIPE_BUF; the read end
-    // is drained in non-blocking mode from the main loop.
-    int flags = fcntl(g_signal_pipe[0], F_GETFL, 0);
-    fcntl(g_signal_pipe[0], F_SETFL, flags | O_NONBLOCK);
-    flags = fcntl(g_signal_pipe[1], F_GETFL, 0);
-    fcntl(g_signal_pipe[1], F_SETFL, flags | O_NONBLOCK);
+    if (!lc.installSignalHandlers()) {   // S8: pipe + signal()  (:778-794)
+        return -1;                       // pipe() failure — matches original bail
+    }
 
-    // Register signal handler for CTRL+C / SIGTERM
-    signal(SIGINT, signalHandler);
-    signal(SIGTERM, signalHandler);
-
-    int command = CMD_HELP;
     if (argc < 2 || std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help") {
         printUsage(argv);
         return -1;
@@ -1159,40 +249,13 @@ int main(int argc, char* argv[])
             return -1;
         }
     } else {
+        // -wm branch: validate argv shape + parse (mode, rtc) here. The
+        // switch(working_mode)→command-bitmap map (incl. RGB blink + the
+        // invalid-mode poweroff) lives in app_workmode::runWorkMode now.
         if (argc == 5 && (std::string(argv[3]) == "-rtc" || std::string(argv[3]) == "--rtc-status")) {
             working_mode = (enum workingMode)stoi_custom(argv[2]);
             is_rtc_work_well = (bool)stoi_custom(argv[4]);
             Logger::log(LogLevel::INFO, "%s working mode %d, rtc status %d", __func__, working_mode, is_rtc_work_well);
-            switch (working_mode) {
-                case WORKING_MODE_SNAP_ONLY:
-                    command = CMD_SNAP;
-                    break;
-                case WORKING_MODE_UPLOAD_ONLY:
-                    command = CMD_CONN_NET | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
-                    if (gpio_rgb_led) {
-                        gpio_rgb_led->asyncBlink(60);
-                    }
-                    break;
-                case WORKING_MODE_TEST_ONLY:
-                    {
-                        if (gpio_rgb_led) {
-                            gpio_rgb_led->asyncBlink(30);
-                        }
-                        command = CMD_MOBILE;
-                    }
-                    break;
-                case WORKING_MODE_SNAP_UPLOAD:
-                    command = CMD_SNAP | CMD_CONN_NET | CMD_DHCP | CMD_NTP | CMD_UPLOAD;
-                    break;
-                case WORKING_MODE_UVC:
-                    command = CMD_CONN_NET | CMD_DHCP | CMD_RTSP_SERVER;
-                    break;
-                default:
-                    Logger::log(LogLevel::ERROR, "%s Invalid working mode %d, power off", __func__, working_mode);
-                    //Power::getInstance()->requestShutdown();
-                    sleep(10);
-                    return -1;
-            }
         } else {
             Logger::log(LogLevel::ERROR, "%s Invalid command %s, power off", __func__, argv[1]);
             Power::getInstance()->requestShutdown();
@@ -1200,690 +263,122 @@ int main(int argc, char* argv[])
             return -1;
         }
     }
-    
-    #if DAEMON_ENABLE
-    // 注册到守护服务器
-    int pid = getpid();
-    int intervalMs = 2000;
-    if (registerToDaemonServer(pid, intervalMs)) {
-        Logger::log(LogLevel::INFO, "Registered to daemon server with PID=%d, interval=%dms", pid, intervalMs);
+
+    // Construct the cascade context up-front (before commonStartupPostDispatch)
+    // so the `goto main_exit` failure path below does not cross a non-trivial
+    // initializer (T15). By-value fields (isRtcWorkWell/mobileRtspEnabled/
+    // rtspAudioEnabled) are already set by dispatch above; the by-ref fields
+    // bind the main()-locals (mgmtServClient/storageServClient are also captured
+    // by ref by the cleanupHook below — the SAME instances).
+    app_workmode::WorkModeContext ctx{lc, is_rtc_work_well, mobile_rtsp_enabled,
+                                      rtsp_audio_enabled, argc, argv,
+                                      mgmtServClient, storageServClient};
+
+    // T16 Phase C-3: restore pre-C2 ordering. Post-C2 the switch(working_mode)
+    // →command map moved into runWorkMode (which runs AFTER
+    // commonStartupPostDispatch), so the -wm path reached S11 netif selection
+    // with command == CMD_HELP — a real regression for non-WIFI skus running
+    // `-wm 3` (WORKING_MODE_TEST_ONLY → CMD_MOBILE). Derive `command` here via
+    // the shared workModeToCommand (the same switch + RGB blink side effects)
+    // so commonStartupPostDispatch sees the correct command (e.g. CMD_MOBILE
+    // for `-wm 3`). The single-shot dispatch path already set `command` above.
+    if (is_work_mode_cmd) {
+        command = app_workmode::workModeToCommand(working_mode, ctx);
+    }
+
+    // S9-S13 (daemon register / Settings / DeviceConfig + program_type /
+    // SD-mount + netif / factory-config / update-config / timezone).
+    if (!lc.commonStartupPostDispatch(cfg, command)) {
+        goto main_exit;
+    }
+
+    // Register the mode-local reset hook. Runs once, on the main thread, the
+    // first time lc.waitForSignal() catches a signal. Body is the verbatim
+    // performCleanup :590-609 (mode-local resets + setting save) + :616-617
+    // (client null) + :619-631 (SIGTERM power-hold). The transport teardown
+    // (:611-615) is NOT here — it lives in lc.shutdown() (idempotent stop()
+    // at main_exit, avoids a double-stop on the signal path).
+    lc.setCleanupHook([&lc, &mgmtServClient, &storageServClient](int sig) {
+        Logger::log(LogLevel::INFO, "Processing signal %d on main thread", sig);
+
+        if (lc.daynight()) {
+            lc.daynight()->controlISP(DayNightState::DAY);
+            lc.daynight()->controlIRLed(DayNightState::DAY);
+            lc.daynight()->controlIRCut(DayNightState::DAY);
+        }
+
+        if (lc.rgbLed()) {
+            lc.rgbLed()->setConstant(GPIO_VALUE::LOW);
+        }
+
+        std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", "");
+        if (setting_file_path.empty()) {
+            Logger::log(LogLevel::ERROR, "Failed to get setting file path");
+        } else {
+            if (!Settings::getInstance()->saveToJsonFile(setting_file_path)) {
+                Logger::log(LogLevel::ERROR, "Failed to save setting file: %s", setting_file_path.c_str());
+            }
+        }
+
+        mgmtServClient = nullptr;
+        storageServClient = nullptr;
+
+        if (sig == SIGTERM) {
+            if (Power::getInstance()->isChangeModeRequested()) {
+                Logger::log(LogLevel::INFO, "Change mode requested, holding power on");
+                auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
+                if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
+                    || !gpio_power_hold.setValue(GPIO_VALUE::HIGH)) {
+                    Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
+                }
+            }
+            // Hardware poweroff for the non-change-mode SIGTERM case is handled
+            // by the existing main_exit path (Misc::poweroff at the bottom of
+            // main()). Nothing to do here.
+        }
+    });
+
+    // config alias still needed for the tail's config->flush() below.
+    config = lc.config();
+
+    // --- The cascade, extracted to app_workmode (T15 Phase C-2). ---
+    // The WHOLE if(command & CMD_*) cascade + the -wm switch live in
+    // WorkModeRunner.cpp now (single source, shared by -wm and single-shot).
+    // Behavior byte-identical: runCommands returns Continue for both normal
+    // completion and every ex-`goto main_exit` (the tail runs unconditionally,
+    // matching the original single main_exit label). runWorkMode's invalid-mode
+    // default returns TerminalExit — honored here as `return -1` (tail skipped),
+    // exactly as today's `return -1` from main. `ctx` was constructed before
+    // commonStartupPostDispatch (so the goto above stays legal).
+    if (is_work_mode_cmd) {
+        if (app_workmode::runWorkMode(working_mode, ctx) == app_workmode::CascadeResult::TerminalExit) {
+            return -1;   // invalid -wm mode: skip the tail (matches today's `return -1`)
+        }
     } else {
-        Logger::log(LogLevel::WARNING, "Failed to register to daemon server");
-    }
-    #endif
-    
-    std::string setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
-    if (!setting_file_path.empty()) {
-        Settings::getInstance()->loadFromJsonFile(setting_file_path);
-    }
-    auto config = DeviceConfig::getInstance();
-    auto program_type = config->get(INI_SECTION_BOOT, INI_KEY_PTYPE, PTYPE_NO_NET);
-    Logger::log(LogLevel::INFO, "program type %d", program_type);
-    //mount sdcard
-#ifdef BUILD_FOR_SIMULATION
-    if (!Misc::mountSDCard(simRootPath)) {
-        Logger::log(LogLevel::ERROR, "mount sdcard error");
-        goto main_exit;
-    }
-    {
-        std::string interface_name = Misc::findUsableNetworkInterface(NETIF_NAME);
-        if (interface_name.empty()) {
-            interface_name = NETIF_NAME;
-        }
-        Misc::setNetworkInterfaceName(interface_name);
-        elog_i("MDNS", "[SIM] Selected network interface: %s", interface_name.c_str());
-    }
-#else
-    if (!Misc::mountSDCard(SD_CARD_PATH)) {
-        Logger::log(LogLevel::ERROR, "mount sdcard error");
-        goto main_exit;
-    }
-
-    if (program_type == PTYPE_WIFI || command == CMD_MOBILE) {
-        Misc::setNetworkInterfaceName(WIFI_IFNAME);
-    } else if (program_type == PTYPE_ETHERNET) {
-        Misc::setNetworkInterfaceName(ETH_IFNAME);
-    } else if (program_type == PTYPE_USB_DONGLE) {
-        Misc::setNetworkInterfaceName(USB_DONGLE_IFNAME);
-    } else {
-        Logger::log(LogLevel::ERROR, "program type %d not support", program_type);
-        goto main_exit;
-    }
-
-    {
-        service::CameraFactoryConfigImporter importer;
-        service::CameraFactoryImportResult import_result = importer.importFromSdRoot(SD_CARD_PATH);
-        if (import_result.selectedInput.find(service::CameraFactoryConfigImporter::kJsonFileName) != std::string::npos) {
-            if (!import_result.success) {
-                Json::StreamWriterBuilder writer;
-                writer["indentation"] = "";
-                Logger::log(LogLevel::ERROR,
-                            "Factory JSON import failed: decision=%s errors=%s",
-                            import_result.decision.c_str(),
-                            Json::writeString(writer, import_result.errors).c_str());
-                config->flush_control(false);
-                goto main_exit;
-            }
-
-            if (import_result.restartRequired) {
-                Logger::log(LogLevel::INFO,
-                            "Factory JSON import applied from %s, count=%d, restart required",
-                            import_result.selectedInput.c_str(),
-                            import_result.appliedCount);
-                config->flush_control(false);
-                goto main_exit;
-            }
-        }
-    }
-
-    //update config
-    // First, check if update config file exists by opening it
-    {   // Use a scope to ensure file is closed before moving
-        std::fstream update_config_file(UPDATE_CONFIG_FILE_PATHNAME, std::ios::in);
-        update_config_exists = update_config_file.is_open();
-        if (update_config_exists) {
-            Logger::log(LogLevel::INFO, "Update config file exists, preparing to update config");
-            update_config_file.close();
-        }
-    }
-    
-    // Now that file is closed, attempt to move it
-    if (update_config_exists) {
-        if (!Misc::moveFile(UPDATE_CONFIG_FILE_PATHNAME, CONFIG_FILE_PATHNAME)) {
-            Logger::log(LogLevel::ERROR, "Failed to update config file");
-        } else {
-            Logger::log(LogLevel::INFO, "Successfully updated config file");
-            config->flush_control(false);
-            goto main_exit;
-        }
-    }
-    //timezone
-    timezone = config->get(INI_SECTION_NTP, INI_KEY_TIMEZONE, "");
-    if (!timezone.empty()) {
-        Logger::log(LogLevel::INFO, "Set timezone to %s", timezone.c_str());
-        Timezone::setTimezone(timezone);
-    }
-    
-#endif
-
-    //RTC
-    if (command & CMD_GET_RTC) {
-        struct tm now;
-        if(!RTC::getInstance()->getTime(now)) {
-            Logger::log(LogLevel::ERROR, "get RTC time error");
-        } else {
-            Logger::log(LogLevel::INFO, "RTC time: %d-%02d-%02d %02d:%02d:%02d",
-                   now.tm_year+YEAR_OFFSET, now.tm_mon+MONTH_OFFSET, now.tm_mday,
-                   now.tm_hour, now.tm_min, now.tm_sec);
-        }
-    }
-
-    if (command & CMD_SET_RTC) {
-        std::string rtc_time = argv[2];
-        struct tm timeinfo = {0};
-        // Parse the string into struct tm
-        if (strptime(rtc_time.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr) {
-            Logger::log(LogLevel::ERROR, "Failed to parse time string: %s", rtc_time.c_str());
-        } else {
-            // strptime already correctly sets tm_year (years since 1900) and tm_mon (0-11)
-            if (!RTC::getInstance()->setTime(timeinfo)) {
-                Logger::log(LogLevel::ERROR, "set RTC time: %s error", rtc_time.c_str());
-            } else {
-                Logger::log(LogLevel::INFO, "set RTC time: %s success", rtc_time.c_str());
-            }
-        }
-    }
-
-    if (command & CMD_SNAP && is_rtc_work_well) {
-        uint8_t camMode = Settings::getInstance()->cameraMode;
-        if (camMode == 0) {
-            if (!processCmdSnap(is_rtc_work_well)) {
-                goto main_exit;
-            }
-        } else if (camMode == 1) {
-            if (!processCmdSnap(is_rtc_work_well)) {
-                goto main_exit;
-            }
-            if (!processCmdVideoRecord(is_rtc_work_well)) {
-                goto main_exit;
-            }
-        } else if (camMode == 2) {
-            if (!processCmdVideoRecord(is_rtc_work_well)) {
-                goto main_exit;
-            }
-        } else if (camMode == 3) {
-            if (!processCmdSnap(is_rtc_work_well)) {
-                Logger::log(LogLevel::WARNING, "quick_snap failed, continue with concurrent record");
-            }
-            if (!processCmdConcurrentSnapRecord(is_rtc_work_well)) {
-                goto main_exit;
-            }
-        } else {
-            Logger::log(LogLevel::WARNING, "cameraMode=%d not supported in work mode", camMode);
-        }
-    }
-
-    //connect wifi
-    if (command & CMD_CONN_NET) {
-        if (program_type == PTYPE_WIFI) {
-            auto wifi_ssid = config->get(INI_SECTION_SYS, INI_KEY_UPID, "");
-            auto wifi_pwd = config->get(INI_SECTION_SYS, INI_KEY_UPWD, "");
-            if (wifi_ssid.empty() || wifi_pwd.empty()) {
-                Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");
-                goto main_exit;
-            }
-            if (!Misc::connectWifi(wifi_ssid, wifi_pwd)) {
-                Logger::log(LogLevel::ERROR, "connect wifi error");
-                goto main_exit;
-            }
-        } else if (program_type == PTYPE_USB_DONGLE) {
-            auto usb_dongle = UsbDongle::getInstance();
-            if (!usb_dongle->loadDriver()) {
-                Logger::log(LogLevel::ERROR, "load usb dongle driver error");
-                goto main_exit;
-            }
-
-            if (!usb_dongle->open()) {
-                Logger::log(LogLevel::ERROR, "open usb dongle error");
-                goto main_exit;
-            }
-
-            if (!usb_dongle->preconfig()) {
-                Logger::log(LogLevel::ERROR, "usb dongle preconfig error");
-                goto main_exit;
-            }
-        } else {
-            Logger::log(LogLevel::ERROR, "program type %d not support", program_type);
-            goto main_exit;
-        }
-    }
-
-    //dhcp
-    if (command & CMD_DHCP) {
-        if (!Misc::startDHCP()) {
-            Logger::log(LogLevel::ERROR, "start dhcp error");
-            goto main_exit;
-        }
-    }
-
-    if (command & CMD_NTP) {
-        auto ntp_server_ip = config->get(INI_SECTION_SERVER, INI_KEY_NTP_IP, "");
-        auto ntp_server_port = config->get(INI_SECTION_SERVER, INI_KEY_NTP_PORT, 0);
-        auto ntp_server = ntp_server_ip + ":" + to_string_custom(ntp_server_port);
-        Logger::log(LogLevel::INFO, "ntp server: %s", ntp_server.c_str());
-        if (ntp_server.empty()) {
-            Logger::log(LogLevel::ERROR, "ntp server is empty");
-            goto main_exit;
-        }
-        if (!Misc::ntpSync(ntp_server)) {
-            Logger::log(LogLevel::ERROR, "ntp sync error");
-            goto main_exit;
-        }
-        
-        // Wait until system time is synchronized (year > YEAR_MIN(2000))
-        const int MAX_WAIT_SECONDS = 30; // Maximum wait time 30 seconds
-        const int CHECK_INTERVAL = 2;    // Check every 2 seconds
-        int wait_time = 0;
-        struct tm* nowtime = nullptr;
-        while (wait_time < MAX_WAIT_SECONDS) {
-            time_t now = time(nullptr);
-            nowtime = localtime(&now);
-            
-            // Check if year is greater than YEAR_MIN
-            if (nowtime->tm_year + YEAR_OFFSET > YEAR_MIN) {
-                Logger::log(LogLevel::INFO, "System time synchronized: %d-%02d-%02d %02d:%02d:%02d",
-                           nowtime->tm_year + YEAR_OFFSET, nowtime->tm_mon + MONTH_OFFSET, nowtime->tm_mday,
-                           nowtime->tm_hour, nowtime->tm_min, nowtime->tm_sec);
-                break;
-            }
-            
-            Logger::log(LogLevel::INFO, "Waiting for system time synchronization, current year: %d, waited %d seconds", 
-                       nowtime->tm_year + YEAR_OFFSET, wait_time);
-            sleep(CHECK_INTERVAL);
-            wait_time += CHECK_INTERVAL;
-        }
-        
-        if (wait_time >= MAX_WAIT_SECONDS) {
-            Logger::log(LogLevel::WARNING, "Timeout waiting for system time synchronization after %d seconds", MAX_WAIT_SECONDS);
-            goto main_exit;
-        }
-
-        if (is_rtc_work_well) {
-            RTC::getInstance()->setTime(*nowtime);
-        }
-    }
-
-    if (command & CMD_SNAP && !is_rtc_work_well) {
-        uint8_t camMode = Settings::getInstance()->cameraMode;
-        if (camMode == 0) {
-            if (!processCmdSnap(is_rtc_work_well)) {
-                goto main_exit;
-            }
-        } else if (camMode == 1) {
-            if (!processCmdSnap(is_rtc_work_well)) {
-                goto main_exit;
-            }
-            if (!processCmdVideoRecord(is_rtc_work_well)) {
-                goto main_exit;
-            }
-        } else if (camMode == 2) {
-            if (!processCmdVideoRecord(is_rtc_work_well)) {
-                goto main_exit;
-            }
-        } else if (camMode == 3) {
-            if (!processCmdSnap(is_rtc_work_well)) {
-                Logger::log(LogLevel::WARNING, "quick_snap failed, continue with concurrent record");
-            }
-            if (!processCmdConcurrentSnapRecord(is_rtc_work_well)) {
-                goto main_exit;
-            }
-        } else {
-            Logger::log(LogLevel::WARNING, "cameraMode=%d not supported in work mode", camMode);
-        }
-    }
-
-    if (command & CMD_AUDIO_RECORD) {
-        Logger::log(LogLevel::INFO, "[Main] CMD_AUDIO_RECORD enter");
-        
-        AudioParams audioParam;
-        audioParam.setDeviceType(AudioDeviceType::AUDIO_IN);
-        audioParam.setDeviceId(1);  
-        audioParam.setChannelId(0);
-        audioParam.setVolume(80);    
-        audioParam.setGain(28);      
-        audioParam.setCodecFormat(AudioCodecFormat::AAC);
-        #ifdef BUILD_FOR_SIMULATION
-        audioParam.setSampleRate(AudioSampleRate::SR_44100);
-        #else
-        audioParam.setSampleRate(AudioSampleRate::SR_16000);
-        #endif
-        audioParam.setChannelCount(1);   
-        IAudioRecorder* audioIn = new AudioRecorder();
-        audioIn->setAudioParams(audioParam);
-        audioIn->setRecordFilePath("./res/audioin_record.aac");
-        Logger::log(LogLevel::INFO, "[Main] audioIn start...");
-        if (audioIn->start()) {
-            sleep(20);
-            Logger::log(LogLevel::INFO, "[Main] audioIn stop...");
-            audioIn->stop();
-            Logger::log(LogLevel::INFO, "[Main] audioIn stop done");
-        } else {
-            Logger::log(LogLevel::ERROR, "audioIn start failed");
-        }
-        Logger::log(LogLevel::INFO, "[Main] destroyRecorder(audioIn)...");
-        delete audioIn;
-        Logger::log(LogLevel::INFO, "[Main] destroyRecorder(audioIn) done");
-        Logger::log(LogLevel::INFO, "[Main] CMD_AUDIO_RECORD leave");
-    }
-
-    if (command & CMD_VIDEO_RECORD) {
-        auto videoParam = std::make_shared<VideoParams>();
-        videoParam->setResolution(1920, 1080);
-        videoParam->setFrameRate(30);
-        videoParam->setBitrate(4000);
-
-        // 配置音频参数
-        auto audioParam = std::make_shared<AudioParams>();
-        audioParam->setDeviceType(AudioDeviceType::AUDIO_IN);
-        audioParam->setDeviceId(1);  
-        audioParam->setChannelId(0);
-        audioParam->setVolume(80);    
-        audioParam->setGain(28);      
-        audioParam->setCodecFormat(AudioCodecFormat::AAC);
-        #ifdef BUILD_FOR_SIMULATION
-        audioParam->setSampleRate(AudioSampleRate::SR_44100);
-        #else
-        audioParam->setSampleRate(AudioSampleRate::SR_16000);
-        #endif
-        audioParam->setChannelCount(1);   
-    
-        auto recorder = std::make_shared<VideoRecorder>(videoParam, audioParam);
-        std::string record_path = "./res/" + getCurrentTimeFormatted() + ".mp4";;//MEDIA_STORE_FOLDER_PATH + getCurrentTimeFormatted() + ".mp4";
-        Logger::log(LogLevel::INFO, "record to %s", record_path.c_str());
-        recorder->record(record_path, 10);
-    }
-
-    if (command & CMD_MOBILE) {
-        setenv("HTC_TEST_MODE", "1", 1);
-
-        // Day/Night initialization for CMD_MOBILE (covers both -m and -wm 3 paths)
-        if (daynight_switch) {
-            const char* forceDay = std::getenv("HTC_FORCE_RECORD_DAY_MODE");
-            if (forceDay && strcmp(forceDay, "1") == 0) {
-                Logger::log(LogLevel::INFO, "CMD_MOBILE: force DAY mode from --force-day");
-                daynight_switch->controlISP(DayNightState::DAY);
-                daynight_switch->controlIRCut(DayNightState::DAY);
-                daynight_switch->controlIRLed(DayNightState::DAY);
-            } else {
-                auto daynight_state = daynight_switch->getDayNightState();
-                daynight_switch->controlISP(daynight_state);
-                daynight_switch->controlIRCut(daynight_state);
-                daynight_switch->controlIRLed(daynight_state);
-            }
-        }
-
-        uint16_t http_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_CTRL_PORT, 80);
-        uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
-        auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
-        auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
-#ifndef BUILD_FOR_SIMULATION
-        if (wifi_ssid.empty() || wifi_pwd.empty()) {
-            Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");
-            goto main_exit;
-        }
-        if (!Misc::connectWifi(wifi_ssid, wifi_pwd)) {
-            Logger::log(LogLevel::ERROR, "connect wifi error");
-            goto main_exit;
-        }
-        if (!Misc::startDHCP()) {
-            Logger::log(LogLevel::ERROR, "start dhcp error");
-            goto main_exit;
-        }
-#endif
-
-        std::string interface_name = Misc::getNetworkInterfaceName();
-#ifdef BUILD_FOR_SIMULATION
-        std::string detected_interface = Misc::findUsableNetworkInterface(interface_name);
-        if (!detected_interface.empty() && detected_interface != interface_name) {
-            interface_name = detected_interface;
-            Misc::setNetworkInterfaceName(interface_name);
-        }
-#endif
-
-        std::string ip_address = Misc::getIPAddress(interface_name);
-        if (ip_address.empty()) {
-            Logger::log(LogLevel::ERROR, "No IP address found on interface %s", interface_name.c_str());
-            goto main_exit;
-        }
-
-        if (isMdnsEnabled(config)) {
-            auto mdns_params = buildMdnsParams(config, interface_name, ip_address, http_port, rtsp_port);
-            if (!service::MdnsService::getInstance()->start(mdns_params)) {
-                Logger::log(LogLevel::ERROR, "Failed to start mDNS service");
-                goto main_exit;
-            }
-        } else {
-            elog_i("MDNS", "mDNS disabled by config");
-        }
-
-        // 启动 HTTP Server 替代 RemoteCtrlClient
-        HttpServerConfig httpConfig = {static_cast<int>(http_port), nullptr, 2};
-        if (http_server_init(&httpConfig) != 0) {
-            Logger::log(LogLevel::ERROR, "Failed to init HTTP server");
-            service::MdnsService::getInstance()->stop();
-            goto main_exit;
-        }
-        if (http_server_start() != 0) {
-            Logger::log(LogLevel::ERROR, "Failed to start HTTP server");
-            http_server_deinit();
-            service::MdnsService::getInstance()->stop();
-            goto main_exit;
-        }
-        if (!service::TcpEventService::getInstance()->start(service::kDefaultTcpEventPort)) {
-            Logger::log(LogLevel::WARNING, "Failed to start TCP event server on port %u",
-                        service::kDefaultTcpEventPort);
-        }
-        elog_i("MDNS", "HTTP server started on port %u for interface %s (%s)",
-               http_port, interface_name.c_str(), ip_address.c_str());
-        
-        if (mobile_rtsp_enabled) {
-            rtsp_singleton_used = true;
-            RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
-                Logger::log(LogLevel::INFO, "RTSP session closed in mobile mode, waiting for new connection...");
-            });
-            RtspServer::getInstance()->setPort(static_cast<int>(rtsp_port));
-            if (!RtspServer::getInstance()->start()) {
-                Logger::log(LogLevel::ERROR, "Failed to start RTSP server");
-                if (http_server_is_running()) {
-                    http_server_stop();
-                    http_server_deinit();
-                }
-                service::TcpEventService::getInstance()->stop();
-                service::MdnsService::getInstance()->stop();
-                goto main_exit;
-            }
-        } else {
-            Logger::log(LogLevel::INFO, "RTSP server disabled in mobile mode");
-        }
-
-        while (!already_in_exit_flow) {
-            (void)waitForSignalOrTimeout(1000);
-        }
-
-        service::MdnsService::getInstance()->stop();
-        
-        // 停止 RTSP Server
-        if (mobile_rtsp_enabled) {
-            RtspServer::getInstance()->stop();
-        }
-        
-        // 停止 HTTP Server
-        if (http_server_is_running()) {
-            http_server_stop();
-            http_server_deinit();
-        }
-        service::TcpEventService::getInstance()->stop();
-    }
-
-    if (command & CMD_RTSP_SERVER) {
-        //auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
-        //auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
-        //Misc::connectWifi(wifi_ssid, wifi_pwd);
-        //Misc::startDHCP();
-        uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
-        rtsp_singleton_used = true;
-        RtspServer::getInstance()->registerOnsessionClosedCallback([]() {
-            Logger::log(LogLevel::INFO, "RTSP session closed, waiting for new connection...");
-        });
-        RtspServer::getInstance()->setPort(static_cast<int>(rtsp_port));
-        if (!RtspServer::getInstance()->start()) {
-            Logger::log(LogLevel::ERROR, "Failed to start RTSP server");
-            goto main_exit;
-        }
-        /* RTSP 服务器持续运行，等待退出信号 */
-        while (!already_in_exit_flow) {
-            (void)waitForSignalOrTimeout(1000);
-        }
-        RtspServer::getInstance()->stop();
-    }
-
-    if (command & CMD_AUTH || command & CMD_HEARTBEAT || command & CMD_UPLOAD) {
-        auto mgmtServerAddr = config->get(INI_SECTION_SERVER, INI_KEY_MS_IP, "");
-        Logger::log(LogLevel::INFO, "mgmtServerAddr: %s", mgmtServerAddr.c_str());
-        auto mgmtServerPort = config->get(INI_SECTION_SERVER, INI_KEY_MS_PORT, 0);
-        Logger::log(LogLevel::INFO, "mgmtServerPort: %d", mgmtServerPort);
-
-        mgmtServClient = std::make_shared<MgmtServClient>(mgmtServerAddr, mgmtServerPort);
-        if (EC_SUCCESS != mgmtServClient->connect(3000)) {
-            Logger::log(LogLevel::ERROR, "connect [%s:%d] failed", mgmtServerAddr.c_str(), mgmtServerPort);
-            goto main_exit;
-        } else {
-            Logger::log(LogLevel::INFO, "connect [%s:%d] success", mgmtServerAddr.c_str(), mgmtServerPort);
-        }
-
-        if (EC_SUCCESS != mgmtServClient->authenticate()) {
-            Logger::log(LogLevel::ERROR, "auth failed");
-            goto main_exit;
-        } else {
-            Logger::log(LogLevel::INFO, "auth success");
-        }
-    }
-
-    if (command & CMD_HEARTBEAT) {
-        mgmtServClient->sendHeartbeat();
-    }
-    
-    if (command & CMD_UPLOAD) {
-        //assume we have a storage server same as mgmt server
-        storageServClient = mgmtServClient->newStorageServClient();
-        if (gpio_rgb_led) {
-            gpio_rgb_led->setConstant(GPIO_VALUE::HIGH);
-        }
-        bool descfile_uploaded = false;
-        auto desc_filenames = Misc::listFilenames(MEDIA_UPLOAD_PATH);
-        for (auto &desc_filename : desc_filenames) {
-            desc_filename = MEDIA_UPLOAD_PATH + desc_filename;
-            Logger::log(LogLevel::INFO, "desc_filename %s", desc_filename.c_str());
-            std::ifstream ifs(desc_filename);
-            
-            if (!Misc::isJsonFile(desc_filename)) {
-                Logger::log(LogLevel::INFO, "%s is not json", desc_filename.c_str());
-                Misc::deleteFile(desc_filename);
-                continue;
-            }
-
-            Json::Value root;
-            Json::Reader reader;
-            if (!reader.parse(ifs, root)) {
-                Logger::log(LogLevel::ERROR, "Failed to parse JSON file: %s", desc_filename.c_str());
-                Misc::deleteFile(desc_filename);
-                continue;
-            }
-
-            std::string pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
-            if (!root.isMember("F_UploadedTag") ||!root.isMember("device") || !root["device"].isMember("PID") || (root["device"]["PID"].asString() != pid)) {
-                Logger::log(LogLevel::ERROR, "PID not match");
-                Misc::deleteFile(desc_filename);
-                continue;
-            }
-            
-            if (!root.isMember("file_inf")) {
-                Logger::log(LogLevel::ERROR, "file_inf not exist");
-                Misc::deleteFile(desc_filename);
-                continue;
-            }
-            
-            descfile_uploaded = false;
-            if (root["F_UploadedTag"].asInt() == 0) {
-                //upload file description json file
-                Logger::log(LogLevel::INFO, "original desc_filename %s", desc_filename.c_str());
-                auto target_filename = desc_filename;
-                storageServClient->bindUploadCallback([&descfile_uploaded, target_filename](const std::string &filename, int error_code) {
-                    Logger::log(LogLevel::INFO, "upload descfile [%s], error code: %d", filename.c_str(), error_code);
-                    if (filename == target_filename) {
-                        descfile_uploaded = (error_code==EC_SUCCESS)?true:false;
-                    }
-                });
-                storageServClient->uploadFile(desc_filename);
-                auto start_time = std::chrono::steady_clock::now();
-                auto now = std::chrono::steady_clock::now();
-                while (std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count() < 8) {//must greater than 5s
-                    if (descfile_uploaded) {
-                        Logger::log(LogLevel::INFO, "descfile %s uploaded", desc_filename.c_str());
-                        root["F_UploadedTag"] = 1;
-                        std::ofstream ofs(desc_filename);
-                        ofs << root.toStyledString();
-                        ofs.close();
-                        break;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    now = std::chrono::steady_clock::now();
-                }
-            } else {
-                descfile_uploaded = true;
-            }
-
-            if (descfile_uploaded) {
-                bool allFileUploaded = true;
-                const Json::Value file_inf_array = root["file_inf"];
-                std::vector<std::string> uploaded_file_list;
-                storageServClient->bindUploadCallback([&uploaded_file_list, &allFileUploaded](const std::string &filename, int error_code) {
-                    Logger::log(LogLevel::INFO, "upload %s, error code: %d", filename.c_str(), error_code);
-                    if (error_code == EC_SUCCESS) {
-                        uploaded_file_list.push_back(filename);
-                    } else {
-                        allFileUploaded = false;
-                    }
-                });
-                for (Json::ArrayIndex i = 0; i < file_inf_array.size(); ++i) {
-                    if (file_inf_array[i].isMember("F_FileName") && file_inf_array[i].isMember("F_FilePath")) {
-                        std::string filepath = file_inf_array[i]["F_FilePath"].asString();
-                        std::string filename = file_inf_array[i]["F_FileName"].asString();
-                        auto tag = file_inf_array[i]["F_UploadedTag"].asInt();
-                        if (tag == 0) {
-                            Logger::log(LogLevel::INFO, "uploading file: %s", filename.c_str());
-                            auto pathname = filepath + "/" + filename;
-                            storageServClient->uploadFile(pathname);
-                        }
-                    }
-                }
-
-                while (!storageServClient->isUploadFinished()) {
-                    usleep(1);
-                }
-
-                for (auto& filename : uploaded_file_list) {
-                    for (Json::ArrayIndex i = 0; i < file_inf_array.size(); ++i) {
-                        auto pathname = file_inf_array[i]["F_FilePath"].asString() + "/" + file_inf_array[i]["F_FileName"].asString();
-                        if (pathname == filename) {
-                            root["file_inf"][i]["F_UploadedTag"] = 1;
-                            
-                            auto file_manage_type = config->get(INI_SECTION_POLICY, INI_KEY_FILE_MANAGE, 0);
-                            if (file_manage_type == FILE_MANAGE_DELETE) {
-                                Misc::deleteFile(pathname);
-                            }
-                        }
-                    }
-                }
-
-                std::ofstream ofs(desc_filename);
-                ofs << root.toStyledString();
-                ofs.close();
-                if (allFileUploaded) {
-                    Logger::log(LogLevel::INFO, "upload all files finished in %s", desc_filename.c_str());
-                    //Misc::deleteFile(desc_filename);
-                }
-            }    
-        }
+        (void)app_workmode::runCommands(command, ctx);
     }
 
 main_exit:
-    // NOTE (WiFi reuse): this final exit path INTENTIONALLY does not rmmod the
-    // WiFi driver, does not kill wpa_supplicant, and does not clear
-    // /tmp/wpa_supplicant. Keeping them lets the next boot reuse the live
-    // driver/supplicant; re-entry is state-driven via
-    // Misc::isWifiDriverLoaded()/isWifiConnected() which short-circuit
-    // connectWifi/startDHCP, so no re-insmod and no wpa_supplicant re-spawn.
-    service::TcpEventService::getInstance()->stop();
-    service::MdnsService::getInstance()->stop();
-
-    // Process-level IMP teardown: release encoder channel/group/bind, ISP and
-    // OSD region before the process is frozen by Misc::poweroff()/while(1)
-    // (or _exit(0) under SIM). Must run BEFORE the freeze so the next process
-    // boot does not hang in configure() on stale IMP driver state. Only run
-    // when the RTSP singleton was actually used; otherwise getInstance() would
-    // spuriously construct + init the HAL in unrelated modes.
-    if (rtsp_singleton_used) {
-        RtspServer::getInstance()->shutdown();
+    // The main_exit tail (TcpEvent/Mdns stop, the rtsp_singleton_used-gated
+    // RtspServer::getInstance()->shutdown() "before the freeze", self-pipe
+    // close, Settings save, power-hold GPIO, auto_release.release()) is owned
+    // by the lifecycle. The terminal steps (sim _exit / HW syncWithMCU +
+    // config->flush + Misc::poweroff) stay here — they are process-terminal
+    // and app-specific. NOTE (WiFi reuse): this path INTENTIONALLY does not
+    // rmmod the WiFi driver / kill wpa_supplicant — see performCleanup comment
+    // moved into the cleanupHook below.
+    {
+        app_lifecycle::ShutdownContext sctx;
+        sctx.programType = lc.programType();
+        sctx.command     = command;
+        sctx.rtcWorkedWell = is_rtc_work_well;
+        lc.shutdown(sctx);
     }
-
-    // Close the signal self-pipe. The signal handler does a guarded write
-    // to g_signal_pipe[1] before checking >= 0, so closing here is safe.
-    if (g_signal_pipe[0] >= 0) {
-        ::close(g_signal_pipe[0]);
-        g_signal_pipe[0] = -1;
-    }
-    if (g_signal_pipe[1] >= 0) {
-        ::close(g_signal_pipe[1]);
-        g_signal_pipe[1] = -1;
-    }
-
-    Settings::getInstance()->saveToJsonFile(setting_file_path);
-
-    Logger::log(LogLevel::INFO, "Power off From Main function");
-#ifndef BUILD_FOR_SIMULATION
-    auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
-    if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
-        || !gpio_power_hold.setValue(GPIO_VALUE::LOW)) {
-        Logger::log(LogLevel::ERROR, "%s Failed to set power hold pin", __func__);
-    }
-#endif
-    auto_release.release();
 #ifdef BUILD_FOR_SIMULATION
     Logger::log(LogLevel::INFO, "[SIM] Program exit normally");
     _exit(0);
 #else
-    syncWithMCU();
+    app_lifecycle::syncWithMCU();
     config->flush();
 #if POWER_MANAGER_ON
     Misc::poweroff();
