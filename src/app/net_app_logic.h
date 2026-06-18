@@ -1,14 +1,17 @@
-#ifndef WIFI_APP_LOGIC_H
-#define WIFI_APP_LOGIC_H
+#ifndef NET_APP_LOGIC_H
+#define NET_APP_LOGIC_H
 
 #include <string>
 
-// Pure-logic layer for htc_wifi_app.
+// Pure-logic layer for htc_net_app.
 //
-// This header/translation unit contains NO system calls. It only holds the
-// "should we reconnect / should we write back / what exit code" decision logic,
-// so it can be unit-tested on the PC simulation build without a real WiFi
-// stack, MCU bus or wpa_supplicant.
+// This header/translation unit contains NO system calls. It holds:
+//   - the WiFi-specific "should we reconnect / should we write back / what exit
+//     code" decision logic (behaviour-equivalent to the former htc_wifi_app);
+//   - the T7 uplink-type decision helpers (NetType parsing, INI PType mapping,
+//     per-uplink interface name, isNetworkUp predicate).
+// Everything is unit-testable on the PC simulation build without a real WiFi
+// stack, MCU bus, wpa_supplicant, Ethernet link or USB dongle.
 //
 // Exit code contract (stable, consumed by scripts/daemon callers):
 //   0  success
@@ -17,7 +20,7 @@
 //   4  DHCP failure
 //   5  connected OK but MCU write-back was gated/skipped (recoverable, non-0)
 //   6  argument / credential error
-namespace wifi_app_logic {
+namespace net_app_logic {
 
 // Stable exit codes (mirror the planner §4 contract).
 enum ExitCode {
@@ -66,6 +69,54 @@ bool mayWriteBack(bool connected, const std::string &liveSsid, const std::string
 // case-sensitive per 802.11, so we deliberately do NOT lowercase).
 std::string normalizeSsid(const std::string &s);
 
-} // namespace wifi_app_logic
+// ============================================================================
+// T7 uplink-type decision helpers (no syscalls, PC-unit-testable).
+// Added alongside the Ethernet + USB dongle uplinks so the "which uplink /
+// which interface / is the link usable" decisions live in pure logic rather
+// than buried in the syscall-heavy main.
+// ============================================================================
 
-#endif // WIFI_APP_LOGIC_H
+// Uplink category. NET_INVALID is returned by the parsers for anything that
+// does not map to a supported uplink (bad CLI string, unknown INI PType).
+enum NetType {
+    NET_WIFI,     // PTYPE_WIFI       (Common.h = 1), ifname wlan0
+    NET_USB,      // PTYPE_USB_DONGLE (Common.h = 4), ifname usb0
+    NET_ETH,      // PTYPE_ETHERNET   (Common.h = 8), ifname eth0
+    NET_INVALID,
+};
+
+// CLI "--type" string -> NetType. Case-sensitive ("wifi"/"eth"/"usb" only);
+// any other token (including "WIFI"/"WiFi"/""/"bogus") returns NET_INVALID.
+NetType parseNetType(const std::string &s);
+
+// INI BOOT/PType integer -> NetType. Locks Common.h PTYPE_WIFI=1 /
+// PTYPE_USB_DONGLE=4 / PTYPE_ETHERNET=8. Anything else (0/2/3/9/...) is
+// NET_INVALID.
+NetType ptypeToNetType(int ptype);
+
+// NetType -> interface name (same source as app.h WIFI_IFNAME/ETH_IFNAME/
+// USB_DONGLE_IFNAME). NET_INVALID -> "".
+std::string netTypeIfname(NetType t);
+
+// "Network usable" predicate, identical in semantics to Misc::isWifiConnected
+// (IP non-empty AND gateway non-empty -- independent of uplink type). Pure:
+// caller passes the ip/gateway strings obtained from Misc::getIPAddress /
+// Misc::getGatewayAddress at the execution layer.
+bool isNetworkUp(const std::string &ip, const std::string &gateway);
+
+// Does Ethernet need an explicit connect step? main_app current behaviour = NO
+// (PTYPE_ETHERNET only does setNetworkInterfaceName("eth0") + startDHCP("eth0"),
+// no ifconfig-up / static IP / connect). Recorded as a constant so the
+// semantics is locked by a unit test.
+bool ethNeedsConnect();
+
+// Does the USB dongle path call UsbDongle::start() by default? main_app current
+// behaviour = NO (only loadDriver -> open -> preconfig, context never activated
+// -- a pre-existing main_app limitation, surfaced as risk T7-usb-no-start).
+// --usb-bringup flips this at the execution layer; this function returns the
+// "main_app baseline" = false so a unit test locks the default.
+bool usbNeedsStartDefault();
+
+} // namespace net_app_logic
+
+#endif // NET_APP_LOGIC_H

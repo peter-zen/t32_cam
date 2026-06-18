@@ -1,23 +1,31 @@
-// Unit tests for the pure-logic layer of htc_wifi_app.
+// Unit tests for the pure-logic layer of htc_net_app.
 //
-// Covers (planner T6 §8.1):
+// Covers:
+//   WiFi-specific (ported verbatim from the former test_wifi_app_logic):
 //   - decide(): ABORT / FRESH_CONNECT / RECONNECT / REUSE
 //   - decisionExitCode(): Decision -> baseline exit code mapping
 //   - mayWriteBack(): strict gate (connected + live SSID == target)
 //   - normalizeSsid(): trim only, case-sensitive preserved
+//   T7 uplink-type helpers (new):
+//   - parseNetType(): CLI "--type" string -> NetType
+//   - ptypeToNetType(): INI BOOT/PType int -> NetType (locks Common.h 1/4/8)
+//   - netTypeIfname(): NetType -> wlan0/eth0/usb0
+//   - isNetworkUp(): IP non-empty AND gateway non-empty
+//   - ethNeedsConnect(): false (ETH has no connect step)
+//   - usbNeedsStartDefault(): false (main_app never calls start())
 //
 // This translation unit has NO system calls; it links only against
-// wifi_app_logic. Build under BUILD_FOR_SIMULATION only.
+// net_app_logic. Build under BUILD_FOR_SIMULATION only.
 //
 // Exit: 0 = all pass, non-zero = failure.
 
-#include "wifi_app_logic.h"
+#include "net_app_logic.h"
 
 #include <cstdio>
 #include <string>
 #include <vector>
 
-using namespace wifi_app_logic;
+using namespace net_app_logic;
 
 namespace {
 
@@ -57,6 +65,8 @@ void expectEqImpl(const A &a, const E &e, const char *expr, const char *msg, int
             ++g_failures;                                                     \
         }                                                                     \
     } while (0)
+
+// ===== WiFi-specific (ported verbatim from test_wifi_app_logic) =====
 
 void testDecisionReuse()
 {
@@ -163,10 +173,76 @@ void testEndToEndDecisionThenGate()
                  "e2e: gate blocks write when landed on wrong ssid");
 }
 
+// ===== T7 uplink-type helpers (new) =====
+
+void testParseNetType()
+{
+    // Accepted tokens (case-sensitive).
+    EXPECT_EQ(parseNetType("wifi"), NET_WIFI, "wifi -> NET_WIFI");
+    EXPECT_EQ(parseNetType("eth"),  NET_ETH,  "eth -> NET_ETH");
+    EXPECT_EQ(parseNetType("usb"),  NET_USB,  "usb -> NET_USB");
+
+    // Everything else is invalid (case-sensitive, mirroring SSID style).
+    EXPECT_EQ(parseNetType("WIFI"),   NET_INVALID, "WIFI uppercase -> invalid");
+    EXPECT_EQ(parseNetType("WiFi"),   NET_INVALID, "WiFi mixed -> invalid");
+    EXPECT_EQ(parseNetType("ETH"),    NET_INVALID, "ETH uppercase -> invalid");
+    EXPECT_EQ(parseNetType("USB"),    NET_INVALID, "USB uppercase -> invalid");
+    EXPECT_EQ(parseNetType(""),       NET_INVALID, "empty -> invalid");
+    EXPECT_EQ(parseNetType("bogus"),  NET_INVALID, "bogus -> invalid");
+    EXPECT_EQ(parseNetType("ethernet"),NET_INVALID,"ethernet full -> invalid");
+}
+
+void testPtypeToNetType()
+{
+    // Locks Common.h PTYPE_WIFI=1 / PTYPE_USB_DONGLE=4 / PTYPE_ETHERNET=8.
+    EXPECT_EQ(ptypeToNetType(1), NET_WIFI, "PType 1 -> WIFI");
+    EXPECT_EQ(ptypeToNetType(4), NET_USB,  "PType 4 -> USB");
+    EXPECT_EQ(ptypeToNetType(8), NET_ETH,  "PType 8 -> ETH");
+
+    // Anything else is invalid.
+    EXPECT_EQ(ptypeToNetType(0), NET_INVALID, "PType 0 -> invalid");
+    EXPECT_EQ(ptypeToNetType(2), NET_INVALID, "PType 2 -> invalid");
+    EXPECT_EQ(ptypeToNetType(3), NET_INVALID, "PType 3 -> invalid");
+    EXPECT_EQ(ptypeToNetType(9), NET_INVALID, "PType 9 -> invalid");
+}
+
+void testNetTypeIfname()
+{
+    // Same source as app.h WIFI_IFNAME="wlan0" / ETH_IFNAME="eth0" /
+    // USB_DONGLE_IFNAME="usb0".
+    EXPECT_EQ(netTypeIfname(NET_WIFI), std::string("wlan0"), "WIFI -> wlan0");
+    EXPECT_EQ(netTypeIfname(NET_ETH),  std::string("eth0"),  "ETH -> eth0");
+    EXPECT_EQ(netTypeIfname(NET_USB),  std::string("usb0"),  "USB -> usb0");
+    EXPECT_EQ(netTypeIfname(NET_INVALID), std::string(""),   "INVALID -> empty");
+}
+
+void testIsNetworkUp()
+{
+    // Mirrors Misc::isWifiConnected: IP non-empty AND gateway non-empty.
+    EXPECT_TRUE(isNetworkUp("192.168.1.5", "192.168.1.1"), "ip+gw -> up");
+    EXPECT_FALSE(isNetworkUp("", "1.2.3.4"), "empty ip -> down");
+    EXPECT_FALSE(isNetworkUp("1.2.3.4", ""), "empty gw -> down");
+    EXPECT_FALSE(isNetworkUp("", ""), "empty both -> down");
+}
+
+void testEthNeedsConnect()
+{
+    // Locks "ETH has no connect step" (main_app only setIfname + DHCP).
+    EXPECT_FALSE(ethNeedsConnect(), "eth never needs a connect step");
+}
+
+void testUsbNeedsStartDefault()
+{
+    // Locks "main_app baseline never calls start()" — --usb-bringup flips it
+    // at the execution layer only.
+    EXPECT_FALSE(usbNeedsStartDefault(), "usb does not call start() by default");
+}
+
 } // namespace
 
 int main()
 {
+    // WiFi-specific (ported).
     testDecisionReuse();
     testDecisionReconnect();
     testDecisionReconnectWhenConnectedButNoSsidReported();
@@ -178,10 +254,18 @@ int main()
     testNormalizeSsidTrimsOnly();
     testEndToEndDecisionThenGate();
 
+    // T7 uplink-type helpers (new).
+    testParseNetType();
+    testPtypeToNetType();
+    testNetTypeIfname();
+    testIsNetworkUp();
+    testEthNeedsConnect();
+    testUsbNeedsStartDefault();
+
     if (g_failures == 0) {
-        std::printf("test_wifi_app_logic: ALL PASS\n");
+        std::printf("test_net_app_logic: ALL PASS\n");
         return 0;
     }
-    std::fprintf(stderr, "test_wifi_app_logic: %d FAILURE(S)\n", g_failures);
+    std::fprintf(stderr, "test_net_app_logic: %d FAILURE(S)\n", g_failures);
     return 1;
 }

@@ -102,17 +102,17 @@ target_include_directories(test_mcu_service PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
 )
 
-# htc_wifi_app pure-logic unit test (no syscalls; only links wifi_app_logic.cpp).
-add_executable(test_wifi_app_logic
-    test_wifi_app_logic.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/wifi_app_logic.cpp
+# htc_net_app pure-logic unit test (no syscalls; only links net_app_logic.cpp).
+add_executable(test_net_app_logic
+    test_net_app_logic.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/net_app_logic.cpp
 )
 
-target_include_directories(test_wifi_app_logic PRIVATE
+target_include_directories(test_net_app_logic PRIVATE
     ${CMAKE_SOURCE_DIR}/src/app
 )
 
-target_link_libraries(test_wifi_app_logic
+target_link_libraries(test_net_app_logic
     PRIVATE
     pthread
     rt
@@ -120,7 +120,7 @@ target_link_libraries(test_wifi_app_logic
     stdc++
 )
 
-set_target_properties(test_wifi_app_logic PROPERTIES
+set_target_properties(test_net_app_logic PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

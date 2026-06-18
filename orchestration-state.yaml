@@ -34,6 +34,11 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T7
+  title: 扩展 htc_wifi_app 为 htc_net_app:统一网络管理(WiFi+Ethernet+USB dongle),本阶段不动 main_app
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -63,4 +68,33 @@ risks:
   用例 A-F：A 首连 / B 优雅切 SSID 且 wpa_supplicant PID 恒定 / C --write-mcu 回写 MCU / D 错密码
   exit 3 / E 无参读 MCU / F 5 轮 A↔B PID 恒定 + dmesg 无 oops）需 T32 硬件手动跑。关键不变量：用例 B/F 的
   wpa_supplicant PID 跨 SSID 切换恒定是 T5 不回归的唯一可观测证明。''}'
-active_task: T6
+- '{''key'': ''T7-usb-no-start'', ''severity'': ''high'', ''description'': ''main_app
+  的 USB 序列缺 start()/activateContextProfile()，照搬后 net_app 的 --type usb 同样激活不了 4G 数据
+  context→拿不到 IP(usb0 无 carrier，udhcpc 超时→exit 4)。这是 main_app 既有 行为，非本任务引入的回归。缓解:net_app
+  默认忠实搬运(不偷偷补)；--usb-bringup 开关(默认关)留给 用户显式补 start()；full §5 给出补 start() 的精确序列；真机回归脚本断言
+  IP/gateway，失败即暴露。 本风险需用户在 implement 前拍板 --usb-bringup 默认值。''}'
+- '{''key'': ''T7-usb-setmodel-unset'', ''severity'': ''medium'', ''description'':
+  ''UsbDongle::model 默认未初始化(enum class 零值=EC20)。main_app 从不 setModel()，net_app 照搬同样不设；若实际硬件是
+  EC200A/EG800K/RG255AA，preconfig 的 setDevCtrl(3,1) 分支(UsbDongle.cpp: 1088)与 setWakeupConfig
+  分支会走错。属 main_app 既有缺陷。缓解:照搬不补；--usb-bringup 路径顺带 接受 --usb-model 参数(EC20/EC200A/EG800K/RG255AA)由用户显式设；标风险不擅自默认。''}'
+- '{''key'': ''T7-eth-no-carrier-on-sim'', ''severity'': ''medium'', ''description'':
+  ''sim 下 eth0 可能不存在或无 IP，startDHCP(eth0) 的 udhcpc 失败→exit 4，属预期(sim 无硬件)。 缓解:sim
+  验收只验编译+纯逻辑单测+--help+决策；ETH 执行层真机回归脚本留用户跑。不卡 CI。''}'
+- '{''key'': ''T7-rename-cmake-linkage'', ''severity'': ''medium'', ''description'':
+  ''改名 wifi_app→net_app 涉及 CMake target(add_executable/set_target_properties/ target_link_libraries
+  两处 sim/T32)+tests/CMakeLists(test_net_app_logic)+注释。漏改一处→构建断或 残留 wifi_app。缓解:full
+  §7 给出精确联动清单；验收 grep 证实 build/bin 无 htc_wifi_app 残留且 htc_net_app 生成；test_net_app_logic
+  全绿。''}'
+- '{''key'': ''T7-network-lib-sim-deps'', ''severity'': ''medium'', ''description'':
+  ''net_app 要 link network 库(UsbDongle)，network 依赖 setting/env/disk/mcu/rtc/timezone/
+  power/jsoncpp/md5/common_misc/common_utils_serial(network/CMakeLists.txt:37)。sim
+  侧需确认这些 stub 库都在(common_utils_serial 在 sim 是否有 stub 要确认)。缓解:参照 htc_main_app sim link
+  块(app/ CMakeLists.txt:102-150 已含 network)的依赖闭合；sim 编译验证；若 serial 无 stub，net_app
+  仍可编( UsbDongle.cpp 调 SerialPort，但若 net_app 不编译 UsbDongle.cpp 只 link 预编 network.so，依赖由
+  .so 自带)。net_app 只 link network(不重编 UsbDongle.cpp)，依赖链由 network.so 承载。''}'
+- '{''key'': ''T7-wifi-equivalence-regression'', ''severity'': ''high'', ''description'':
+  ''重构改名/新增分支可能误伤 WiFi 路径(connectWifi/reconnect/DHCP/writeback/exit code)。 缓解:WiFi
+  分支代码原样搬到 net_app 的 runWifi()(只改 namespace/include/日志里的 app 名)；原 test_wifi_app_logic
+  全部 case 迁到 test_net_app_logic 并保持断言；真机回归脚本(regress_wifi_real.sh) 换二进制名后重跑；--type
+  wifi 默认即旧行为。''}'
+active_task: T7

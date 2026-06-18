@@ -1,9 +1,9 @@
-#include "wifi_app_logic.h"
+#include "net_app_logic.h"
 
 #include <algorithm>
 #include <string>
 
-namespace wifi_app_logic {
+namespace net_app_logic {
 
 Decision decide(const LinkState &state, const Target &target)
 {
@@ -72,4 +72,73 @@ std::string normalizeSsid(const std::string &s)
     return out;
 }
 
-} // namespace wifi_app_logic
+// ============================================================================
+// T7 uplink-type decision helpers. Pure: no syscalls, no Misc / Common.h dep
+// (the PType integers are inlined as literals with a pointer to Common.h so the
+// unit test links only this TU and stays dependency-free).
+// ============================================================================
+
+NetType parseNetType(const std::string &s)
+{
+    // Case-sensitive, mirroring the SSID comparison style in this module.
+    if (s == "wifi") {
+        return NET_WIFI;
+    }
+    if (s == "eth") {
+        return NET_ETH;
+    }
+    if (s == "usb") {
+        return NET_USB;
+    }
+    return NET_INVALID;
+}
+
+NetType ptypeToNetType(int ptype)
+{
+    // Values come from Common.h PTYPE_WIFI=1 / PTYPE_USB_DONGLE=4 /
+    // PTYPE_ETHERNET=8. Inlined as literals so net_app_logic.cpp does not need
+    // to include Common.h (keeps test_net_app_logic dependency-free).
+    switch (ptype) {
+        case 1: return NET_WIFI;
+        case 4: return NET_USB;
+        case 8: return NET_ETH;
+        default: return NET_INVALID;
+    }
+}
+
+std::string netTypeIfname(NetType t)
+{
+    // Same source as app.h WIFI_IFNAME="wlan0" / ETH_IFNAME="eth0" /
+    // USB_DONGLE_IFNAME="usb0".
+    switch (t) {
+        case NET_WIFI: return "wlan0";
+        case NET_ETH:  return "eth0";
+        case NET_USB:  return "usb0";
+        default:       return std::string();
+    }
+}
+
+bool isNetworkUp(const std::string &ip, const std::string &gateway)
+{
+    // Mirrors Misc::isWifiConnected: IP non-empty AND gateway non-empty.
+    // Independent of uplink type, so Eth/USB reuse it as the "link usable" test.
+    return !ip.empty() && !gateway.empty();
+}
+
+bool ethNeedsConnect()
+{
+    // main_app current behaviour: PTYPE_ETHERNET only does setNetworkInterfaceName
+    // + startDHCP. There is no connect / ifconfig-up / static-IP step.
+    return false;
+}
+
+bool usbNeedsStartDefault()
+{
+    // main_app current behaviour: only loadDriver -> open -> preconfig. It never
+    // calls UsbDongle::start(), so the 4G data context is never activated (risk
+    // T7-usb-no-start). --usb-bringup flips this at the execution layer; this
+    // function locks the "main_app baseline" default = false.
+    return false;
+}
+
+} // namespace net_app_logic
