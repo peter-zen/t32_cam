@@ -31,3 +31,6 @@ sdk/samples/libimp-samples/*.o
 # AI agent skill definitions (personal/IDE config, references non-existent
 # project layout; do not share across clones)
 .claude/skills/
+
+# Git worktrees created by EnterWorktree for isolated feature dev
+.claude/worktrees/
