@@ -78,7 +78,7 @@ extern "C"
 #define FIRST_DEFAULT_BOOT                  0                           //sensor default mode(0/1/2/3/4)
 #define CHN0_EN                             1                           //sensor0，output0
 #define CHN1_EN                             0                           //sensor0，output1
-#define CHN2_EN                             1                           //sensor0, output2 (JPEG 8M hardware scale up)
+#define CHN2_EN                             1                           //开启 CHN2 给 sample-Encoder-video-jpeg 做 JPEG snap(缩略图);尺寸降到 640x360 适配 64MB
 #define FIRST_CROP_EN                       0
 #define FIRST_SENSOR_FRAME_RATE_NUM         30
 #define FIRST_SENSOR_FRAME_RATE_DEN         1

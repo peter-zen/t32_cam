@@ -367,6 +367,11 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
         if (onRecordDone) onRecordDone(false);
         return false;
     }
+    // CH2 缩略图通道与 CH0 同线程顺序 start(避免并发 SDK 调用干扰主码流),
+    // 之后 record loop 直接从已 streamon 的 CH2 抓首帧当缩略图。
+    if (jpegStream_ && !jpegStream_->start()) {
+        Logger::log(LogLevel::WARNING, "record: CH2 thumbnail start failed (continuing without thumbnail)");
+    }
 
     hal::VideoStreamInfo startedInfo{};
     if (stream_ && stream_->getInfo(startedInfo)) {
@@ -390,6 +395,7 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
                 onRecordDone(nonBlockingResult);
             }
             stream_->stop();
+            if (jpegStream_) jpegStream_->stop();
         });
         return true;
     } else {
@@ -401,6 +407,7 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
             Logger::log(LogLevel::ERROR, "FrameSource StreamOff failed");
             result = false;
         }
+        if (jpegStream_) jpegStream_->stop();
 
         if (onRecordDone) {
             onRecordDone(result);
@@ -1034,6 +1041,14 @@ bool VideoRecorder::initVideo()
         Logger::log(LogLevel::ERROR, "initialize: stream configure failed");
         return false;
     }
+    // 预创建 CH2 缩略图通道(照 ImageSnap / sample-Encoder-video-jpeg 模式):录影启动前就建好,
+    // record 时与 CH0 一起 streamon、并发抓首帧,避免运行时并发 SDK 调用干扰主码流。
+    if (concurrentSnapEnabled_) {
+        if (!initJpegStream()) {
+            Logger::log(LogLevel::WARNING, "initVideo: CH2 thumbnail stream init failed (record will run without thumbnail)");
+            // 缩略图是附属功能,失败不阻塞录影
+        }
+    }
     return true;
 }
 
@@ -1091,35 +1106,25 @@ bool VideoRecorder::initJpegStream() {
 }
 
 bool VideoRecorder::captureJpeg(const std::string& filename, int quality) {
+    (void)quality;  // CH2 JPEG quality 在 initJpegStream 固定为 80,此处不再可配
     if (!concurrentSnapEnabled_) {
         Logger::log(LogLevel::WARNING, "captureJpeg: concurrent snap not enabled");
         return false;
     }
-    if (!initialized || !video_) {
-        Logger::log(LogLevel::ERROR, "captureJpeg: not initialized");
+    if (!initialized || !video_ || !jpegStream_) {
+        Logger::log(LogLevel::ERROR, "captureJpeg: not initialized (CH2 not pre-created?)");
         return false;
     }
 
-    if (!initJpegStream()) {
-        Logger::log(LogLevel::ERROR, "captureJpeg: initJpegStream failed");
-        return false;
-    }
-
-    if (!jpegStream_->start()) {
-        Logger::log(LogLevel::ERROR, "captureJpeg: jpegStream start failed");
-        return false;
-    }
-
+    // CH2 已在 record() 里与 CH0 一起 streamon,这里直接抓帧。
     if (!jpegStream_->polling(1000)) {
         Logger::log(LogLevel::ERROR, "captureJpeg: polling timeout");
-        jpegStream_->stop();
         return false;
     }
 
     hal::VideoEncodedFrame frame;
     if (!jpegStream_->getFrame(frame)) {
         Logger::log(LogLevel::ERROR, "captureJpeg: getFrame failed");
-        jpegStream_->stop();
         return false;
     }
 
@@ -1127,7 +1132,6 @@ bool VideoRecorder::captureJpeg(const std::string& filename, int quality) {
     if (!fp) {
         Logger::log(LogLevel::ERROR, "captureJpeg: fopen %s failed", filename.c_str());
         jpegStream_->releaseFrame(frame);
-        jpegStream_->stop();
         return false;
     }
 
@@ -1139,7 +1143,6 @@ bool VideoRecorder::captureJpeg(const std::string& filename, int quality) {
     fclose(fp);
 
     jpegStream_->releaseFrame(frame);
-    jpegStream_->stop();
 
     Logger::log(LogLevel::INFO, "captureJpeg: saved %s", filename.c_str());
     return true;
@@ -1151,30 +1154,19 @@ bool VideoRecorder::captureThumbnail() {
         Logger::log(LogLevel::WARNING, "captureThumbnail: concurrent snap not enabled");
         return false;
     }
-    if (!initialized || !video_) {
+    if (!initialized || !video_ || !jpegStream_) {
         return false;
     }
 
-    if (!initJpegStream()) {
-        Logger::log(LogLevel::WARNING, "captureThumbnail: initJpegStream failed");
-        return false;
-    }
-
-    if (!jpegStream_->start()) {
-        Logger::log(LogLevel::WARNING, "captureThumbnail: jpegStream start failed");
-        return false;
-    }
-
+    // CH2 已在 record() 里与 CH0 一起 streamon,这里直接抓首帧(帧≈CH0 录影首帧)。
     if (!jpegStream_->polling(1000)) {
         Logger::log(LogLevel::WARNING, "captureThumbnail: polling timeout");
-        jpegStream_->stop();
         return false;
     }
 
     hal::VideoEncodedFrame frame;
     if (!jpegStream_->getFrame(frame)) {
         Logger::log(LogLevel::WARNING, "captureThumbnail: getFrame failed");
-        jpegStream_->stop();
         return false;
     }
 
@@ -1190,7 +1182,6 @@ bool VideoRecorder::captureThumbnail() {
     }
 
     jpegStream_->releaseFrame(frame);
-    jpegStream_->stop();
 
     Logger::log(LogLevel::INFO, "captureThumbnail: captured %zu bytes", thumbData_.size());
     return true;

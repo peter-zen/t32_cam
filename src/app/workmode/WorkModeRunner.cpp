@@ -190,6 +190,26 @@ static bool processCmdVideoRecord(bool is_rtc_work_well) {
     RecordOptions opts;
     opts.audio = true;
     opts.autoCover = false;  // work mode 不循环覆盖
+    // 诊断开关:HTC_RECORD_NO_AUDIO=1 时禁用音频,绕过 audio.ko 在无 speaker
+    // (spk_gpio=-1)环境下 dsp_config_route_param 的内核空指针崩溃,
+    // 用于隔离验证 video 录影链路是否能独立跑通。
+    {
+        const char* envNoAudio = std::getenv("HTC_RECORD_NO_AUDIO");
+        if (envNoAudio && envNoAudio[0] == '1') {
+            opts.audio = false;
+            Logger::log(LogLevel::INFO, "HTC_RECORD_NO_AUDIO=1: recording without audio (bypass audio.ko)");
+        }
+    }
+    // 诊断开关:HTC_RECORD_NO_THUMBNAIL=1 时跳过 CH2 缩略图抓取。captureThumbnail 的并发
+    // SDK 调用会干扰主码流编码器(见 VideoRecorder.cpp:555 注释:并发 SDK 调用致 driver
+    // 状态不一致),在 64MB T32 上导致主码流 polling 超时、mp4 空文件。用于隔离验证主码流。
+    {
+        const char* envNoThumb = std::getenv("HTC_RECORD_NO_THUMBNAIL");
+        if (envNoThumb && envNoThumb[0] == '1') {
+            opts.concurrentSnap = false;
+            Logger::log(LogLevel::INFO, "HTC_RECORD_NO_THUMBNAIL=1: skip CH2 thumbnail (isolate main stream)");
+        }
+    }
     {
         // 诊断开关:HTC_RECORD_BITRATE_KBPS 直接覆盖编码器 bitrate,
         // 用于验证 16 Mbps 是否为 FPS 瓶颈(见 doc/knowledge/bugs/T32-recording-fps-17-investigation.md §6.5)。

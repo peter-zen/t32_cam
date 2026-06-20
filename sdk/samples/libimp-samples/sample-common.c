@@ -182,11 +182,11 @@ struct chn_conf chn[FS_CHN_NUM] = {
 			.crop.height = FIRST_SENSOR_HEIGHT,
 
 			.scaler.enable = 1,
-			.scaler.outwidth = 3840,
-			.scaler.outheight = 2160,
+			.scaler.outwidth = 640,
+			.scaler.outheight = 360,
 
-			.picWidth = 3840,
-			.picHeight = 2160,
+			.picWidth = 640,
+			.picHeight = 360,
 		},
 		.framesource_chn =	{ DEV_ID_FS, CHN2_INDEX, 0},
 		.imp_encoder = { DEV_ID_ENC, CHN2_INDEX, 0},
