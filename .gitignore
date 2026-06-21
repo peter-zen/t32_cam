@@ -28,9 +28,11 @@ sdk/samples/libimp-samples/*.o
 # Downloaded tools (e.g., ffmpeg static builds)
 .tools/
 
-# AI agent skill definitions (personal/IDE config, references non-existent
-# project layout; do not share across clones)
-.claude/skills/
+# AI agent skill definitions are personal/IDE config (reference a non-existent
+# project layout) — do NOT share across clones. EXCEPTION: devtest/ is the
+# project's T32 devtest-loop skill and IS shared.
+.claude/skills/*
+!.claude/skills/devtest/
 
 # Git worktrees created by EnterWorktree for isolated feature dev
 .claude/worktrees/
