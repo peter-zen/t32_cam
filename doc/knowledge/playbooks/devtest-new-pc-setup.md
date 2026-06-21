@@ -67,6 +67,7 @@ HTC_WIFI_PWD=... tools/devctl/devctl bringup   # 2. 自动判环境 + 唤醒设�
 | 环境判错（home/company） | `hostname -I` 没命中预期网段 | `devctl bringup --env home\|company` 覆盖 |
 | 判对了环境但 SSID/密码不对 | 该环境 WiFi 变了 | `--ssid <X>` 覆盖；密码改 `$HTC_WIFI_PWD` |
 | 串口 open 失败 | 没透传 / 不在 dialout / 被占 | 见 A.3；确认没别的进程开着 `/dev/ttyUSB0` |
+| broker 在跑但 `devctl status` 显示 `last_activity: 0.0` / serial.log 不推进（**常见于重启 T32 后**） | usbipd 的 attach 会话掉了（FTDI 经 `vhci_hcd` 从 Windows 透传，设备重启/USB 抖动后 WSL 侧只剩悬空 `/dev/ttyUSB0`，broker 打开但收 0 字节） | **Windows 侧**：`usbipd list` 看 FTDI 是否还 Attached 到 WSL，否则 `usbipd attach --wsl --busid <X>`；必要时拔插 USB-UART dongle。**WSL 侧**：`tools/devctl/devctl broker stop && tools/devctl/devctl broker start` 重开端口（broker 会**自动选新的 `/dev/ttyUSB*`**——usbipd 重连后常从 `ttyUSB0` 变 `ttyUSB1`，重编号自动兜住）。判据：`cat /sys/bus/usb-serial/devices/ttyUSB*/../idVendor` 能读到 `0403` 才算真连上 |
 
 ## 关联
 

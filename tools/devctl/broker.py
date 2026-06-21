@@ -295,6 +295,17 @@ def _self_test():
     print("broker self-test PASSED")
 
 
+def _resolve_port(port):
+    """If the requested port doesn't exist (e.g. usbipd re-attach incremented
+    ttyUSB0 -> ttyUSB1), fall back to the first /dev/ttyUSB* present. Makes the
+    broker survive USB device re-enumeration without a --port override."""
+    import glob
+    if os.path.exists(port):
+        return port
+    cands = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+    return cands[0] if cands else port  # let the original open() fail clearly
+
+
 def main():
     ap = argparse.ArgumentParser(description="devctl serial broker")
     ap.add_argument("--port", default="/dev/ttyUSB0")
@@ -309,6 +320,7 @@ def main():
         _self_test()
         return
 
+    args.port = _resolve_port(args.port)
     transport = SerialTransport(args.port, args.baud)
     try:
         transport.open()
