@@ -134,6 +134,12 @@ def cmd_bringup(a):
     nfs_path = _repo_build_path()
     c = DevCtl()
     print(f"[bringup] env={env} ssid={ssid} nfs={nfs_host}:{nfs_path}")
+    # Ensure the shell is actually ready before issuing commands. Firing into a
+    # mid-boot (or wedged) device yields empty/garbled step results (the `?` you
+    # see when commands hit a not-yet-ready shell).
+    if not c.wait_boot(timeout=60):
+        sys.exit("bringup: device shell not responding after 60s — power-cycle "
+                 "the device, or run `devctl wait-boot` first.")
 
     # 1. SD card (idempotent)
     r = c.run("mkdir -p /mnt/sdcard /mnt/huntcam; "
