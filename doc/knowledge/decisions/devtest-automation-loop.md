@@ -14,7 +14,7 @@
 
 ### 2.1 现状与痛点
 
-- 部署：编译产物经 NFS，设备挂 `192.168.0.210` 的 `build/` 到 `/mnt/huntcam`（见 [`script/mount_nfs.sh`](../../../script/mount_nfs.sh)）。⚠️ 该脚本用 `mount -o nolock`，**缺 `noac`**——这是"重编后设备仍跑旧码"的已知坑源。
+- 部署：编译产物经 NFS，设备挂 build 主机的 `build/` 到 `/mnt/huntcam`。`script/mount_nfs.sh`(company)/`mount_nfs_home.sh`(home) 两份手动脚本已带 `noac,nolock,vers=3`（早期缺 `noac` 是"重编后设备跑旧码"的坑源，已修）。`devctl bringup` 则**自动用 build 主机本机 IP + 推算 repo `build/` 路径**挂载，换 build 机 IP 无需改代码（见 [`../playbooks/devtest-new-pc-setup.md`](../playbooks/devtest-new-pc-setup.md)）。
 - 执行与判定：**人在串口工具手敲命令**，**人眼读串口日志**判成败。
 - 分析：必要时把串口输出存进 `logs/`（如 `logs/debug.log`、`logs/fps.log`），再对照代码。
 

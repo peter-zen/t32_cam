@@ -63,12 +63,12 @@ Outputs land in `build/bin/` and `build/lib/`. Notable:
 
 The build host exports the repo's `build/` over NFS; the T32 device mounts it at `/mnt/huntcam`. There are **two environments** — pick by the **build host's IP subnet** (the host Claude runs on; check `hostname -I`):
 
-| Environment | Build-host subnet | WiFi SSID | NFS server | Mount script |
-|-------------|-------------------|-----------|------------|--------------|
+| Environment | Build-host subnet | WiFi SSID | NFS server (manual-script value) | Mount script (manual) |
+|-------------|-------------------|-----------|-----------------------------------|------------------------|
 | **home** | `192.168.31.x` | `no_mesh_02_2.4G` | `192.168.31.200` | `script/mount_nfs_home.sh` |
-| **company** | `192.168.0.x` | `no_mesh_01_2.4G` | `192.168.0.210` | `script/mount_nfs.sh` |
+| **company** | `192.168.0.x` | `no_mesh_01_2.4G` | `192.168.0.206` | `script/mount_nfs.sh` |
 
-Both scripts mount the **same** repo path (`/home/zengping/projects/hc_t32/code/t32/build`) from the matching server, differing only in `NFS_HOST`. A copy of each also lives on the device's SD card at `/mnt/sdcard/` (the bring-up needs them *before* NFS is up).
+`devctl bringup` auto-resolves the NFS server to **the build host's own IP** in the env subnet and the repo path to this checkout's `build/` — so a build-PC IP change (e.g. company `.210`→`.206`) needs **no code change** in the loop. The IPs above are only the values hard-coded in the manual `mount_nfs*.sh` scripts (for hand-typed bring-up); keep those in sync when the IP changes. A copy of each script also lives on the device's SD card at `/mnt/sdcard/` (the bring-up needs them *before* NFS is up). IP-change checklist: see [`doc/knowledge/playbooks/devtest-new-pc-setup.md`](doc/knowledge/playbooks/devtest-new-pc-setup.md) §B.
 
 **Full cold-boot bring-up** (run on the device — the SSID and mount script must match your environment):
 
