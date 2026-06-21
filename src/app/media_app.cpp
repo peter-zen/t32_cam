@@ -24,6 +24,7 @@
 #include "workmode/WorkMode.h"
 #include "utils/AutoRelease.h"
 #include "time/rtc/RTC.h"
+#include "ProcessLifecycle.h"
 #include "../service/daemon/DeamonClient.h"
 #include "time/timezone/Timezone.h"
 
@@ -31,23 +32,9 @@ using namespace media;
 
 static bool isRTCWorkWell()
 {
-    #if RTC_EXIST
-        struct tm nowtime;
-        if (!RTC::getInstance()->getTime(nowtime)) {
-            return false;
-        }
-        // Convert tm to timeval and set system time
-        time_t time_in_sec = mktime(&nowtime);
-        if (time_in_sec != -1) {
-            struct timeval tv;
-            tv.tv_sec = time_in_sec;
-            tv.tv_usec = 0;
-            settimeofday(&tv, nullptr);
-        }
-        return true;
-    #else
-        return false;
-    #endif
+    // 系统时间同步（RTC 优先，MCU 补救）由 app_lifecycle::syncSystemTime() 统一实现，
+    // 与 ProcessLifecycle::commonStartup 共享同一份逻辑，避免重复。返回是否拿到可信时间。
+    return app_lifecycle::syncSystemTime();
 }
 
 static std::string getCurrentTimeFormatted()

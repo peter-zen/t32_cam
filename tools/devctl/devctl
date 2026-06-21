@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""devctl — drive the T32 over its serial console via the broker.
+
+Think of it as `ssh` over a UART: `devctl run '<cmd>'` runs a shell command on
+the device and returns its output + real exit code. See
+doc/knowledge/decisions/devtest-automation-loop.md §6.
+"""
+import argparse
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from devctl_client import DevCtl, DevCtlError, DEFAULT_SOCKET  # noqa: E402
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BROKER = os.path.join(HERE, "broker.py")
+PIDFILE = "/tmp/devctl.broker.pid"
+
+# Two deployment environments, selected by the build host's IP subnet (the host
+# Claude/devctl runs on; see `hostname -I`). Only the WiFi SSID + subnet differ.
+# The NFS server is THIS build host (Claude+build+NFS same machine), so bringup
+# resolves nfs_host = the host's own IP in the env subnet (portable across PCs
+# and IP changes — no hardcoded server IP), and nfs_path = this repo's build/.
+# `nfs_host` below is only a fallback when own-IP detection fails. Mirrors
+# script/mount_nfs{,_home}.sh (manual use) and .claude/CLAUDE.md.
+ENVS = {
+    "home":    {"subnet": "192.168.31.", "ssid": "no_mesh_02_2.4G", "nfs_host": "192.168.31.200"},
+    "company": {"subnet": "192.168.0.",  "ssid": "no_mesh_01_2.4G", "nfs_host": "192.168.0.206"},
+}
+
+
+def cmd_run(a):
+    r = DevCtl().run(a.cmd, a.timeout)
+    sys.stdout.write(r.get("output", ""))
+    sys.stdout.flush()
+    if r.get("timed_out"):
+        sys.stderr.write(f"\n[devctl] TIMEOUT after {a.timeout}s\n")
+    rc = r.get("rc")
+    return rc if rc is not None else 124  # 124 mirrors GNU `timeout`
+
+
+def cmd_log(a):
+    for ln in DevCtl().log_tail(a.n):
+        print(ln)
+    return 0
+
+
+def cmd_status(a):
+    try:
+        print(json.dumps(DevCtl().status(), indent=2))
+        return 0
+    except DevCtlError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+
+def cmd_send(a):
+    DevCtl().send(a.data)
+    return 0
+
+
+def cmd_ctrlc(a):
+    DevCtl().ctrl_c()
+    return 0
+
+
+def cmd_reboot(a):
+    DevCtl().reboot()
+    return 0
+
+
+def cmd_waitboot(a):
+    ok = DevCtl().wait_boot(a.timeout)
+    print("boot ok" if ok else "boot wait timed out", file=sys.stderr)
+    return 0 if ok else 1
+
+
+def _detect_env():
+    """home/company from the build host's IP subnet (devctl runs here)."""
+    try:
+        out = subprocess.check_output(["hostname", "-I"], text=True, stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+    for name, cfg in ENVS.items():
+        if cfg["subnet"] in out:
+            return name
+    return None
+
+
+def _own_ip_in_subnet(subnet):
+    """This build host's own IPv4 in the given subnet prefix (e.g. '192.168.0.'),
+    or None. The device mounts NFS from THIS host, so the host's own IP is the
+    correct NFS server — not a hardcoded one. Makes bringup portable across PCs
+    and survivable across IP changes (e.g. company .210 -> .206)."""
+    try:
+        out = subprocess.check_output(["hostname", "-I"], text=True, stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+    for ip in out.split():
+        if ip.startswith(subnet):
+            return ip
+    return None
+
+
+def _repo_build_path():
+    """Absolute path to THIS repo's build/ — what the device must mount. Derived
+    from devctl's own location (HERE = <repo>/tools/devctl) so it's correct no
+    matter where the repo is checked out on the build host."""
+    return os.path.abspath(os.path.join(HERE, "..", "..", "build"))
+
+
+def cmd_bringup(a):
+    """Cold-boot bring-up: mount SD card → connect WiFi → mount NFS (noac) →
+    verify. Self-contained — mounts NFS inline, so it does NOT depend on the
+    SD-card mount_nfs scripts. WiFi password comes from $HTC_WIFI_PWD (never
+    hardcoded in git)."""
+    env = a.env or _detect_env()
+    if not env:
+        sys.exit("bringup: could not auto-detect environment from `hostname -I` "
+                 "(no 192.168.31.x / 192.168.0.x). Pass --env home|company.")
+    cfg = ENVS[env]
+    ssid = a.ssid or cfg["ssid"]
+    pwd = a.wifi_pwd or os.environ.get("HTC_WIFI_PWD")
+    if not pwd:
+        sys.exit("bringup: no WiFi password — set $HTC_WIFI_PWD or pass --wifi-pwd")
+    # NFS server = THIS build host (Claude+build+NFS same machine). Prefer the
+    # host's own IP in the env subnet (portable across PCs / IP changes); fall
+    # back to the configured default if own-IP detection fails.
+    nfs_host = _own_ip_in_subnet(cfg["subnet"]) or cfg["nfs_host"]
+    nfs_path = _repo_build_path()
+    c = DevCtl()
+    print(f"[bringup] env={env} ssid={ssid} nfs={nfs_host}:{nfs_path}")
+
+    # 1. SD card (idempotent)
+    r = c.run("mkdir -p /mnt/sdcard /mnt/huntcam; "
+              "mount | grep -q ' /mnt/sdcard ' || mount /dev/mmcblk0p1 /mnt/sdcard 2>&1; "
+              "echo SD_RC=$?", timeout=15)
+    print("  SD card:", "mounted" if "SD_RC=0" in r["output"] else r["output"].strip() or "?")
+
+    # 2. WiFi (skip if wlan0 already has an IP)
+    chk = c.run("ifconfig wlan0 2>/dev/null | grep 'inet addr'", timeout=8)["output"].strip()
+    if chk:
+        print("  WiFi: already up —", chk)
+    else:
+        c.run(f"cd /mnt/sdcard && LD_LIBRARY_PATH=/mnt/sdcard/lib:$LD_LIBRARY_PATH "
+              f"./bin/htc_net_app --ssid '{ssid}' --pwd '{pwd}'", timeout=60)
+        chk = c.run("ifconfig wlan0 2>/dev/null | grep 'inet addr'", timeout=8)["output"].strip()
+        print("  WiFi:", chk or "(no IP — check SSID/pwd)")
+
+    # 3. NFS inline with noac (idempotent)
+    r = c.run(f"mount | grep -q ' /mnt/huntcam ' || "
+              f"mount -o noac,nolock,vers=3 {nfs_host}:{nfs_path} /mnt/huntcam 2>&1; "
+              f"echo NFS_RC=$?", timeout=30)
+    print("  NFS:", "mounted" if "NFS_RC=0" in r["output"] else r["output"].strip() or "?")
+
+    # 4. verify the test binary is reachable
+    r = c.run("mount | grep -q huntcam && ls /mnt/huntcam/bin/htc_workmode_app >/dev/null 2>&1 "
+              "&& echo VERIFY_OK || echo VERIFY_FAIL", timeout=10)
+    ok = "VERIFY_OK" in r["output"]
+    print("  verify:", "OK" if ok else "FAIL")
+    return 0 if ok else 1
+
+
+def _broker_running():
+    try:
+        DevCtl().status()
+        return True
+    except Exception:
+        return False
+
+
+def cmd_broker(a):
+    if a.sub == "status":
+        if _broker_running():
+            print("running")
+            return 0
+        print("not running", file=sys.stderr)
+        return 1
+    if a.sub == "start":
+        if _broker_running():
+            print("already running")
+            return 0
+        with open("/tmp/devctl.broker.stdout.log", "ab") as logf:
+            p = subprocess.Popen(
+                [sys.executable, BROKER, "--socket", DEFAULT_SOCKET],
+                stdout=logf, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+        with open(PIDFILE, "w") as pf:
+            pf.write(str(p.pid))
+        for _ in range(50):  # wait up to ~5s for the socket to answer
+            if _broker_running():
+                print(f"started pid={p.pid} socket={DEFAULT_SOCKET}")
+                return 0
+            time.sleep(0.1)
+        print("started but socket not responding — see /tmp/devctl.broker.stdout.log",
+              file=sys.stderr)
+        return 1
+    if a.sub == "stop":
+        if os.path.exists(PIDFILE):
+            pid = int(open(PIDFILE).read().strip())
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            os.remove(PIDFILE)
+            print("stopped")
+            return 0
+        print("no pidfile (was the broker started by `devctl broker start`?)",
+              file=sys.stderr)
+        return 1
+    return 2
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="devctl", description="drive the T32 over serial via the broker")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("run", help="run a shell command on the device; "
+                                    "exit code = the command's real exit code")
+    p.add_argument("cmd")
+    p.add_argument("--timeout", type=float, default=30)
+    p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("log", help="tail the captured serial log")
+    p.add_argument("-n", type=int, default=50)
+    p.set_defaults(fn=cmd_log)
+
+    sub.add_parser("status", help="broker status").set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("send", help="send raw bytes (e.g. control sequences)")
+    p.add_argument("data")
+    p.set_defaults(fn=cmd_send)
+
+    sub.add_parser("ctrl-c", help="send Ctrl-C (stop a long-running app)").set_defaults(fn=cmd_ctrlc)
+    sub.add_parser("reboot", help="soft-reboot the device").set_defaults(fn=cmd_reboot)
+
+    p = sub.add_parser("wait-boot", help="wait for the device shell to come back")
+    p.add_argument("--timeout", type=float, default=120)
+    p.set_defaults(fn=cmd_waitboot)
+
+    p = sub.add_parser("bringup", help="cold-boot bring-up: mount SD, connect "
+                                        "WiFi (by env), mount NFS (noac), verify")
+    p.add_argument("--env", choices=["home", "company"], help="override auto-detected env")
+    p.add_argument("--ssid", help="override WiFi SSID")
+    p.add_argument("--wifi-pwd", help="WiFi password (default: $HTC_WIFI_PWD)")
+    p.set_defaults(fn=cmd_bringup)
+
+    p = sub.add_parser("broker", help="manage the broker daemon")
+    p.add_argument("sub", choices=["start", "stop", "status"])
+    p.set_defaults(fn=cmd_broker)
+
+    args = ap.parse_args()
+    try:
+        sys.exit(args.fn(args) or 0)
+    except DevCtlError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

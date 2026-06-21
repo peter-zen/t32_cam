@@ -2,6 +2,7 @@
 
 #include <memory>
 #include "WorkMode.h"   // enum workingMode (runWorkMode's parameter)
+#include "upload_worker.h"  // UploadWorker (background desc uploader, 阶段1)
 
 namespace network { class MgmtServClient; }
 namespace network { class StorageServClient; }
@@ -42,6 +43,10 @@ struct WorkModeContext {
     // instances, so the ctx must share the caller's shared_ptr, not a copy.
     std::shared_ptr<network::MgmtServClient>&   mgmtServClient;
     std::shared_ptr<network::StorageServClient>& storageServClient;
+
+    // 阶段1: 后台上传 worker。录影/拍照产物 desc 落盘后 enqueue，不被上传阻塞。
+    // by-value shared_ptr（workmode_app 创建并管理生命周期）。
+    std::shared_ptr<UploadWorker> uploadWorker;
 };
 
 // Result of runCommands/runWorkMode. The original main() had three outcomes:

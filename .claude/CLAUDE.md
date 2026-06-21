@@ -61,22 +61,30 @@ Outputs land in `build/bin/` and `build/lib/`. Notable:
 
 ### T32 deployment via NFS
 
-The standard development setup is the build host exporting `t32_cam/build/` over NFS and the T32 device mounting it at `/mnt/huntcam`:
+The build host exports the repo's `build/` over NFS; the T32 device mounts it at `/mnt/huntcam`. There are **two environments** — pick by the **build host's IP subnet** (the host Claude runs on; check `hostname -I`):
 
-```bash
-# On the T32 device (one-time)
-mkdir -p /mnt/huntcam
-mount -t nfs -o nolock,noac,vers=3 \
-  <BUILD_HOST>:/home/zengping/project/huntcam/code/t32_cam/build \
-  /mnt/huntcam
+| Environment | Build-host subnet | WiFi SSID | NFS server | Mount script |
+|-------------|-------------------|-----------|------------|--------------|
+| **home** | `192.168.31.x` | `no_mesh_02_2.4G` | `192.168.31.200` | `script/mount_nfs_home.sh` |
+| **company** | `192.168.0.x` | `no_mesh_01_2.4G` | `192.168.0.210` | `script/mount_nfs.sh` |
+
+Both scripts mount the **same** repo path (`/home/zengping/projects/hc_t32/code/t32/build`) from the matching server, differing only in `NFS_HOST`. A copy of each also lives on the device's SD card at `/mnt/sdcard/` (the bring-up needs them *before* NFS is up).
+
+**Full cold-boot bring-up** (run on the device — the SSID and mount script must match your environment):
+
+```sh
+mkdir -p /mnt/sdcard /mnt/huntcam
+mount /dev/mmcblk0p1 /mnt/sdcard
+export LD_LIBRARY_PATH=/mnt/sdcard/lib:$LD_LIBRARY_PATH
+cd /mnt/sdcard
+# home:    ./bin/htc_net_app --ssid no_mesh_02_2.4G --pwd <WIFI_PWD>  &&  . ./mount_nfs_home.sh
+# company: ./bin/htc_net_app --ssid no_mesh_01_2.4G --pwd <WIFI_PWD>  &&  . ./mount_nfs.sh
 ```
 
-**Mount options are non-negotiable:**
-- `noac` — disables NFS attribute caching, so rebuilt binaries / .so files become visible immediately. Without it, device sees stale `htc_main_app` even after rebuild.
-- `nolock` — embedded T32 NFS client often lacks `rpc.lockd`
-- `vers=3` — most embedded device NFS servers only support v3
-
-The NFS server's `/etc/exports` must whitelist `t32_cam/build/`. If you also need to mount other dirs (e.g., `t32_cam/build_t32/`), update exports + `exportfs -a`.
+- `htc_net_app` + the mount scripts live on the **SD card** (`/mnt/sdcard`), not NFS — cold-boot bring-up cannot be served by NFS alone.
+- **Mount options are non-negotiable** (both scripts already pass them): `noac` (disables attribute caching → rebuilt binaries/.so visible immediately; without it the device runs stale code), `nolock` (embedded client lacks `rpc.lockd`), `vers=3`.
+- The NFS server's `/etc/exports` must whitelist the repo's `build/`.
+- The devtest broker owns `/dev/ttyUSB0` exclusively — to run bring-up from the loop, do it via `devctl run`, not by typing into a separate serial terminal (that contends for the port). The loop's one-command cold-boot bring-up is `HTC_WIFI_PWD=<pwd> tools/devctl/devctl bringup` — it auto-detects home/company from the host IP, mounts SD → connects WiFi → mounts NFS with noac → verifies. See `doc/knowledge/decisions/devtest-automation-loop.md`.
 
 ### PC simulation build (local-only)
 

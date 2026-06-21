@@ -302,9 +302,11 @@ int main(int argc, char* argv[])
         Logger::log(LogLevel::INFO, "Processing signal %d on main thread", sig);
 
         if (lc.daynight()) {
-            lc.daynight()->controlISP(DayNightState::DAY);
-            lc.daynight()->controlIRLed(DayNightState::DAY);
-            lc.daynight()->controlIRCut(DayNightState::DAY);
+            // 关机不调 controlISP(DAY)（同类缺陷：sensor 仍 enabled 时 SetISPRunningMode
+            // 触发 ISP ISR defog 刷新 → kernel panic；根因见 workmode_app.cpp cleanupHook）。
+            lc.daynight()->stopAutoSwitch();
+            lc.daynight()->controlIRLed(DayNightState::DAY);   // 纯 GPIO
+            lc.daynight()->controlIRCut(DayNightState::DAY);   // 纯 GPIO
         }
 
         if (lc.rgbLed()) {
@@ -381,6 +383,13 @@ main_exit:
     app_lifecycle::syncWithMCU();
     config->flush();
 #if POWER_MANAGER_ON
+    // devtest loop: skip board poweroff so the app returns to the shell and the
+    // test harness can re-run it in the same boot. Env-guarded, never on in
+    // production. See doc/knowledge/decisions/devtest-automation-loop.md §3/§5.
+    if (std::getenv("HTC_TEST_NO_POWEROFF")) {
+        Logger::log(LogLevel::INFO, "[TEST] HTC_TEST_NO_POWEROFF set: _exit(0) instead of poweroff");
+        _exit(0);
+    }
     Misc::poweroff();
     while(1);
 #endif

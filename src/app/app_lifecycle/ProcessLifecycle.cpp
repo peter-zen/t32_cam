@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -33,6 +34,7 @@
 #include "GPIO.h"
 #include "Logger.h"
 #include "MCU.h"
+#include "time/rtc/RTC.h"
 #include "MediaScanner.h"
 #include "MdnsService.h"
 #include "MdnsParams.h"
@@ -341,6 +343,12 @@ bool ProcessLifecycle::commonStartup(const StartupConfig& cfg) {
     Logger::log(LogLevel::INFO, "Log File: %s", log_file.c_str());
 #endif
 
+#ifndef BUILD_FOR_SIMULATION
+    // S4.5 — Sync system time early (RTC first, MCU fallback) so downstream log
+    // timestamps / media filenames are trustworthy. PC sim uses the host clock.
+    syncSystemTime();
+#endif
+
     // S5 — DayNightSwitch
     impl_->daynight_switch = DayNightSwitch::getInstance();
     if (impl_->daynight_switch) {
@@ -360,9 +368,13 @@ bool ProcessLifecycle::commonStartup(const StartupConfig& cfg) {
     // byte-identical to today's :765-776 modulo the member rename).
     impl_->auto_release.reset(new AutoRelease([&]() {
         if (impl_->daynight_switch) {
-            impl_->daynight_switch->controlISP(DayNightState::DAY);
-            impl_->daynight_switch->controlIRCut(DayNightState::DAY);
-            impl_->daynight_switch->controlIRLed(DayNightState::DAY);
+            // 关机路径不调 controlISP(DAY)（根因见 workmode_app.cpp cleanupHook 注释：
+            // sensor 仍 enabled 时 SetISPRunningMode 触发 ISP ISR defog 刷新 → kernel panic）。
+            // cleanupHook 已 stopAutoSwitch，这里幂等再调一次防漏；ISP 状态由
+            // releaseVideoResources → IngenicVideo::exit() 官方 teardown 兜底。
+            impl_->daynight_switch->stopAutoSwitch();
+            impl_->daynight_switch->controlIRCut(DayNightState::DAY);  // 纯 GPIO
+            impl_->daynight_switch->controlIRLed(DayNightState::DAY);  // 纯 GPIO
         }
 
         if (impl_->gpio_rgb_led) {
@@ -631,15 +643,68 @@ bool syncWithMCU()
     }
     devconf->flush();
 
-    //RTC
+    //RTC — 仅当系统时间可信（≥2026-01-01）才写 MCU，避免把错误时间固化进 MCU。
     {
         time_t now = time(nullptr);
         struct tm* datetime = localtime(&now);
-        if (datetime != nullptr) {
+        if (datetime != nullptr && TIME_PLAUSIBLE(datetime)) {
             mcu->setDatetime(datetime);
+        } else {
+            Logger::log(LogLevel::WARNING, "Skip MCU datetime sync: system time not plausible");
         }
     }
     return true;
+}
+
+bool syncSystemTime()
+{
+    // 0) 若系统时间已可信，直接返回，不碰 RTC/MCU。RTC::getTime() 内部会无条件
+    //    set_system_time（"读即设"），若 RTC 坏（电池没电回到 2000）会用坏值覆盖掉
+    //    原本准的系统时间 —— 必须先挡住这种回归。
+    {
+        time_t now = time(nullptr);
+        struct tm* now_tm = localtime(&now);
+        if (now_tm && TIME_PLAUSIBLE(now_tm)) {
+            Logger::log(LogLevel::INFO, "System time already plausible, skip hardware sync");
+            return true;
+        }
+    }
+    // 1) /dev/rtc0 优先（含合理性校验 TIME_PLAUSIBLE）：可信则用它同步系统时间。
+    #if RTC_EXIST
+        struct tm rtc_time;
+        if (RTC::getInstance()->getTime(rtc_time) && TIME_PLAUSIBLE(&rtc_time)) {
+            time_t t = mktime(&rtc_time);
+            if (t != -1) {
+                struct timeval tv;
+                tv.tv_sec = t;
+                tv.tv_usec = 0;
+                settimeofday(&tv, nullptr);
+                Logger::log(LogLevel::INFO, "System time synced from RTC");
+                return true;
+            }
+        }
+    #endif
+
+    // 2) RTC 不可靠 → 从 MCU 补救（本地 I2C，比等 NTP 快得多）。MCU 一直在线，
+    //    且每次关机前 syncWithMCU() 会把校准过的系统时间写回 MCU。
+    struct tm mcu_time = MCU::getInstance()->getDatetime();
+    if (TIME_PLAUSIBLE(&mcu_time)) {
+        time_t t = mktime(&mcu_time);
+        if (t != -1) {
+            struct timeval tv;
+            tv.tv_sec = t;
+            tv.tv_usec = 0;
+            settimeofday(&tv, nullptr);
+            Logger::log(LogLevel::INFO,
+                "System time synced from MCU (RTC unreliable): %04d-%02d-%02d %02d:%02d:%02d",
+                mcu_time.tm_year + YEAR_OFFSET, mcu_time.tm_mon + MONTH_OFFSET, mcu_time.tm_mday,
+                mcu_time.tm_hour, mcu_time.tm_min, mcu_time.tm_sec);
+            return true;
+        }
+    }
+
+    Logger::log(LogLevel::WARNING, "No reliable time source (RTC and MCU both implausible)");
+    return false;
 }
 
 }  // namespace app_lifecycle

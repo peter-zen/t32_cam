@@ -23,6 +23,9 @@
 
 #include "MgmtServClient.h"
 #include "WorkModeRunner.h"     // app_workmode::runWorkMode + workModeToCommand + WorkModeContext + CascadeResult + CMD_*
+#include "event_loop.h"         // app_workmode::EventLoop (-wm 0 长驻主循环)
+#include "record_task.h"        // app_workmode::RecordTask
+#include "pir_trigger.h"        // app_workmode::SimPirTrigger / GpioPirTrigger
 #include "WorkMode.h"           // enum workingMode
 #include "ProcessLifecycle.h"   // app_lifecycle::ProcessLifecycle + Startup/ShutdownContext + syncWithMCU
 #include "DeviceConfig.h"
@@ -125,9 +128,11 @@ int main(int argc, char* argv[])
     // Construct the cascade context (before commonStartupPostDispatch, matching
     // main_app's ordering so the by-ref fields bind these locals — the
     // cleanupHook below captures the SAME mgmtServClient/storageServClient).
+    auto uploadWorker = std::make_shared<app_workmode::UploadWorker>();
     app_workmode::WorkModeContext ctx{lc, is_rtc_work_well, mobile_rtsp_enabled,
                                       rtsp_audio_enabled, argc, argv,
                                       mgmtServClient, storageServClient};
+    ctx.uploadWorker = uploadWorker;
 
     // --- T16 Phase C-3 §3: derive command BEFORE commonStartupPostDispatch ---
     // Restores the pre-C2 ordering so S11 netif selection sees CMD_MOBILE for
@@ -146,9 +151,17 @@ int main(int argc, char* argv[])
         Logger::log(LogLevel::INFO, "Processing signal %d on main thread", sig);
 
         if (lc.daynight()) {
-            lc.daynight()->controlISP(DayNightState::DAY);
-            lc.daynight()->controlIRLed(DayNightState::DAY);
-            lc.daynight()->controlIRCut(DayNightState::DAY);
+            // 关机时绝不调 controlISP(DAY)：sensor/ISP 仍 enabled 时
+            // IMP_ISP_Tuning_SetISPRunningMode 会触发 ISP 帧中断 defog 刷新
+            // (tisp_day_or_night_par_refresh → defog_count_weight35abc) 解引用已释放
+            // rmem buffer → kernel panic（devtest 2026-06-21 确定性复现，epc
+            // defog_count_weight35abc / BadVA 0 / Kernel panic in interrupt）。关机语义下
+            // ISP 模式切换本就多余——ISP 状态由后续 RecordTask::stop()→releaseVideoResources
+            // →IngenicVideo::exit() 的官方 teardown(IMP_ISP_DisableTuning/DisableSensor/Close，
+            // imp_isp.h:74-102)兜底。先停 auto-switch 线程，防它在 teardown 中 race 进 controlISP。
+            lc.daynight()->stopAutoSwitch();
+            lc.daynight()->controlIRLed(DayNightState::DAY);   // 纯 GPIO，保留（IR-LED 安全态）
+            lc.daynight()->controlIRCut(DayNightState::DAY);   // 纯 GPIO，保留（IR-cut 安全态）
         }
 
         if (lc.rgbLed()) {
@@ -185,9 +198,39 @@ int main(int argc, char* argv[])
     // --- main_app.cpp:364 config alias for the tail's config->flush() ---
     config = lc.config();
 
-    // --- main_app.cpp:375-378 runWorkMode (TerminalExit → skip the tail) ---
-    if (app_workmode::runWorkMode(working_mode, ctx) == app_workmode::CascadeResult::TerminalExit) {
-        return -1;   // invalid -wm mode: skip the tail (matches main_app's `return -1`)
+    // 阶段1: 启动后台上传 worker（录影产物 desc 入队即返回，不被上传阻塞）。
+    {
+        auto ms_ip = config->get(INI_SECTION_SERVER, INI_KEY_MS_IP, "");
+        auto ms_port = config->get(INI_SECTION_SERVER, INI_KEY_MS_PORT, 0);
+        if (!ms_ip.empty() && ms_port > 0) {
+            uploadWorker->start(ms_ip, ms_port);
+        } else {
+            Logger::log(LogLevel::WARNING, "UploadWorker: mgmt server not configured, skip start");
+        }
+    }
+
+    // --- -wm 0 走长驻 EventLoop（PIR 触发录影 + 并行上传）；其他 -wm 走原 runCommands ---
+    if (working_mode == workingMode::WORKING_MODE_SNAP_ONLY) {
+        int pirIntervalMs = 10000;  // SimPirTrigger 默认 10s 模拟 PIR 间隔
+        if (const char* env = std::getenv("HTC_SIM_PIR_INTERVAL_MS")) {
+            int v = std::atoi(env);
+            if (v > 0) pirIntervalMs = v;
+        }
+        int64_t uploadTimeoutMs = 60000;  // 上传 timeout 默认 60s（HTC_UPLOAD_TIMEOUT_MS 可调）
+        if (const char* env = std::getenv("HTC_UPLOAD_TIMEOUT_MS")) {
+            int v = std::atoi(env);  // uClibc 无 std::atoll；int 足够覆盖 ms 级超时
+            if (v > 0) uploadTimeoutMs = v;
+        }
+        auto recordTask = std::make_shared<app_workmode::RecordTask>(uploadWorker);
+        auto pirTrigger = std::make_shared<app_workmode::SimPirTrigger>(pirIntervalMs);
+        app_workmode::EventLoop loop(lc, recordTask, pirTrigger, uploadWorker, uploadTimeoutMs);
+        loop.run();          // 长驻，直到关机（上传完成/timeout/外部信号）
+        recordTask->stop();  // 优雅停当前录影（若有）
+    } else {
+        // --- main_app.cpp:375-378 runWorkMode (TerminalExit → skip the tail) ---
+        if (app_workmode::runWorkMode(working_mode, ctx) == app_workmode::CascadeResult::TerminalExit) {
+            return -1;   // invalid -wm mode: skip the tail (matches main_app's `return -1`)
+        }
     }
 
 workmode_exit:
@@ -199,6 +242,11 @@ workmode_exit:
         sctx.rtcWorkedWell = is_rtc_work_well;
         lc.shutdown(sctx);
     }
+    // 阶段1: 关机前排空上传队列（30s 超时保底；未传 desc 留 SD，F_UploadedTag=0，下次重传）。
+    if (!uploadWorker->flush(30000)) {
+        Logger::log(LogLevel::WARNING, "UploadWorker: flush timed out, some desc kept on SD");
+    }
+    uploadWorker->stop();
 #ifdef BUILD_FOR_SIMULATION
     Logger::log(LogLevel::INFO, "[SIM] Program exit normally");
     _exit(0);
@@ -206,6 +254,13 @@ workmode_exit:
     app_lifecycle::syncWithMCU();   // shared with main_app (moved into app_lifecycle, §4)
     config->flush();
 #if POWER_MANAGER_ON
+    // devtest loop: skip board poweroff so the app returns to the shell and the
+    // test harness can re-run it in the same boot. Env-guarded, never on in
+    // production. See doc/knowledge/decisions/devtest-automation-loop.md §3/§5.
+    if (std::getenv("HTC_TEST_NO_POWEROFF")) {
+        Logger::log(LogLevel::INFO, "[TEST] HTC_TEST_NO_POWEROFF set: _exit(0) instead of poweroff");
+        _exit(0);
+    }
     Misc::poweroff();
     while(1);
 #endif

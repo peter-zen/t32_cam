@@ -573,6 +573,13 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
         } else {
             Logger::log(LogLevel::WARNING, "record: thumbnail capture failed");
         }
+        // 缩略图只需首帧。抓完即 stop CH2（StopRecvPic），对齐 sample 的"按需抓拍"——
+        // 避免 CH2 持续编码但 record loop 只取 CH0、无人消费 CH2 → buffer 堆积干扰
+        // 主码流编码器 → CH0 polling(1000) timeout（录影失败 size=24 的根因）。
+        // record 结束时 :398/:410 还会再 stop，IngenicVideoStream::stop ref_count_ 已为 0 会幂等返回。
+        if (jpegStream_) {
+            jpegStream_->stop();
+        }
     } else {
         Logger::log(LogLevel::INFO, "record: thumbnail skipped (concurrentSnap not enabled)");
     }
@@ -980,15 +987,28 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     return true;
 }
 
+// 进程级单例 IngenicVideo：跨 record 复用。static 持有一份 ref → ref_count 永不归零 →
+// 进程内不跑 IMP_System_Exit，避免两段录影间 / 跨进程 exit→re-Init 的 kernel wedge。
+// channel 级释放（CreateChn/DestroyChn）由各 VideoRecorder 的 stream_ 析构完成。
+// C++11 函数局部 static 初始化线程安全（首次调用建一次 + init 一次）。
+static std::shared_ptr<hal::IVideo> sharedVideo()
+{
+    static std::shared_ptr<hal::IVideo> v = []() -> std::shared_ptr<hal::IVideo> {
+        auto vid = hal::HalProvider::createVideo();
+        if (vid && vid->init()) {
+            return vid;
+        }
+        Logger::log(LogLevel::ERROR, "sharedVideo: createVideo/init failed");
+        return nullptr;
+    }();
+    return v;
+}
+
 bool VideoRecorder::initVideo()
 {
-    video_ = hal::HalProvider::createVideo();
+    video_ = sharedVideo();            // 复用进程级 IngenicVideo（已 init），不重复 createVideo/init
     if (!video_) {
-        Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
-        return false;
-    }
-    if (!video_->init()) {
-        Logger::log(LogLevel::ERROR, "initialize: video init failed");
+        Logger::log(LogLevel::ERROR, "initialize: sharedVideo (createVideo/init) failed");
         return false;
     }
     stream_ = video_->createVideoStream();
@@ -1190,16 +1210,19 @@ bool VideoRecorder::captureThumbnail() {
 bool VideoRecorder::uninitVideo(void)
 {
     if (initialized) {
+        // Channel 级释放：stream_.reset() 触发 ~IngenicVideoStream（StopRecvPic → UnRegisterChn
+        // → UnBind → DestroyChn → DestroyGroup），释放 encoder channel 供下段 record 重新 CreateChn。
         if (stream_) {
             stream_->stop();
+            stream_.reset();
         }
         if (jpegStream_) {
             jpegStream_->stop();
             jpegStream_.reset();
         }
-        if (video_) {
-            video_->exit();
-        }
+        // 不调 video_->exit()：IngenicVideo 是进程级单例（sharedVideo），跨 record 复用，进程内
+        // 不跑 IMP_System_Exit（避免两段录影间 / 跨进程 exit→re-Init 的 kernel wedge）。本成员
+        // video_ 随 ~VideoRecorder 自然析构（减一个 ref，sharedVideo 的 static 仍持有 → 存活）。
     }
 
     return true;

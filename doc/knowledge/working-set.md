@@ -6,12 +6,11 @@
 
 ## 2. 当前关注点
 
-当前已确认的首要工作不是改代码，而是先把项目知识入口按规范建立起来。已完成的初始化包括：
-- 建立 `doc/knowledge/README.md`
-- 建立 `doc/knowledge/overview.md`
-- 建立 `doc/knowledge/working-set.md`
-- 建立标准子目录骨架
-- 建立一份历史文档迁移/映射评审记录
+两条 active track 并行：
+- **devtest-automation-loop**（最新）：把"串口手敲→人眼读日志→存 log→对照代码"全人工链路自动化成 WSL 上 Claude 驱动的可审计闭环。架构已 grill 定型，正执行 **Phase-0（tracer bullet）**。见 [`decisions/devtest-automation-loop.md`](decisions/devtest-automation-loop.md) + [`todo.md`](todo.md) "DevTest 自动化闭环" track。
+- **phase1-module-stabilization**（wm/um 稳定化）：devtest Phase-0 的 tracer bullet 直接服务它（"单进程可重复"判据）。
+
+知识入口骨架（README/overview/working-set/标准子目录）已完成，迁移工作按需推进。
 
 ## 3. 新会话默认先读
 
@@ -60,6 +59,18 @@
 
 ## 7. 当前活跃任务
 
+### devtest-automation-loop（开发-测试-修复自动闭环）
+
+**状态**：架构已 grill 定型（2026-06-21），**Phase-0 实现完成 + 真机验证通过**（见 [`../../reviews/2026-06-21-devtest-phase0-hw-validation.md`](../../reviews/2026-06-21-devtest-phase0-hw-validation.md)）；挖出两个 IMP 残留 bug（[`bugs/T32-imp-residue-workmode-record-2026-06-21.md`](bugs/T32-imp-residue-workmode-record-2026-06-21.md)）
+**架构**：WSL 上 Claude 驱动 → 双平台编译 → NFS 部署 → 常驻串口 broker（`devctl`）跑 app + 抓 `logs/serial.log` → 主机 pytest 确定性判决 → Level-2 人批准修复。8 子决策见 ADR。
+**关键约束**：HW 正常退出即 `Misc::poweroff()` 断电（串口无法复活）→ 用 `HTC_TEST_NO_POWEROFF` 标志让 app `_exit(0)` 回 shell；重复跑 IMP 残留必挂 → 依赖 wm/um 稳定化做干净 teardown。
+**Phase-0（tracer bullet）**：broker + devctl(run/log/status) + `HTC_TEST_NO_POWEROFF` + `test_wm_repeat.py`（连跑两次 `-wm 0`，断言第 2 轮非 rc=137）+ `noac` 修复 + `/devtest` skill 骨架。
+**参考文档**：
+- `doc/knowledge/decisions/devtest-automation-loop.md` — 架构 ADR（8 决策 + 循环 + 组件 + 分阶段）
+- `doc/knowledge/todo.md` "DevTest 自动化闭环" track — Phase-0 任务 P0-1…P0-7 + done 判据
+
+---
+
 ### photo-video-concurrent（同步拍录）
 
 **状态**：Sample 级验证已完成，结论已记录  
@@ -107,6 +118,36 @@
 
 **状态**：Phase A 设计文档已完成（T8），Phase B/C 待启动  
 **参考文档**：`doc/design/workmode-sdk-architecture.md`（方向 + 路线图），`doc/design/workmode-capability-inventory.md`（能力清单 + 缺口）
+
+---
+
+### workmode-usermode-split（进程拆分）
+
+**状态**：决策已落定（ADR + spec §14 + reviews note，2026-06-20），代码待 C4 repoint 前执行  
+**关键决策**：按运行语义拆进程 —— `htc_workmode_app` 只留 `-wm 0/1/2`（一次性任务），
+新建 `htc_usermode_app` 接管 `-wm 3`（CMD_MOBILE）/ `-wm 4`（CMD_RTSP_SERVER）。判定标准
+是 `runCommands` 内是否长驻循环，非“与 `-m` 重叠”（`-m`↔`-wm 3`、`-rs`↔`-wm 4` 对称重叠）。  
+**参考文档**：
+- `doc/knowledge/decisions/workmode-usermode-process-split.md` — 决策全文
+- `doc/knowledge/specs/workmode-selection-and-switching.md §14` — 目标态
+- `reviews/2026-06-20-workmode-usermode-split.md` — 决策记录
+
+**遗留**：`htc_usermode_app` 未创建；`-m` 子参数兼容、`-wm 3` RGB blink 取舍、CMake link
+路线 A/B 见 ADR §7。
+
+---
+
+### phase1-module-stabilization（单功能稳定化 → wm/um）
+
+**状态**：计划已 grill 定型（2026-06-21），待起 `/refactor` 试点
+**动机**：`htc_workmode_app` crash 频发；crash 根因=单进程共享关机并发 teardown（kill-switch 压），
+非单功能逻辑 bug。退回单功能稳定后再组合。
+**关键决策**：提取+测试壳(crash 另立)→L2 真机二进制优先→单进程可重复生产→
+crash-prone(record/snap)用 loop-faithful 契约、其余 single-shot→先复用 `/refactor` 验 flow→
+wm/um/共享三分(REPLACE，`runCommands` 瀑布退役)→稳定判据=退役 kill-switch+N 轮绿。
+**交付**：4 个 L2 二进制(record/snap/upload/rtsp) + 补 2 个 L1 sim(ntp/http)。
+**参考文档**：`specs/phase1-module-stabilization-plan.md`（七决策+交付表+模块映射+spec 骨架+执行序列）
+**下一步**：起 `/refactor ntp`（最小 inline 抽取 + L1 sim golden）作 flow 试点。
 
 ---
 

@@ -1,13 +1,11 @@
 #!/bin/sh
-# Company environment NFS mount — network 192.168.0.x.
+# Home environment NFS mount — build host sits on 192.168.31.x.
 # Run on the device AFTER WiFi is up:
-#   ./bin/htc_net_app --ssid no_mesh_01_2.4G --pwd <WIFI_PWD>
-#   . ./mount_nfs.sh
-# (Home environment on 192.168.31.x uses mount_nfs_home.sh instead.)
-NFS_HOST=192.168.0.210
+#   ./bin/htc_net_app --ssid no_mesh_02_2.4G --pwd <WIFI_PWD>
+#   . ./mount_nfs_home.sh
+# (Company environment on 192.168.0.x uses mount_nfs.sh instead.)
+NFS_HOST=192.168.31.200
 NFS_PATH=/home/zengping/projects/hc_t32/code/t32/build
-# NOTE: NFS_PATH assumes the company build host has the repo at the same path as
-# the home host. If the company checkout lives elsewhere, edit NFS_PATH above.
 
 insmod_nfs 2>/dev/null
 mkdir -p /mnt/huntcam

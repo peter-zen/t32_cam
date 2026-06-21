@@ -209,6 +209,14 @@ static struct {
 #define YEAR_OFFSET 1900
 #define MONTH_OFFSET 1
 
+// 时间可信度阈值：早于 2026-01-01 视为时间源异常。读 RTC/MCU 时不采信，
+// 写 MCU（syncWithMCU）时不固化错误时间。读写共用此判断。
+#define PLAUSIBLE_YEAR_MIN 2026
+#define TIME_PLAUSIBLE(p_tm) \
+    (((p_tm)->tm_year + YEAR_OFFSET) >= PLAUSIBLE_YEAR_MIN \
+     && (p_tm)->tm_mon >= 0 && (p_tm)->tm_mon <= 11 \
+     && (p_tm)->tm_mday >= 1 && (p_tm)->tm_mday <= 31)
+
 #ifdef __cplusplus
 }
 #endif

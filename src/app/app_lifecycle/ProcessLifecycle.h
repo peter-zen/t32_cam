@@ -119,6 +119,14 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// Sync system time from hardware at startup: /dev/rtc0 first, fall back to the
+// MCU if RTC is unreadable/implausible (MCU is always-on and was last calibrated
+// by syncWithMCU on the previous shutdown, far quicker than waiting for NTP).
+// Returns true if a plausible time was applied. Shared by media_app's
+// isRTCWorkWell() and commonStartup() so every app (incl. a directly-run
+// htc_workmode_app) boots with a trusted clock. Free function, singletons only.
+bool syncSystemTime();
+
 // Terminal HW step run by the caller AFTER shutdown(), before poweroff/return.
 // Reads PID/UPID/UPWD from the MCU into DeviceConfig, flushes, and pushes the
 // local time into the MCU RTC. Moved verbatim from main_app.cpp (T16 Phase

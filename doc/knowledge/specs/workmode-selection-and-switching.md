@@ -252,4 +252,30 @@
 - `playbooks/workmode-startup-and-http-probe.md`
 - `bugs/workmode-http-accepted-but-no-runtime-switch.md`
 
-当前这篇规格先承担当前行为权威入口，避免继续把产品意图与代码现状混写。
+其中 `decisions/workmode-vs-cmd-mobile-layering.md` 与
+`decisions/workmode-usermode-process-split.md` 已落地。本规格先承担当前行为
+权威入口，避免继续把产品意图与代码现状混写。
+
+## 14. 进程归属（workmode / usermode 拆分）—— 目标态决策
+
+> 本节是**决策目标态**，不是当前代码事实。迁移在 C4 repoint 前执行（详见
+> `decisions/workmode-usermode-process-split.md`）。在代码真正迁出前，本规格
+> 其余章节仍以“`-wm 0..4` 全部由 workmode 处理”为当前事实。
+
+### 14.1 当前代码事实（未变）
+- `-wm 0..4` 当前全部由 `htc_workmode_app`（及 `main_app -wm`）处理。
+- `-wm 3` → `CMD_MOBILE`，`-wm 4` → `CMD_RTSP_SERVER`（见 §7.2 映射）。
+
+### 14.2 决策目标态
+按**运行语义**拆进程：
+- **workmode（一次性任务，做完即退）**：`-wm 0` / `-wm 1` / `-wm 2`
+- **usermode（长驻交互服务，等连接 / 信号）**：`-wm 3`（CMD_MOBILE）/ `-wm 4`（CMD_RTSP_SERVER）
+
+判定依据是 `runCommands` 内是否存在 `while(keepRunning())` 长驻循环，而非
+“是否与 `-m` 重叠”。`-m`（`main_app.cpp:219`）与 `-wm 3` 同走 `CMD_MOBILE`，
+`-rs`（`main_app.cpp:235`）与 `-wm 4` 同走 `CMD_RTSP_SERVER`，是对称重叠。
+
+### 14.3 迁移后本规格需同步更新项
+代码迁出后，§5（枚举语义）与 §7.2（workMode→command 映射）中
+`WORKING_MODE_TEST_ONLY` 与 `WORKING_MODE_UVC` 两项需补充“由 usermode 处理”
+的归属说明。

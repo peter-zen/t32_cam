@@ -55,7 +55,10 @@ std::shared_ptr<media::VideoParams> CameraRecorder::buildVideoParams(int bitrate
     auto& cps = CameraPropertyService::getInstance();
     int width = 0, height = 0, fps = 0, bitrateKbps = 0;
     cps.getVideoRecordConfig(width, height, fps, bitrateKbps);
-    if (width <= 0 || height <= 0) { width = 1920; height = 1080; }
+    // 【缩放根因验证】强制原生 2560×1440（对齐 sample-Encoder-video）。configure 据此
+    // scaler.outwidth=2560=源（实际不下采样）+ crop 全幅，等价 sample 的 crop=0+不缩放路径。
+    // 若出帧正常 → 确认 2560→1920 缩放是 polling timeout 根因；再定正式修复。
+    width = 2560; height = 1440;
     if (fps <= 0) fps = 30;
     if (bitrateKbps <= 0) bitrateKbps = 4000;
     if (bitrateKbpsOverride > 0) {

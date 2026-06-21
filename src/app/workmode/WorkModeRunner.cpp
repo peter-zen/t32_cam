@@ -162,7 +162,7 @@ static bool processCmdSnap(bool is_rtc_work_well) {
     return true;
 }
 
-static bool processCmdVideoRecord(bool is_rtc_work_well) {
+static bool processCmdVideoRecord(bool is_rtc_work_well, app_workmode::UploadWorker* uploadWorker) {
     (void)is_rtc_work_well;
     using service::camera::CameraRecorder;
     using service::camera::RecordError;
@@ -188,16 +188,15 @@ static bool processCmdVideoRecord(bool is_rtc_work_well) {
     }
     CameraRecorder recorder;
     RecordOptions opts;
-    opts.audio = true;
+    opts.audio = false;  // 默认禁用音频：当前设备无 audio 硬件，开启会导致 audio.ko 在
+                         // 无 speaker(spk_gpio=-1)环境下 dsp_config_route_param 内核空指针崩溃
     opts.autoCover = false;  // work mode 不循环覆盖
-    // 诊断开关:HTC_RECORD_NO_AUDIO=1 时禁用音频,绕过 audio.ko 在无 speaker
-    // (spk_gpio=-1)环境下 dsp_config_route_param 的内核空指针崩溃,
-    // 用于隔离验证 video 录影链路是否能独立跑通。
+    // HTC_RECORD_AUDIO=1 时显式启用音频（供有 audio 硬件的设备）。
     {
-        const char* envNoAudio = std::getenv("HTC_RECORD_NO_AUDIO");
-        if (envNoAudio && envNoAudio[0] == '1') {
-            opts.audio = false;
-            Logger::log(LogLevel::INFO, "HTC_RECORD_NO_AUDIO=1: recording without audio (bypass audio.ko)");
+        const char* envAudio = std::getenv("HTC_RECORD_AUDIO");
+        if (envAudio && envAudio[0] == '1') {
+            opts.audio = true;
+            Logger::log(LogLevel::INFO, "HTC_RECORD_AUDIO=1: recording with audio");
         }
     }
     // 诊断开关:HTC_RECORD_NO_THUMBNAIL=1 时跳过 CH2 缩略图抓取。captureThumbnail 的并发
@@ -275,6 +274,10 @@ static bool processCmdVideoRecord(bool is_rtc_work_well) {
     if (manifest::generateDescInfo(files, desc_info) == 0) {
         std::string desc_filename = std::string(MEDIA_UPLOAD_PATH) + getCurrentTimeFormatted() + ".json";
         service::camera::RecordingPostProcess::writeWorkModeDescJson(desc_info, desc_filename);
+        if (uploadWorker) {
+            uploadWorker->enqueue(desc_filename);
+            Logger::log(LogLevel::INFO, "Work Mode record: desc enqueued for upload: %s", desc_filename.c_str());
+        }
     } else {
         Logger::log(LogLevel::ERROR, "Work Mode record: generateDescInfo failed");
     }
@@ -402,11 +405,11 @@ CascadeResult runCommands(int command, WorkModeContext& ctx)
             if (!processCmdSnap(ctx.isRtcWorkWell)) {
                 return CascadeResult::Continue;
             }
-            if (!processCmdVideoRecord(ctx.isRtcWorkWell)) {
+            if (!processCmdVideoRecord(ctx.isRtcWorkWell, ctx.uploadWorker.get())) {
                 return CascadeResult::Continue;
             }
         } else if (camMode == 2) {
-            if (!processCmdVideoRecord(ctx.isRtcWorkWell)) {
+            if (!processCmdVideoRecord(ctx.isRtcWorkWell, ctx.uploadWorker.get())) {
                 return CascadeResult::Continue;
             }
         } else if (camMode == 3) {
@@ -494,11 +497,11 @@ CascadeResult runCommands(int command, WorkModeContext& ctx)
             if (!processCmdSnap(ctx.isRtcWorkWell)) {
                 return CascadeResult::Continue;
             }
-            if (!processCmdVideoRecord(ctx.isRtcWorkWell)) {
+            if (!processCmdVideoRecord(ctx.isRtcWorkWell, ctx.uploadWorker.get())) {
                 return CascadeResult::Continue;
             }
         } else if (camMode == 2) {
-            if (!processCmdVideoRecord(ctx.isRtcWorkWell)) {
+            if (!processCmdVideoRecord(ctx.isRtcWorkWell, ctx.uploadWorker.get())) {
                 return CascadeResult::Continue;
             }
         } else if (camMode == 3) {

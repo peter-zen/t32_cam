@@ -34,3 +34,11 @@ sdk/samples/libimp-samples/*.o
 
 # Git worktrees created by EnterWorktree for isolated feature dev
 .claude/worktrees/
+
+# devtest runtime output + session analysis scratch
+logs/
+artifacts/
+
+# Python bytecode
+__pycache__/
+*.pyc
