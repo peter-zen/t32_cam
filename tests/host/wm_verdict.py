@@ -20,6 +20,11 @@ RECSTART_RE = re.compile(r"record start:")
 # summary) both emit "observed_fps=<f>". Prefer the final summary (stable value).
 SUMMARY_RE = re.compile(r"record summary:.*observed_fps=(\d+(?:\.\d+)?)")
 STATS_RE   = re.compile(r"record stats:.*observed_fps=(\d+(?:\.\d+)?)")
+# Thumbnail anchor: RecordTask::onCompleteRecord logs "thumbnail saved for <path>
+# (<n> bytes)" iff CH2 concurrentSnap captured a thumbnail. A healthy -wm 0 record
+# (concurrentSnap default on) always has one — so a missing thumbnail fails the
+# verdict (CH2 capture / MetadataDao::saveThumbnail broke).
+THUMBSAVED_RE = re.compile(r"thumbnail saved")
 # E/ lines expected in the devtest env (no mgmt/upload backend wired up) that say
 # nothing about the record path under test — must NOT fail the verdict.
 BENIGN_ERR = (r"UploadWorker: auth failed|no storage client",)
@@ -58,9 +63,49 @@ def check_run(output, rc, timed_out, run_no=0):
     else:
         fps = float(m.group(1))
 
+    if not THUMBSAVED_RE.search(output):
+        reasons.append(f"run {run_no}: missing 'thumbnail saved' (CH2 concurrentSnap)")
+
     err_lines = nonbenign_error_lines(output, BENIGN_ERR)
     if err_lines:
         reasons.append(f"run {run_no}: {len(err_lines)} non-benign E/ error line(s); "
                        f"first: {err_lines[0].strip()[:140]}")
 
     return {"ok": not reasons, "reasons": reasons, "observed_fps": fps}
+
+
+def check_repeat_run(output, rc, timed_out, expected_count, run_no=0):
+    """Multi-segment verdict for one process that records N segments
+    (EventLoop HTC_TEST_RECORD_COUNT=N).
+
+    OK iff: not timed out, rc 0, >= expected_count 'record start:' occurrences,
+    NO IMP_Encoder_CreateChn (the channel-not-released defect task-9 targets),
+    and only benign E/ lines. Returns {"ok", "reasons", "segment_count"}.
+
+    'record start:' (with the trailing colon) matches only successful starts —
+    "record start failed" has no colon after 'start' and is not counted.
+    """
+    output = strip_ansi(output)
+    reasons = []
+    segment_count = len(re.findall(r"record start:", output))
+
+    if timed_out:
+        reasons.append(f"run {run_no}: timed out (hang, or fewer than "
+                       f"{expected_count} segments completed)")
+    if rc == 137:
+        reasons.append(f"run {run_no}: rc=137 (watchdog SIGKILL — process hung)")
+    elif rc is not None and rc != 0:
+        reasons.append(f"run {run_no}: rc={rc} (non-zero exit)")
+    if segment_count < expected_count:
+        reasons.append(f"run {run_no}: only {segment_count} 'record start:' "
+                       f"(expected >={expected_count})")
+    if re.search(r"IMP_Encoder_CreateChn", output):
+        reasons.append(f"run {run_no}: IMP_Encoder_CreateChn failed — encoder "
+                       f"channel not released between segments (task-9 regression)")
+
+    err_lines = nonbenign_error_lines(output, BENIGN_ERR)
+    if err_lines:
+        reasons.append(f"run {run_no}: {len(err_lines)} non-benign E/ error line(s); "
+                       f"first: {err_lines[0].strip()[:140]}")
+
+    return {"ok": not reasons, "reasons": reasons, "segment_count": segment_count}

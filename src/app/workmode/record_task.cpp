@@ -111,6 +111,7 @@ void RecordTask::onCompleteRecord(const std::string& record_path,
     // 3) desc + enqueue（仅成功完成/主动停）
     if (r.error == service::camera::RecordError::None ||
         r.error == service::camera::RecordError::UserStop) {
+        completedCount_.fetch_add(1);  // 供 EventLoop 的 HTC_TEST_RECORD_COUNT 门控判定
         std::vector<std::string> files = { record_path };
         std::string desc_info;
         if (manifest::generateDescInfo(files, desc_info) == 0) {

@@ -34,6 +34,7 @@ private:
     std::shared_ptr<IPirTrigger> pirTrigger_;
     std::shared_ptr<UploadWorker> uploadWorker_;
     int64_t uploadTimeoutMs_;
+    int targetRecordCount_ = 1;  // HTC_TEST_RECORD_COUNT 门控（默认 1 = 生产不变）
 };
 
 }  // namespace app_workmode

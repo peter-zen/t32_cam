@@ -28,6 +28,9 @@ public:
     // 当前是否在录影（EventLoop 判断上传完成关机用）。
     bool isRecording() const { return recording_.load(); }
 
+    // 已成功完成（None/UserStop）的录影段数（EventLoop 的 HTC_TEST_RECORD_COUNT 门控用）。
+    int completedCount() const { return completedCount_.load(); }
+
     // 关机协调：停当前录影（若有）+ 等 onComplete 收尾。
     void stop();
 
@@ -37,6 +40,7 @@ private:
     std::shared_ptr<UploadWorker> uploadWorker_;
     std::shared_ptr<service::camera::CameraRecorder> recorder_;
     std::atomic<bool> recording_{false};
+    std::atomic<int> completedCount_{0};  // 成功完成的录影段数（测试门控）
 };
 
 }  // namespace app_workmode
