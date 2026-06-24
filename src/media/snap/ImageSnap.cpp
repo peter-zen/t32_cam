@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include "Common.h"
 #include "Logger.h"
 #include "Jpeg.h"
@@ -24,13 +25,8 @@
 #include <imp/imp_framesource.h>
 #include <imp/imp_encoder.h>
 #include "LargeImageSnap.h"
-#include "simd_resize_large.h"
-#include "simd_resize_large.c"
 #endif
 
-/* CH0 hardware scaler max: 8M (3840x2160) */
-static constexpr int HW_SCALER_MAX_W = 3840;
-static constexpr int HW_SCALER_MAX_H = 2160;
 
 using namespace media;
 
@@ -41,6 +37,7 @@ ImageSnapParams::ImageSnapParams()
     this->height = 1080;
     this->sensorW = 0;
     this->sensorH = 0;
+    this->enableThumbnail = true;
 }
 
 void ImageSnapParams::setImageSize(int width, int height)
@@ -77,6 +74,16 @@ void ImageSnapParams::setFrameSourceChnNum(int nchannels)
     this->nchannels = nchannels;
 }
 
+void ImageSnapParams::setThumbnailEnabled(bool enabled)
+{
+    this->enableThumbnail = enabled;
+}
+
+bool ImageSnapParams::isThumbnailEnabled() const
+{
+    return this->enableThumbnail;
+}
+
 ImageSnap::ImageSnap()
 {
     initialized = initialize();
@@ -103,26 +110,26 @@ bool ImageSnap::initialize()
     int w = 0, h = 0;
     params.getImageSize(w, h);
 
-    /* Determine if target resolution exceeds hardware scaler max (8M) */
-    isLargeImage_ = (w > HW_SCALER_MAX_W || h > HW_SCALER_MAX_H);
+    /* CH0 (framesource) CANNOT be configured above sensor-native: doing so
+     * corrupts the sensor channel (segfault in SetChnAttr, then in
+     * IMP_Encoder_PollingStream on the first frame). Confirmed 2026-06-22:
+     * snap at 3840x2160 (> sensor 2560x1440) -> polling segfault; at 2560x1440
+     * (sensor-native) -> OK. So ANY target exceeding sensor-native must capture
+     * at sensor-native and upscale in software (the LargeImageSnap path) — not
+     * just >8M. Targets <= sensor-native use the HW encoder path (down/native).
+     * (≤8M HW UP-scale above sensor is not supported by this JPEG IVDC path.) */
+    int sw = 0, sh = 0;
+    params.getSensorNativeSize(sw, sh);
+    if (sw <= 0 || sh <= 0) { sw = 2560; sh = 1440; }  /* gc4653 default (T32) */
+    isLargeImage_ = (w > sw || h > sh);
 
-    /* Large-image path: CH0 cannot be configured at the target resolution â
-     * the IMP sensor channel's picWidth must stay at sensor-native (configuring
-     * 9216x5184 corrupts the channel and segfaults in SetChnAttr). Configure
-     * CH0 at sensor-native; LargeImageSnap upscales to the target in software. */
     int cfgW = w, cfgH = h;
     if (isLargeImage_) {
-        int sw = 0, sh = 0;
-        params.getSensorNativeSize(sw, sh);
-        if (sw > 0 && sh > 0) {
-            cfgW = sw;
-            cfgH = sh;
-        } else {
-            Logger::log(LogLevel::WARNING, "initialize: large target %dx%d but sensorNativeSize unset", w, h);
-        }
+        cfgW = sw;
+        cfgH = sh;
     }
-    Logger::log(LogLevel::INFO, "initialize: target=%dx%d ch0cfg=%dx%d isLargeImage=%d",
-                w, h, cfgW, cfgH, isLargeImage_ ? 1 : 0);
+    Logger::log(LogLevel::INFO, "initialize: target=%dx%d sensor=%dx%d ch0cfg=%dx%d isLargeImage=%d",
+                w, h, sw, sh, cfgW, cfgH, isLargeImage_ ? 1 : 0);
 
     video_ = hal::HalProvider::createVideo();
     if (!video_) {
@@ -160,34 +167,40 @@ bool ImageSnap::initialize()
         return false;
     }
 
-    /* Thumbnail JPEG stream: CH2 (hardware scaler, 320 wide, IVDC) */
-    thumbVideo_ = hal::HalProvider::createVideo();
-    if (thumbVideo_ && thumbVideo_->init()) {
-        thumbStream_ = thumbVideo_->createVideoStream();
-    }
-    if (thumbStream_) {
-        hal::VideoStreamConfig tcfg;
-        memset(&tcfg, 0, sizeof(hal::VideoStreamConfig));
-        tcfg.payload = hal::VideoPayloadType::JPEG;
-        tcfg.channel.sensor_index = SNAP_SENSOR_ID;
-        tcfg.channel.stream_index = THUMB_STREAM_ID;
-        tcfg.width = 320;
-        tcfg.height = (h * 320 + w / 2) / w;  /* maintain aspect ratio */
-        tcfg.height = (tcfg.height + 1) & ~1;  /* align to 2 */
-        tcfg.fps_num = 15;
-        tcfg.fps_den = 1;
-        tcfg.quality = 60;
-        tcfg.rc_mode = hal::VideoRcMode::FIXQP;
-        tcfg.enable_ivdc = true;
-        if (!thumbStream_->configure(tcfg)) {
-            Logger::log(LogLevel::WARNING, "initialize: thumb stream configure failed (thumbnail disabled)");
-            thumbStream_.reset();
+    /* Thumbnail JPEG stream: CH2 (hardware scaler, 320 wide, IVDC) — skipped
+     * entirely when the caller disabled thumbnail capture (frees the CH2 sensor
+     * channel, not just the per-photo capture). */
+    if (params.isThumbnailEnabled()) {
+        thumbVideo_ = hal::HalProvider::createVideo();
+        if (thumbVideo_ && thumbVideo_->init()) {
+            thumbStream_ = thumbVideo_->createVideoStream();
+        }
+        if (thumbStream_) {
+            hal::VideoStreamConfig tcfg;
+            memset(&tcfg, 0, sizeof(hal::VideoStreamConfig));
+            tcfg.payload = hal::VideoPayloadType::JPEG;
+            tcfg.channel.sensor_index = SNAP_SENSOR_ID;
+            tcfg.channel.stream_index = THUMB_STREAM_ID;
+            tcfg.width = 320;
+            tcfg.height = (h * 320 + w / 2) / w;  /* maintain aspect ratio */
+            tcfg.height = (tcfg.height + 1) & ~1;  /* align to 2 */
+            tcfg.fps_num = 15;
+            tcfg.fps_den = 1;
+            tcfg.quality = 60;
+            tcfg.rc_mode = hal::VideoRcMode::FIXQP;
+            tcfg.enable_ivdc = true;
+            if (!thumbStream_->configure(tcfg)) {
+                Logger::log(LogLevel::WARNING, "initialize: thumb stream configure failed (thumbnail disabled)");
+                thumbStream_.reset();
+            } else {
+                Logger::log(LogLevel::INFO, "initialize: thumb stream configured %dx%d",
+                            tcfg.width, tcfg.height);
+            }
         } else {
-            Logger::log(LogLevel::INFO, "initialize: thumb stream configured %dx%d",
-                        tcfg.width, tcfg.height);
+            Logger::log(LogLevel::WARNING, "initialize: createVideoStream for thumb failed (thumbnail disabled)");
         }
     } else {
-        Logger::log(LogLevel::WARNING, "initialize: createVideoStream for thumb failed (thumbnail disabled)");
+        Logger::log(LogLevel::INFO, "initialize: thumbnail disabled by config (CH2 not opened)");
     }
 
     return true;
@@ -247,7 +260,7 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
         }
         return false;
     }
-    
+
     if (!stream_) {
         Logger::log(LogLevel::ERROR, "snap: stream_ is null");
         if (onSnapDone) onSnapDone(false);
@@ -259,7 +272,6 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
             Logger::log(LogLevel::WARNING, "snap: pre-start info query failed");
         }
     }
-    
     daynight_switch(true);
 
     /* For ≤ 8M: start encoder stream (IVDC captures directly)
@@ -286,7 +298,11 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
         this->threads.emplace_back([this, filenames, onSnapDone]() {
             bool nonBlockingResult = true;
             if (isLargeImage_) {
-                nonBlockingResult = this->snap_large_internal(filenames);
+                if (filenames.size() > 1) {
+                    nonBlockingResult = this->snap_large_burst_internal(filenames);
+                } else {
+                    nonBlockingResult = this->snap_large_internal(filenames);
+                }
             } else {
                 nonBlockingResult = this->snap_internal(filenames);
             }
@@ -299,7 +315,13 @@ bool ImageSnap::snap(const std::vector<std::string> &filenames, std::function<vo
         return true;
     } else {
         if (isLargeImage_) {
-            result = snap_large_internal(filenames);
+            /* >8M: single → strip encode in one go; burst → temp-buffer flow
+             * (capture N NV12 to sdcard first, then sequential strip encode). */
+            if (filenames.size() > 1) {
+                result = snap_large_burst_internal(filenames);
+            } else {
+                result = snap_large_internal(filenames);
+            }
         } else {
             result = snap_internal(filenames);
         }
@@ -319,25 +341,24 @@ bool ImageSnap::snap_internal(const std::vector<std::string> &filenames)
     hal::VideoStreamInfo info{};
     if (stream_) {
         if (stream_->getInfo(info)) {
-            
+
         } else {
             Logger::log(LogLevel::WARNING, "stream info: query failed");
         }
     }
     for (auto& filename : filenames) {
-        
         FILE* fp = fopen(filename.c_str(), "wb");
         if (fp == nullptr) {
             Logger::log(LogLevel::ERROR, "snap(int): open %s failed", filename.c_str());
             return false;
         }
-        
+
         if (!stream_->polling(1000)) {
             Logger::log(LogLevel::ERROR, "snap(int): polling JPEG timeout");
             fclose(fp);
             return false;
         }
-        
+
         hal::VideoEncodedFrame frame;
         if (!stream_->getFrame(frame)) {
             Logger::log(LogLevel::ERROR, "snap(int): getFrame failed");
@@ -385,82 +406,36 @@ bool ImageSnap::snap_internal(const std::vector<std::string> &filenames)
 bool ImageSnap::snap_large_internal(const std::vector<std::string> &filenames)
 {
 #ifndef SIMULATION_MODE
-    Logger::log(LogLevel::INFO, "snap_large_internal: capturing %zu images", filenames.size());
+    Logger::log(LogLevel::INFO, "snap_large_internal: capturing %zu images (strip path)",
+                filenames.size());
 
-    /* Enable FrameSource CH0 to get NV12 frames */
-    IMP_FrameSource_EnableChn(SNAP_SENSOR_ID);
+    int dstW = 0, dstH = 0;
+    params.getImageSize(dstW, dstH);
 
+    /* Enable FrameSource CH0 (sensor-native NV12, no IVDC); LargeImageSnap
+     * GetFrameEx's from it and strip-stitches to dstWxdstH in a memory-safe
+     * per-strip working set (~8MB, vs ~143MB for the dead full-frame path at
+     * 48M which cannot fit the 32MB board). One enable covers the whole burst. */
+    if (IMP_FrameSource_EnableChn(SNAP_SENSOR_ID) < 0) {
+        Logger::log(LogLevel::ERROR, "snap_large_internal: EnableChn(%d) failed", SNAP_SENSOR_ID);
+        return false;
+    }
+    usleep(2 * 1000 * 1000);  /* let ISP auto-exposure converge before capturing */
+
+    LargeImageSnap largeSnap;
     for (auto& filename : filenames) {
-        /* Get NV12 frame from CH0 (sensor resolution, no IVDC) */
-        IMPFrameInfo *frame = nullptr;
-        if (IMP_FrameSource_GetFrame(SNAP_SENSOR_ID, &frame) < 0) {
-            Logger::log(LogLevel::ERROR, "snap_large_internal: GetFrame failed");
+        bool ok = largeSnap.snapLarge(filename, dstW, dstH, 85);
+        if (!ok) {
+            Logger::log(LogLevel::ERROR, "snap_large_internal: snapLarge failed for %s",
+                        filename.c_str());
             IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
             return false;
         }
 
-        int srcW = frame->width;
-        int srcH = frame->height;
-        int dstW = 0, dstH = 0;
-        params.getImageSize(dstW, dstH);
-        const uint8_t* srcData = reinterpret_cast<const uint8_t*>(frame->virAddr);
-
-        Logger::log(LogLevel::INFO, "snap_large_internal: src=%dx%d dst=%dx%d", srcW, srcH, dstW, dstH);
-
-        /* Allocate contiguous NV12 buffer for resized image (required by InputJpege) */
-        size_t resizeSize = static_cast<size_t>(dstW) * dstH * 3 / 2;
-        uint8_t* resizeBuf = static_cast<uint8_t*>(IMP_Encoder_VbmAlloc(resizeSize, 256));
-        if (!resizeBuf) {
-            Logger::log(LogLevel::ERROR, "snap_large_internal: VbmAlloc(%zu) failed", resizeSize);
-            IMP_FrameSource_ReleaseFrame(SNAP_SENSOR_ID, frame);
-            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
-            return false;
-        }
-        memset(resizeBuf, 0, resizeSize);
-
-        /* CPU SIMD resize entire frame */
-        int ret = opencv_resize_crop_simd(const_cast<uint8_t*>(srcData), srcW, srcH,
-                                           resizeBuf, dstW, dstH);
-        IMP_FrameSource_ReleaseFrame(SNAP_SENSOR_ID, frame);
-        if (ret != 0) {
-            Logger::log(LogLevel::ERROR, "snap_large_internal: SIMD resize failed ret=%d", ret);
-            IMP_Encoder_VbmFree(resizeBuf);
-            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
-            return false;
-        }
-
-        /* Hardware JPEG encode the full frame */
-        size_t jpegBufSize = resizeSize;
-        uint8_t* jpegBuf = static_cast<uint8_t*>(malloc(jpegBufSize));
-        if (!jpegBuf) {
-            IMP_Encoder_VbmFree(resizeBuf);
-            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
-            return false;
-        }
-
-        int jpegLen = 0;
-        ret = IMP_Encoder_InputJpege(resizeBuf, jpegBuf, dstW, dstH, 85, &jpegLen);
-        IMP_Encoder_VbmFree(resizeBuf);
-        if (ret != 0 || jpegLen <= 0) {
-            Logger::log(LogLevel::ERROR, "snap_large_internal: InputJpege failed ret=%d len=%d", ret, jpegLen);
-            free(jpegBuf);
-            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
-            return false;
-        }
-
-        /* Write JPEG to file */
-        FILE* fp = fopen(filename.c_str(), "wb");
-        if (!fp) {
-            Logger::log(LogLevel::ERROR, "snap_large_internal: open %s failed", filename.c_str());
-            free(jpegBuf);
-            IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
-            return false;
-        }
-        fwrite(jpegBuf, 1, jpegLen, fp);
-        fclose(fp);
-        free(jpegBuf);
-
-        Logger::log(LogLevel::INFO, "snap_large_internal: saved %s (%d bytes)", filename.c_str(), jpegLen);
+        struct stat st;
+        long fileSize = (::stat(filename.c_str(), &st) == 0) ? (long)st.st_size : -1;
+        Logger::log(LogLevel::INFO, "snap_large_internal: saved %s (%ld bytes)",
+                    filename.c_str(), fileSize);
 
         /* Save photo metadata to media_file.db */
         {
@@ -469,22 +444,141 @@ bool ImageSnap::snap_large_internal(const std::vector<std::string> &filenames)
             item.filePath = filename;
             item.type = 1; /* Photo */
             item.timestamp = time(NULL);
-            item.fileSize = jpegLen;
+            item.fileSize = fileSize;
             item.width = dstW;
             item.height = dstH;
             if (dao.addMedia(item)) {
                 Logger::log(LogLevel::INFO, "snap_large_internal: saved to DB: %s", filename.c_str());
             } else {
-                Logger::log(LogLevel::WARNING, "snap_large_internal: addMedia failed for %s", filename.c_str());
+                Logger::log(LogLevel::WARNING, "snap_large_internal: addMedia failed for %s",
+                            filename.c_str());
             }
         }
 
-        /* Capture thumbnail from CH2 */
+        /* Capture thumbnail from CH2 (when enabled — thumbStream_ is null otherwise) */
         capture_thumbnail();
     }
 
     IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
     return true;
+#else
+    return false;
+#endif
+}
+
+
+bool ImageSnap::snap_large_burst_internal(const std::vector<std::string> &filenames)
+{
+#ifndef SIMULATION_MODE
+    const int N = static_cast<int>(filenames.size());
+    int dstW = 0, dstH = 0;
+    params.getImageSize(dstW, dstH);
+    const char* tmpDir = "/mnt/sdcard/.snap_tmp";
+    ::mkdir(tmpDir, 0777);  /* ignore EEXIST */
+
+    Logger::log(LogLevel::INFO, "snap_large_burst: %d images, dst=%dx%d, temp=%s",
+                N, dstW, dstH, tmpDir);
+
+    /* Phase 1 — capture N sensor-native NV12 frames to temp (fast, at sensor
+     * rate). Software scale-up can't keep up with a burst, so decouple capture
+     * from encode. */
+    if (IMP_FrameSource_EnableChn(SNAP_SENSOR_ID) < 0) {
+        Logger::log(LogLevel::ERROR, "snap_large_burst: EnableChn(%d) failed", SNAP_SENSOR_ID);
+        return false;
+    }
+    usleep(2 * 1000 * 1000);  /* AE converge */
+
+    int srcW = 0, srcH = 0;
+    std::vector<std::string> tmpPaths(N);
+    bool captureOk = true;
+    for (int i = 0; i < N; i++) {
+        IMPFrameInfo *frame = nullptr;
+        if (IMP_FrameSource_GetFrameEx(SNAP_SENSOR_ID, &frame) < 0) {
+            Logger::log(LogLevel::ERROR, "snap_large_burst: GetFrame %d failed", i);
+            captureOk = false;
+            break;
+        }
+        if (i == 0) {
+            srcW = frame->width;
+            srcH = frame->height;
+        }
+        size_t nv12Size = static_cast<size_t>(frame->width) * frame->height * 3 / 2;
+        char tmpPath[160];
+        snprintf(tmpPath, sizeof(tmpPath), "%s/frame_%d.nv12", tmpDir, i);
+        FILE* fp = fopen(tmpPath, "wb");
+        if (!fp) {
+            Logger::log(LogLevel::ERROR, "snap_large_burst: open %s failed", tmpPath);
+            IMP_FrameSource_ReleaseFrameEx(SNAP_SENSOR_ID, frame);
+            captureOk = false;
+            break;
+        }
+        size_t wr = fwrite(reinterpret_cast<const uint8_t*>(frame->virAddr), 1, nv12Size, fp);
+        fclose(fp);
+        IMP_FrameSource_ReleaseFrameEx(SNAP_SENSOR_ID, frame);
+        if (wr != nv12Size) {
+            Logger::log(LogLevel::ERROR, "snap_large_burst: short write %s (%zu/%zu)",
+                        tmpPath, wr, nv12Size);
+            captureOk = false;
+            break;
+        }
+        tmpPaths[i] = tmpPath;
+        /* Thumbnail for the first frame (CH2, same sensor) — thumbData_ holds
+         * one; the caller persists it. */
+        if (i == 0) {
+            capture_thumbnail();
+        }
+        Logger::log(LogLevel::INFO, "snap_large_burst: captured frame %d -> %s (%zu bytes)",
+                    i, tmpPath, nv12Size);
+    }
+    IMP_FrameSource_DisableChn(SNAP_SENSOR_ID);
+
+    if (!captureOk || srcW == 0 || srcH == 0) {
+        Logger::log(LogLevel::ERROR, "snap_large_burst: capture phase failed; cleaning temps");
+        for (auto& p : tmpPaths) {
+            if (!p.empty()) ::unlink(p.c_str());
+        }
+        return false;
+    }
+
+    /* Phase 2 — sequentially strip-scale+JPEG-encode each staged NV12 file.
+     * Read strip-by-strip from the temp file (snapLargeFromFile) so the full
+     * ~5.5MB NV12 frame is NEVER loaded into RAM — only one strip's source rows
+     * at a time. That is what keeps the burst within the 32MB board's budget
+     * (a full-frame vector tipped it into OOM on memory-tight boots). */
+    LargeImageSnap largeSnap;
+    bool allOk = true;
+    for (int i = 0; i < N; i++) {
+        bool ok = largeSnap.snapLargeFromFile(filenames[i], dstW, dstH, 85,
+                                              tmpPaths[i], srcW, srcH);
+        ::unlink(tmpPaths[i].c_str());  /* temp NV12 consumed */
+        if (!ok) {
+            Logger::log(LogLevel::ERROR, "snap_large_burst: encode failed for %s",
+                        filenames[i].c_str());
+            allOk = false;
+            continue;
+        }
+
+        struct stat st;
+        long fileSize = (::stat(filenames[i].c_str(), &st) == 0) ? (long)st.st_size : -1;
+        Logger::log(LogLevel::INFO, "snap_large_burst: saved %s (%ld bytes)",
+                    filenames[i].c_str(), fileSize);
+
+        MetadataDao dao;
+        MediaItem item;
+        item.filePath = filenames[i];
+        item.type = 1; /* Photo */
+        item.timestamp = time(NULL);
+        item.fileSize = fileSize;
+        item.width = dstW;
+        item.height = dstH;
+        if (!dao.addMedia(item)) {
+            Logger::log(LogLevel::WARNING, "snap_large_burst: addMedia failed for %s",
+                        filenames[i].c_str());
+        }
+    }
+    ::rmdir(tmpDir);  /* succeeds only if empty (all temps unlinked) */
+    Logger::log(LogLevel::INFO, "snap_large_burst: done, allOk=%d", allOk ? 1 : 0);
+    return allOk;
 #else
     return false;
 #endif

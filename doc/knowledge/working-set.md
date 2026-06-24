@@ -6,9 +6,10 @@
 
 ## 2. 当前关注点
 
-两条 active track 并行：
-- **devtest-automation-loop**（最新）：把"串口手敲→人眼读日志→存 log→对照代码"全人工链路自动化成 WSL 上 Claude 驱动的可审计闭环。架构已 grill 定型，正执行 **Phase-0（tracer bullet）**。见 [`decisions/devtest-automation-loop.md`](decisions/devtest-automation-loop.md) + [`todo.md`](todo.md) "DevTest 自动化闭环" track。
-- **phase1-module-stabilization**（wm/um 稳定化）：devtest Phase-0 的 tracer bullet 直接服务它（"单进程可重复"判据）。场景测试清单（已有/待实现 + file:line 指针）见 [`specs/scenario-test-manifest.md`](specs/scenario-test-manifest.md)。
+三条 active track 并行：
+- **wm-app（最新）**：Phase-1 单功能验证（record/snap/upload 真机绿）完成后，**新建独立 binary `wm`**（`-m 0/1/2`：CAPTURE_ONLY / CAPTURE+UPLOAD / UPLOAD_ONLY）重组这些稳定模块，丢弃 crash 不收敛的 `htc_workmode_app`。架构=任务调度器（pending + Capture/Upload lane + Shutdown task，自管关机）。**时间链（RTC→MCU→NTP + ntpSynced + 关机回写）已用 `time_test` 真机验证通过（7/7 GREEN）**，链代码可 lift 进 wm。规格见 [`specs/wm-app-spec.md`](specs/wm-app-spec.md)，验证见 [`reviews/2026-06-23-time-chain-hw-verification.md`](../reviews/2026-06-23-time-chain-hw-verification.md)。
+- **devtest-automation-loop**：把"串口手敲→人眼读日志→存 log→对照代码"全人工链路自动化成 WSL 上 Claude 驱动的可审计闭环。架构已 grill 定型，正执行 **Phase-0（tracer bullet）**。见 [`decisions/devtest-automation-loop.md`](decisions/devtest-automation-loop.md) + [`todo.md`](todo.md) "DevTest 自动化闭环" track。
+- **phase1-module-stabilization**（wm/um 稳定化）：devtest Phase-0 的 tracer bullet 直接服务它（"单进程可重复"判据）。场景测试清单（已有/待实现 + file:line 指针）见 [`specs/scenario-test-manifest.md`](specs/scenario-test-manifest.md)。wm-app 的模块复用依据即来自此。
 
 知识入口骨架（README/overview/working-set/标准子目录）已完成，迁移工作按需推进。
 
@@ -148,6 +149,15 @@ wm/um/共享三分(REPLACE，`runCommands` 瀑布退役)→稳定判据=退役 k
 **交付**：4 个 L2 二进制(record/snap/upload/rtsp) + 补 2 个 L1 sim(ntp/http)。
 **参考文档**：`specs/phase1-module-stabilization-plan.md`（七决策+交付表+模块映射+spec 骨架+执行序列）
 **下一步**：起 `/refactor ntp`（最小 inline 抽取 + L1 sim golden）作 flow 试点。
+
+---
+
+### wm-app（新建 wm 程序，重组 Phase-1 稳定模块）
+
+**状态**：规格已 grill 定型；时间链真机 7/7 GREEN；**wm 3 模式矩阵 HW-verified**（`tests/host/test_wm.py`：m2-upload/m0-photo/m0-record/m1-photo/m1-record **5 PASSED**，m0-both/m1-both **xfail**）。**wm 最大风险（IMP 捕获 crash）已排除**。**唯一已知问题**：cm==1（photo+record combo）WEDGE 设备（IMP 通道冲突，deferred，需专项调查或 spec 改 cm==1 语义）。wm 主体完成。
+**关键决策**：新建独立 binary `wm`（`-m 0/1/2`），与旧 `htc_workmode_app` 并存；内核=任务调度器（pending + Capture/Upload lane + Shutdown task，自管关机，idle-grace G 秒）；触发=可插拔 Trigger（PIR/SimPir/信号）；时间链 wm 自跑（RTC→MCU→NTP + ntpSynced，无 `-rtc` 入参）；关机回写 MCU 仅时间。
+**最高风险已收口**：时间链（原 sim-only）已用 `time_test` 真机验证（RTC/MCU/NTP + 链 + 回写均 GREEN）；剩 §11.5 RTC-drift 待决策。
+**参考文档**：[`specs/wm-app-spec.md`](specs/wm-app-spec.md)（权威 spec + 决策日志 + 治理规则）、[`../reviews/2026-06-23-time-chain-hw-verification.md`](../reviews/2026-06-23-time-chain-hw-verification.md)（时间链真机验证 + 发现）
 
 ---
 

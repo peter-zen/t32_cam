@@ -136,6 +136,26 @@ int LargeImageSnap::findSosDataOffset(const uint8_t* jpegData, int len) {
 }
 
 bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h, int quality) {
+    // Get sensor frame (CH0 already enabled by caller)
+    IMPFrameInfo *frame = nullptr;
+    int sensorChn = 0;
+    if (IMP_FrameSource_GetFrameEx(sensorChn, &frame) < 0) {
+        Logger::log(LogLevel::ERROR, "snapLarge: GetFrame failed");
+        return false;
+    }
+    int src_w = frame->width;
+    int src_h = frame->height;
+    const uint8_t* srcData = reinterpret_cast<const uint8_t*>(frame->virAddr);
+
+    bool ok = snapLargeFromBuffer(filename, dst_w, dst_h, quality, srcData, src_w, src_h);
+
+    IMP_FrameSource_ReleaseFrameEx(sensorChn, frame);
+    return ok;
+}
+
+bool LargeImageSnap::encodeLargeJpeg(const std::string& filename, int dst_w, int dst_h, int quality,
+                                    int src_w, int src_h,
+                                    const std::function<bool(int stripIndex)>& fillCropBuf) {
     // Target must be 16-aligned so MCU rows/cols are integral and seams land
     // on MCU boundaries (required for correct RST-marker stitching).
     if (dst_w <= 0 || dst_h <= 0 || (dst_w % 16) != 0 || (dst_h % 16) != 0) {
@@ -143,25 +163,11 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
         return false;
     }
 
-    // Get sensor frame (CH0 already enabled by caller)
-    IMPFrameInfo *frame = nullptr;
-    int sensorChn = 0;
-    int ret = IMP_FrameSource_GetFrameEx(sensorChn, &frame);
-    if (ret < 0) {
-        Logger::log(LogLevel::ERROR, "snapLarge: GetFrame failed");
-        return false;
-    }
-
-    int src_w = frame->width;
-    int src_h = frame->height;
-    const uint8_t* srcData = reinterpret_cast<const uint8_t*>(frame->virAddr);
-
     // Choose strip geometry: stripH divides dst_h and is 16-aligned; src rows
     // per strip must evenly divide src_h and be even (clean NV12 UV crop).
     int stripH = pickStripHeight(dst_h, kStripHeightCap);
     if (stripH < 16) {
         Logger::log(LogLevel::ERROR, "snapLarge: no valid stripH for dst_h=%d (cap=%d)", dst_h, kStripHeightCap);
-        IMP_FrameSource_ReleaseFrameEx(sensorChn, frame);
         return false;
     }
     int numStrips = dst_h / stripH;
@@ -170,7 +176,6 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
         Logger::log(LogLevel::ERROR,
             "snapLarge: src_h=%d not evenly/parity divisible: numStrips=%d stripH=%d cropRows=%d",
             src_h, numStrips, stripH, cropRows);
-        IMP_FrameSource_ReleaseFrameEx(sensorChn, frame);
         return false;
     }
     cropRows = align2(cropRows);
@@ -180,14 +185,12 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
 
     if (!allocateBuffers(src_w, src_h, dst_w, dst_h, stripH, cropRows)) {
         Logger::log(LogLevel::ERROR, "snapLarge: allocateBuffers failed (resizeBuf=%dx%d)", dst_w, stripH);
-        IMP_FrameSource_ReleaseFrameEx(sensorChn, frame);
         return false;
     }
 
     FILE* fp = fopen(filename.c_str(), "wb");
     if (!fp) {
         Logger::log(LogLevel::ERROR, "snapLarge: open %s failed", filename.c_str());
-        IMP_FrameSource_ReleaseFrameEx(sensorChn, frame);
         freeBuffers();
         return false;
     }
@@ -208,7 +211,11 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
     bool success = true;
     for (int i = 0; i < numStrips; i++) {
         auto t0 = clock::now();
-        cropStrip(cropBuf_, srcData, src_w, src_h, i);
+        if (!fillCropBuf(i)) {
+            Logger::log(LogLevel::ERROR, "snapLarge: fillCropBuf failed at strip %d", i);
+            success = false;
+            break;
+        }
         auto t1 = clock::now();
 
         if (!resizeStrip(cropBuf_, resizeBuf_, src_w, cropRows, dst_w, stripH, dst_w, dst_h)) {
@@ -262,7 +269,6 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
     fflush(fp);
     long fileBytes = ftell(fp);
     fclose(fp);
-    IMP_FrameSource_ReleaseFrameEx(sensorChn, frame);
     freeBuffers();
 
     long ms_total = (long)std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -274,6 +280,46 @@ bool LargeImageSnap::snapLarge(const std::string& filename, int dst_w, int dst_h
         ms_total, ms_crop, ms_resize, ms_encode, ms_io, fileBytes, dst_w, dst_h);
 
     return success;
+}
+
+bool LargeImageSnap::snapLargeFromBuffer(const std::string& filename, int dst_w, int dst_h, int quality,
+                                         const uint8_t* srcData, int src_w, int src_h) {
+    return encodeLargeJpeg(filename, dst_w, dst_h, quality, src_w, src_h,
+        [this, srcData, src_w, src_h](int i) -> bool {
+            cropStrip(cropBuf_, srcData, src_w, src_h, i);
+            return true;
+        });
+}
+
+bool LargeImageSnap::snapLargeFromFile(const std::string& filename, int dst_w, int dst_h, int quality,
+                                       const std::string& nv12FilePath, int src_w, int src_h) {
+    FILE* fp = fopen(nv12FilePath.c_str(), "rb");
+    if (!fp) {
+        Logger::log(LogLevel::ERROR, "snapLargeFromFile: open %s failed", nv12FilePath.c_str());
+        return false;
+    }
+    bool ok = encodeLargeJpeg(filename, dst_w, dst_h, quality, src_w, src_h,
+        [this, fp](int i) -> bool { return cropStripFromFile(fp, i); });
+    fclose(fp);
+    return ok;
+}
+
+// Fill cropBuf_ with strip stripIndex's source NV12 rows read directly from the
+// NV12 file (Y block then UV block, each contiguous -> one fseek+fread). Layout
+// matches cropStrip so the rest of the pipeline is source-agnostic. This is the
+// lever that lets >8M burst fit the 32MB board: the full ~5.5MB NV12 frame is
+// never held in RAM, only one strip's source rows (~0.6MB) at a time.
+bool LargeImageSnap::cropStripFromFile(FILE* fp, int stripIndex) {
+    int rows = cropRowsPerStrip_;
+    int offset = stripIndex * rows;
+    size_t yBytes = static_cast<size_t>(rows) * sensorW_;
+    size_t uvBytes = static_cast<size_t>(rows / 2) * sensorW_;
+    if (fseek(fp, (long)offset * sensorW_, SEEK_SET) != 0) return false;
+    if (fread(cropBuf_, 1, yBytes, fp) != yBytes) return false;
+    long uvBase = (long)sensorW_ * sensorH_;
+    if (fseek(fp, uvBase + (long)(offset / 2) * sensorW_, SEEK_SET) != 0) return false;
+    if (fread(cropBuf_ + yBytes, 1, uvBytes, fp) != uvBytes) return false;
+    return true;
 }
 
 bool LargeImageSnap::snapRaw(const std::string& filename, int quality) {

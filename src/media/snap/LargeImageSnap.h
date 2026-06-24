@@ -2,6 +2,8 @@
 #define __LARGE_IMAGE_SNAP_H__
 
 #include <cstdint>
+#include <cstdio>
+#include <functional>
 #include <string>
 
 namespace media {
@@ -26,6 +28,24 @@ public:
     // Returns true on success; logs the reason on failure.
     bool snapLarge(const std::string& filename, int dst_w, int dst_h, int quality);
 
+    // Same strip-stitch capture, but from a CALLER-SUPPLIED NV12 buffer instead
+    // of acquiring a live frame. Used by the >8M burst flow: capture N NV12
+    // frames to a sdcard temp dir first (fast, at sensor rate), then sequentially
+    // strip-scale+encode each via this entry. src_w/src_h are the buffer's real
+    // dimensions (sensor-native). Hardware only.
+    bool snapLargeFromBuffer(const std::string& filename, int dst_w, int dst_h, int quality,
+                             const uint8_t* srcNv12, int src_w, int src_h);
+
+    // Same strip-stitch capture as snapLargeFromBuffer, but the source NV12 is
+    // read strip-by-strip from a file (fseek+fread per strip) instead of a
+    // caller-supplied RAM buffer. Used by the >8M burst flow so the full ~5.5MB
+    // NV12 frame is NEVER held in RAM — only one strip's source rows (~0.6MB) at
+    // a time. That is what lets burst fit the 32MB board (a full-frame vector
+    // tipped it into OOM on memory-tight boots). src_w/src_h are the file's real
+    // dimensions (sensor-native). Hardware only.
+    bool snapLargeFromFile(const std::string& filename, int dst_w, int dst_h, int quality,
+                           const std::string& nv12FilePath, int src_w, int src_h);
+
     // Capture one sensor-native JPEG with NO upscaling/stripping: GetFrameEx
     // -> copy into VBM -> InputJpege -> save. Validates the base fetch+encode
     // pipeline independent of strip stitching and SIMD resize.
@@ -47,6 +67,18 @@ private:
     bool encodeJpegStrip(const uint8_t* nv12Buf, uint8_t* jpegBuf,
                          int w, int h, int quality, int& outLen);
     int findSosDataOffset(const uint8_t* jpegData, int len);
+
+    // Shared strip-encode+stitch pipeline (geometry, buffers, JPEG DRI header,
+    // the strip loop, cleanup). fillCropBuf(stripIndex) must populate cropBuf_
+    // with that strip's source NV12 rows — memory memcpy (snapLargeFromBuffer)
+    // or file fread (snapLargeFromFile). Single source of truth for the RST
+    // stitching so the two sources can't drift.
+    bool encodeLargeJpeg(const std::string& filename, int dst_w, int dst_h, int quality,
+                         int src_w, int src_h,
+                         const std::function<bool(int stripIndex)>& fillCropBuf);
+    // Fill cropBuf_ with strip stripIndex's source NV12 rows from the NV12 file
+    // (Y block + UV block via fseek+fread). Layout matches cropStrip.
+    bool cropStripFromFile(FILE* fp, int stripIndex);
 
     // Align up to even (NV12 rows must be even)
     static int align2(int v) { return (v + 1) & ~1; }

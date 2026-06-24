@@ -4,6 +4,7 @@ file(GLOB MEDIA_APP_SOURCES "${SOURCES}/app/media_app.cpp")
 file (GLOB DAEMON_APP_SOURCES "${SOURCES}/app/daemon_app.cpp")
 file (GLOB NET_APP_SOURCES "${SOURCES}/app/net_app.cpp")
 file(GLOB WORKMODE_APP_SOURCES "${SOURCES}/app/workmode_app.cpp")
+file(GLOB WM_APP_SOURCES "${SOURCES}/app/wm_app.cpp")
 set(NET_APP_HELPER_SOURCES
     "${SOURCES}/app/net_app_logic.cpp"
     "${SOURCES}/app/wifi_reconnect.cpp"
@@ -63,7 +64,9 @@ add_executable(htc_media_app ${MEDIA_APP_SOURCES})
 add_executable(htc_daemon_app ${DAEMON_APP_SOURCES})
 add_executable(htc_net_app ${NET_APP_SOURCES} ${NET_APP_HELPER_SOURCES})
 add_executable(htc_workmode_app ${WORKMODE_APP_SOURCES})
+add_executable(wm ${WM_APP_SOURCES})
 add_executable(snap_test ${CMAKE_CURRENT_SOURCE_DIR}/snap_test.cpp)
+add_executable(time_test ${CMAKE_CURRENT_SOURCE_DIR}/time_test.cpp)
 
 # ============================================================================
 # Platform-specific library linking
@@ -256,6 +259,29 @@ if(BUILD_FOR_SIMULATION)
         logger
         jsoncpp              # WorkModeContext pulls jsoncpp headers
         sdk_stub             # sim SDK stub
+        pthread
+        rt
+        gcc
+        stdc++
+    )
+
+    # wm — new binary (wm-app-spec). Slice 1: m2 upload-only. Same closure as
+    # htc_workmode_app (app_workmode PUBLIC-links capture/upload/time/manifest).
+    target_link_libraries(wm
+        PRIVATE
+        app_workmode
+        app_lifecycle
+        common_misc
+        setting
+        env
+        devconf
+        power
+        daynight
+        gpio
+        mcu
+        logger
+        jsoncpp
+        sdk_stub
         pthread
         rt
         gcc
@@ -471,6 +497,30 @@ target_link_libraries(htc_workmode_app
     gcc
     stdc++
 )
+
+# wm — new binary (wm-app-spec). HW closure (imp/alog/system_call replace sdk_stub).
+target_link_libraries(wm
+    PRIVATE
+    app_workmode
+    app_lifecycle
+    common_misc
+    setting
+    env
+    devconf
+    power
+    daynight
+    gpio
+    mcu
+    logger
+    jsoncpp
+    system_call
+    imp
+    alog
+    pthread
+    rt
+    gcc
+    stdc++
+)
 endif()
 
 # Set output directory
@@ -482,7 +532,27 @@ set_target_properties(htc_media_app PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
-set_target_properties(snap_test PROPERTIES 
+set_target_properties(snap_test PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# time_test — time-chain (RTC/MCU/NTP) HW verification harness (cf. snap_test).
+# No IMP/camera deps, so the link closure is platform-uniform (no SIM/HW split).
+# common_misc brings ntpSyncAndWait (busybox ntpd shell) + its internal system_call.
+target_link_libraries(time_test
+    PRIVATE
+        common_time_rtc
+        mcu
+        common_misc
+        logger
+        jsoncpp
+        pthread
+        rt
+        gcc
+        stdc++
+)
+set_target_properties(time_test PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
@@ -498,6 +568,11 @@ set_target_properties(htc_net_app PROPERTIES
 )
 
 set_target_properties(htc_workmode_app PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+set_target_properties(wm PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

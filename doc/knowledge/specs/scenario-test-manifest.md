@@ -90,7 +90,19 @@ devctl 现有子命令：`run` / `log` / `status` / `send`（原始字节）/ **
 
 ### 🔴 P0 — Phase-1 核心交付（crash-prone）
 
-- [ ] **B1. 生产 snap 路径场景** — `tests/host/test_snap_smoke.py`
+- [x] **B1. 生产 snap 路径场景** — `tests/host/test_snap_smoke.py`（✅ snap_test 已可独立跑通）。
+  先做 snap feature 统一（F1 可选缩略图 / F2 >8M→strip / F3 >8M 连拍 temp-buffer），再
+  **root-cause 修复两个让 snap_test 在 fresh boot 上跑不起来的 bug**（受控实验确认，见
+  [`reviews/2026-06-22-snap-unification.md`](../../reviews/2026-06-22-snap-unification.md)）：
+  #1 fresh-boot 时钟 1970(<FAT 纪元)→ fopen kernel oops（fix: snap_test 启动 `ensurePlausibleClock`）；
+  #2 framesource CH0 配成高于 sensor 的分辨率 → corrupt → polling segfault（fix: 目标 > sensor
+  一律走 sensor 原生 + 软件缩放，不再只限 >8M）。验证：fresh boot 不手动设时钟、不 priming，
+  `snap 3840 2160`(软件缩放 813KB) 与 `snap 2560 1440`(HW 原生 71KB) 均独立 GREEN。
+  **2026-06-23**：全 5-case 矩阵 1-boot-1-case 跑完(4m/8m/16m single + 8m-burst 全 GREEN)；8m-burst
+  发现 flaky OOM(5.5MB 全帧 nv12 向量 vs 32MB 预算,余量仅 ~1.7MB)→ 修 `snapLargeFromFile`(按 strip 从
+  临时文件 fseek+fread,不载全帧;余量→~7MB,快 40%)。见
+  [`reviews/2026-06-23-snap-burst-oom-fix.md`](../../reviews/2026-06-23-snap-burst-oom-fix.md)。
+  ≤sensor 连拍(snap_internal 循环)仍待复测。）
   - 模块 1（loop-faithful，CH0 主 + CH2 缩略图）。
   - 生产 snap 源码：`src/app/workmode/WorkModeRunner.cpp:94 processCmdSnap`（→ `ImageSnap`
     :157-158）/ `:287 processCmdConcurrentSnapRecord`（并发拍录）；boot launcher 侧
@@ -100,7 +112,7 @@ devctl 现有子命令：`run` / `log` / `status` / `send`（原始字节）/ **
   - 断言锚点：`thumbnail saved`（CH2 concurrentSnap）+ snap 成功行 + rc 0；benign 同 record
     （`UploadWorker: auth failed|no storage client`）。
 
-- [ ] **B2. upload 独立断言** — `tests/host/test_upload_smoke.py`
+- [x] **B2. upload 独立断言** — `tests/host/test_upload_smoke.py`（✅ HW GREEN 2026-06-22）
   - 模块 4（single-shot）。worker 已抽：`src/app/workmode/upload_worker.cpp`
     （`start`/`enqueue`/`isIdle`/`flush`；auth failed log :45）。
   - ⚠️ **硬约束**：devtest **无 mgmt/storage 后端** → 上传必失败。本场景只能断「upload worker
@@ -110,27 +122,29 @@ devctl 现有子命令：`run` / `log` / `status` / `send`（原始字节）/ **
 
 ### 🟠 P1 — 长驻 um（probe + ctrl-c teardown，devctl `send`/`ctrl-c` 已具备）
 
-- [ ] **B3. wm3 mobile 长驻** — `tests/host/test_um_mobile_probe.py`
+- [x] **B3. wm3 mobile 长驻** — `tests/host/test_um_mobile_probe.py`（✅ HW GREEN 2026-06-22）
   - 模块 8+7+5（mdns+http+rtsp，usermode）。`wm3 = TEST_ONLY`（workModeToCommand :878）。
   - 形态：后台起 `-wm 3` → sleep + 探测（mDNS 广播 / HTTP 端口 / RTSP 端口 reachable）
     → `devctl ctrl-c` → 断**干净 teardown**（rc 非 137、无 panic、无 hang）。
   - 后台 spawn idiom 待定（如 `devctl run 'nohup <app> & echo $!'` 拿 PID，或 `send` 注入）。
 
-- [ ] **B4. wm4 rtsp-server 长驻** — `tests/host/test_um_rtsp_probe.py`
+- [x] **B4. wm4 rtsp-server 长驻** — `tests/host/test_um_rtsp_probe.py`（✅ HW GREEN 2026-06-22）
   - 模块 5（rtsp，CH1）。`wm4 = UVC`（workModeToCommand :889）。
   - 形态同 B3，探 RTSP 流；顺带验 audio on/off 子参数（`--no-audio`→`HTC_NO_AUDIO`）。
 
 ### 🟡 P2 — L1 sim 补全（低风险，可穿插）
 
-- [ ] **B5. ntp 单测** — `tests/test_ntp.cpp`
+- [x] **B5. ntp 单测** — `tests/test_ntp.cpp`（✅ sim GREEN 2026-06-22）
   - 模块 3。验 `app_lifecycle::syncSystemTime` + `RTC::setTime` 逻辑（sim 层 stub RTC）。
-- [ ] **B6. http 控制 + 回放补全** — `tests/test_http_api.cpp`
+- [x] **B6. http 控制 + 回放补全** — `tests/test_http_api.cpp`（✅ sim GREEN 2026-06-22）
   - 模块 7。现有 `test_camera_properties`/`test_camera_service` 只覆盖属性；**控制端点 +
     渐进式回放（playback_token）未单测**（`test_minimp4_fragmented_mux` 只验 mux 不验端点）。
 
 ### 🟢 P3 — WM 组合矩阵功能锚点（crash 探测之上加功能正确性）
 
-- [ ] **B7. wm_modes_matrix 功能锚点** — 升级 `test_wm_modes_matrix.py`
+- [~] **B7. wm_modes_matrix 功能锚点** — 升级 `test_wm_modes_matrix.py`（wm2-rtc1
+  ✅ HW GREEN；per-mode verdict 已落地。wm0 record 由 `test_record_smoke` 证明 GREEN，
+  wm1 锚点已抓取；wm0/wm1 的矩阵 pytest-green 待 1-boot-1-case 冷启逐项跑。）
   - 现仅 crash/hang 探测。每个 one-shot 模式（0/1/2）抓真机成功日志后，补 mode-specific 成功锚点
     （而非现在的 `benign_errors=(r".*",)` 全放行）。
 

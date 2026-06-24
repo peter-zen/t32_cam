@@ -1,6 +1,7 @@
 #ifndef I_CAMERA_SERVICE_H
 #define I_CAMERA_SERVICE_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>

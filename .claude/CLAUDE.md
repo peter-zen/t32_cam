@@ -49,9 +49,20 @@ tar xjf ref/Tassadar-T32-1.0.6-20250613/software/pc/toolchain/mips-gcc540-glibc2
 
 ### T32 hardware build (NFS-shared, deployed to T32)
 
+**Build via the host-specific script** — it papers over three host-specific snags that break a bare `cmake` on this PC (the cross-gcc resolving the wrong `as` without toolchain/bin on PATH; the toolchain's bundled cmake 3.8.2 shadowing the system cmake; and cmake 4.x vs the old `cmake_minimum_required` in `third_party/`):
+
 ```bash
-cmake -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake -B build -S .
-cmake --build build -j$(nproc)
+./script/build_t32@206.sh        # company build host 192.168.0.206
+```
+
+**Pick the script by build host** (`hostname -I`): each build PC gets its own `script/build_t32@<host>.sh`, because the toolchain path / system cmake location can differ across machines. On a new host (e.g. home WSL on `192.168.31.x`), copy the closest one to `build_t32@<host>.sh` and edit the `TOOLCHAIN_DIR` / `CMAKE_BIN` knobs at the top of the file.
+
+The bare commands the script runs (for reference / debugging):
+
+```bash
+export PATH=$PWD/toolchain/mips-gcc540-glibc222-r3.3.7.mxu2.cve/bin:$PATH
+/usr/bin/cmake -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -B build -S .
+/usr/bin/cmake --build build -j$(nproc)
 ```
 
 Outputs land in `build/bin/` and `build/lib/`. Notable:

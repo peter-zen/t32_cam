@@ -35,6 +35,12 @@ class ImageSnapParams {
 	int getFrameSourceChnNum() const;
 	void setFrameSourceChnNum(int nchannels);
 
+	// Thumbnail capture (CH2 hardware scaler) is on by default for back-compat.
+	// Disable to skip the CH2 stream entirely (frees the sensor channel + the
+	// per-photo thumbnail capture), e.g. for thumbnail-less burst capture.
+	void setThumbnailEnabled(bool enabled);
+	bool isThumbnailEnabled() const;
+
 	private:
     int sleepTime;
 	int nchannels;
@@ -42,6 +48,7 @@ class ImageSnapParams {
 	int height;
 	int sensorW;
 	int sensorH;
+	bool enableThumbnail;
 };
 
 class ImageSnap {
@@ -73,6 +80,10 @@ class ImageSnap {
         void deinitialize();
         bool snap_internal(const std::vector<std::string> &filenames);
         bool snap_large_internal(const std::vector<std::string> &filenames);
+        // >8M burst: capture N sensor NV12 frames to a sdcard temp dir first
+        // (software scale-up can't keep up with burst rate), then sequentially
+        // strip-scale+JPEG-encode each to its target path.
+        bool snap_large_burst_internal(const std::vector<std::string> &filenames);
         bool capture_thumbnail();
         bool daynight_switch(bool on);
         ImageSnapParams params;

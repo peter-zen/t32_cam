@@ -124,3 +124,59 @@ set_target_properties(test_net_app_logic PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+# NTP/RTC time-sync decision-logic unit test (manifest §B5, module 3).
+# syncSystemTime() is not cleanly sim-testable (host clock already plausible ->
+# early-outs); this locks the TIME_PLAUSIBLE gate + RTC field validation +
+# graceful-failure contract + MCU implausible-in-sim behavior. Links the light
+# RTC/MCU shared libs directly (NOT the heavy app_lifecycle cascade).
+add_executable(test_ntp test_ntp.cpp)
+
+target_link_libraries(test_ntp
+    PRIVATE
+    common_time_rtc
+    mcu
+    pthread
+)
+
+target_include_directories(test_ntp PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/common
+    ${CMAKE_SOURCE_DIR}/src/common/time/rtc
+    ${CMAKE_SOURCE_DIR}/src/hardware/mcu
+)
+
+set_target_properties(test_ntp PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# HTTP control-endpoint + playback_token unit test (manifest §B6, module 7).
+# Brings the real CivetWeb server up on localhost in-process and issues HTTP
+# requests (handlers in http_api_v1.cpp are static — direct-call is impossible).
+add_executable(test_http_api test_http_api.cpp)
+
+target_link_libraries(test_http_api
+    PRIVATE
+    http_server
+    camera_service
+    common_misc
+    logger
+    jsoncpp
+    civetweb
+    storage
+    easylogger
+    pthread
+)
+
+target_include_directories(test_http_api PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/service/http_server
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+)
+
+set_target_properties(test_http_api PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
