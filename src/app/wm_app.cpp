@@ -84,6 +84,12 @@ int main(int argc, char* argv[])
     cfg.logFile   = cfg.logRoot + "/app.log";
 #endif
 
+    // Debug: HTC_NO_MEDIA_SCANNER=1 skips MediaScanner (the heaviest concurrent thread)
+    // to bisect whether it interacts with cm==1 record and causes the wedge.
+    if (const char *e = std::getenv("HTC_NO_MEDIA_SCANNER")) {
+        if (e[0] == '1') cfg.skipMediaScanner = true;
+    }
+
     // --- S1-S8 + signal install ---
     app_lifecycle::ProcessLifecycle lc;
     if (!lc.commonStartup(cfg)) return -1;
