@@ -1,4 +1,5 @@
 #include "ImageSnap.h"
+#include "SharedVideo.h"   // media::sharedVideo() (进程级 IngenicVideo 单例，与 VideoRecorder 共享)
 #include <mutex>
 #include <string.h>
 #include <cstdlib>
@@ -131,13 +132,9 @@ bool ImageSnap::initialize()
     Logger::log(LogLevel::INFO, "initialize: target=%dx%d sensor=%dx%d ch0cfg=%dx%d isLargeImage=%d",
                 w, h, sw, sh, cfgW, cfgH, isLargeImage_ ? 1 : 0);
 
-    video_ = hal::HalProvider::createVideo();
+    video_ = media::sharedVideo();   // 进程级单例（与 VideoRecorder 共享），已 init；不再 createVideo/init
     if (!video_) {
-        Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
-        return false;
-    }
-    if (!video_->init()) {
-        Logger::log(LogLevel::ERROR, "initialize: video init failed");
+        Logger::log(LogLevel::ERROR, "initialize: sharedVideo null");
         return false;
     }
 
@@ -171,8 +168,8 @@ bool ImageSnap::initialize()
      * entirely when the caller disabled thumbnail capture (frees the CH2 sensor
      * channel, not just the per-photo capture). */
     if (params.isThumbnailEnabled()) {
-        thumbVideo_ = hal::HalProvider::createVideo();
-        if (thumbVideo_ && thumbVideo_->init()) {
+        thumbVideo_ = media::sharedVideo();   // 同一进程级单例（已 init）
+        if (thumbVideo_) {
             thumbStream_ = thumbVideo_->createVideoStream();
         }
         if (thumbStream_) {
@@ -222,12 +219,10 @@ void ImageSnap::deinitialize()
         if (stream_) {
             stream_->stop();
         }
-        if (thumbVideo_) {
-            thumbVideo_->exit();
-        }
-        if (video_) {
-            video_->exit();
-        }
+        // 不调 video_/thumbVideo_->exit()：它们是进程级 sharedVideo() 单例（与
+        // VideoRecorder 共享），进程内永不 IMP_System_Exit（否则 cm==1 photo→record 的
+        // exit→re-Init 会 kernel wedge）。channel 级释放由 stream_/thumbStream_ 析构
+        //（~IngenicVideoStream → DestroyChn）完成；单例 ref 在 ~ImageSnap 自然减一。
     }
 }
 

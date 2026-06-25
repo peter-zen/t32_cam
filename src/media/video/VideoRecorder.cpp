@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include "Common.h"
 #include "Logger.h"
+#include "SharedVideo.h"   // media::sharedVideo() (进程级 IngenicVideo 单例)
 #include "minimp4.h"
 #include "VideoRecorder.h"
 #include "DayNightSwitch.h"
@@ -987,26 +988,12 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     return true;
 }
 
-// 进程级单例 IngenicVideo：跨 record 复用。static 持有一份 ref → ref_count 永不归零 →
-// 进程内不跑 IMP_System_Exit，避免两段录影间 / 跨进程 exit→re-Init 的 kernel wedge。
-// channel 级释放（CreateChn/DestroyChn）由各 VideoRecorder 的 stream_ 析构完成。
-// C++11 函数局部 static 初始化线程安全（首次调用建一次 + init 一次）。
-static std::shared_ptr<hal::IVideo> sharedVideo()
-{
-    static std::shared_ptr<hal::IVideo> v = []() -> std::shared_ptr<hal::IVideo> {
-        auto vid = hal::HalProvider::createVideo();
-        if (vid && vid->init()) {
-            return vid;
-        }
-        Logger::log(LogLevel::ERROR, "sharedVideo: createVideo/init failed");
-        return nullptr;
-    }();
-    return v;
-}
+// 进程级 IngenicVideo 单例已移至 media::sharedVideo()（SharedVideo.{h,cpp}），供
+// VideoRecorder(record) + ImageSnap(photo) 共享，进程内永不 IMP_System_Exit。
 
 bool VideoRecorder::initVideo()
 {
-    video_ = sharedVideo();            // 复用进程级 IngenicVideo（已 init），不重复 createVideo/init
+    video_ = media::sharedVideo();     // 复用进程级 IngenicVideo（已 init），不重复 createVideo/init
     if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: sharedVideo (createVideo/init) failed");
         return false;

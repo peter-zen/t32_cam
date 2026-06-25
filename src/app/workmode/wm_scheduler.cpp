@@ -97,13 +97,14 @@ void WmScheduler::run() {
         if (trigger_ && !masked && trigger_->waitForTrigger(kPollMs) == 1) {
             if (capture_) capture_->trigger();
             captureTriggered = true;
+            if (oneShot) masked = true;   // one-shot：首次触发后立即屏蔽——异步 record 期间二次
+                                          // trigger 会抢 IMP 通道（snap failed）→ 破坏状态 → teardown wedge
             idleStart = 0;   // 捕获活动：重置 idle-grace（sync SnapTask 的 isBusy 恒 false，
                              // 不会经 else 分支重置；显式重置确保 grace 从上次捕获起算）
         }
 
-        // 2) one-shot：首个 capture 完成后屏蔽触发
+        // 2) capture idle 状态（idle-grace 判定用）
         const bool captureIdle = (!capture_ || !capture_->isBusy());
-        if (oneShot && captureTriggered && captureIdle) masked = true;
 
         // 3) upload（m1）：idle / timeout。UploadWorker 懒连接——首个 desc（首个 capture
         //    产物）入队才真连，自然满足「Upload 首个 Capture 完成后才启动」。

@@ -140,7 +140,7 @@ kill $PID
 
 ## Guardrails
 
-- **`src/hal/**` is PIC-owned.** Do not modify without prior written proposal and confirmation.
+- **`src/hal/**` ownership transferred from PIC to the project maintainer (2026-06-24).** Now editable, but any hal/ change must be **explicitly proposed + approved** before editing (the IngenicVideo IMP lifecycle is load-bearing for record/snap stability — see `reviews/2026-06-24-wm-slice2-capture.md` cm==1 root cause).
 - **Git policy**: Never commit, push, or rollback without explicit user permission.
 - **Dual-platform**: Code must compile for both `BUILD_FOR_SIMULATION=ON` and target hardware.
 

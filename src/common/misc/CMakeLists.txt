@@ -21,10 +21,11 @@ include_directories(
 add_library(common_misc SHARED ${SOURCE_FILES})
 
 # Platform-specific linking
+# jsoncpp: Misc.cpp 用 Json（parseFromStream/CharReaderBuilder 等）——common_misc.so 须自包含。
 if(BUILD_FOR_SIMULATION)
-    target_link_libraries(common_misc PRIVATE sdk_stub crc16 pthread)
+    target_link_libraries(common_misc PRIVATE sdk_stub crc16 pthread jsoncpp)
 else()
-    target_link_libraries(common_misc PRIVATE system_call crc16 pthread)
+    target_link_libraries(common_misc PRIVATE system_call crc16 pthread jsoncpp)
 endif()
 
 # Set of output directory for the library

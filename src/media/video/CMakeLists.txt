@@ -1,6 +1,7 @@
 file(GLOB SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/VideoRecorder.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/VideoParams.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/SharedVideo.cpp"
 )
 
 include_directories(
@@ -17,7 +18,7 @@ include_directories(
 
 add_library(media_recorder SHARED ${SOURCE_FILES})
 
-target_link_libraries(media_recorder PUBLIC minimp4 hal_video hal_audio audio_recorder media_fifo media_base storage)
+target_link_libraries(media_recorder PUBLIC minimp4 hal_video hal_audio audio_recorder media_fifo media_base storage daynight)
 
 set_target_properties(media_recorder PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"

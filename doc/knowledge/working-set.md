@@ -154,7 +154,7 @@ wm/um/共享三分(REPLACE，`runCommands` 瀑布退役)→稳定判据=退役 k
 
 ### wm-app（新建 wm 程序，重组 Phase-1 稳定模块）
 
-**状态**：规格已 grill 定型；时间链真机 7/7 GREEN；**wm 3 模式矩阵 HW-verified**（`tests/host/test_wm.py`：m2-upload/m0-photo/m0-record/m1-photo/m1-record **5 PASSED**，m0-both/m1-both **xfail**）。**wm 最大风险（IMP 捕获 crash）已排除**。**唯一已知问题**：cm==1（photo+record combo）WEDGE 设备（IMP 通道冲突，deferred，需专项调查或 spec 改 cm==1 语义）。wm 主体完成。
+**状态**：规格已 grill 定型；时间链真机 7/7 GREEN；**wm 3 模式矩阵 HW-verified**（`tests/host/test_wm.py`：m2-upload/m0-photo/m0-record/m1-photo/m1-record **5 PASSED**，m0-both/m1-both **xfail**）。**wm 最大风险（IMP 捕获 crash）已排除**。**唯一进行中**：cm==1（photo+record）wedge——根因定位到 `src/hal/ingenic/IngenicVideo.cpp` 的 JPEG→H264 framesource 释放间隙（hal/ 已从 PIC 转交项目维护者）。**【续接 cm==1 修复 → 读 [`reviews/2026-06-24-wm-cm1-handoff.md`](../../reviews/2026-06-24-wm-cm1-handoff.md)】**：4 步计划（hal/ instrument 定位 → same-payload-safe fix → 矩阵回归 → cm==1 聚合 task）。wm 主体完成 + committed（`1df6b1c`）；cm==1 debug 期间的 sharedVideo/oneShot/self-contained-.so 改动待 commit。
 **关键决策**：新建独立 binary `wm`（`-m 0/1/2`），与旧 `htc_workmode_app` 并存；内核=任务调度器（pending + Capture/Upload lane + Shutdown task，自管关机，idle-grace G 秒）；触发=可插拔 Trigger（PIR/SimPir/信号）；时间链 wm 自跑（RTC→MCU→NTP + ntpSynced，无 `-rtc` 入参）；关机回写 MCU 仅时间。
 **最高风险已收口**：时间链（原 sim-only）已用 `time_test` 真机验证（RTC/MCU/NTP + 链 + 回写均 GREEN）；剩 §11.5 RTC-drift 待决策。
 **参考文档**：[`specs/wm-app-spec.md`](specs/wm-app-spec.md)（权威 spec + 决策日志 + 治理规则）、[`../reviews/2026-06-23-time-chain-hw-verification.md`](../reviews/2026-06-23-time-chain-hw-verification.md)（时间链真机验证 + 发现）
