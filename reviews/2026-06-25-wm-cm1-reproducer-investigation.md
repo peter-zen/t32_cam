@@ -28,6 +28,7 @@ wm 的 cm==1（photo=JPEG → record=H264，同进程顺序）在**干净 SD**�
 | 4 | `seq-g0-full` | + **SetChnAttr 重配**（`GetChnAttr→scaler/crop/fps→SetChnAttr`，JPEG fps15、H264 fps30，镜像 `IngenicVideo::configure`） | wm 每次 encoder 都 SetChnAttr 重配 group 0，是否留下坏 FS 状态 | ✅ clean | **SetChnAttr 重配不是触发源** |
 | 5 | `seq-g0-wm` | + **并发 group-2 缩略图**（photo 同时建 enc 12(g0)+enc 14(g2 320x180)、抓双流、都销毁——按 wedge hal_trace 0-79 行**完整复刻 wm photo**） | 「photo 期间并发 group-2 缩略图（双 VPU encoder）留下残留」 | ✅ clean，无 warning | **并发缩略图不是触发源**；photo 阶段已**完整复刻**仍未复现 |
 | 6 | `seq-split` | **反 singleton**：photo 和 record 分两个 IMP session（init→photo→**exit**→init→record→exit） | 「IMP_System_Exit→re-Init」（singleton 当年为避开它而引入，handoff §2）是否 wedge；fresh-IMP-per-session 是否可行 | ✅ clean，**RE-INIT rc=0**，`SEQ-SPLIT DONE` | **exit→re-Init 在 sample 不 wedge**；fresh-per-session 可行 |
+| 7 | `seq-g0-wm-osd` | + **OSD region on group 0**（`IMP_ISP_Tuning_CreateOsdRgn(0)`，镜像 wm `IspOsdManager`） | wm photo 期间的 OSD engagement 是否是 enable_irq/wedge 触发源 | ✅ clean，`CreateOsdRgn handle=0` 正常 | **OSD 不是触发源**；photo 阶段 IMP 序列已**逐行复刻完整**仍未复现 |
 
 **附带的只读分析（免 boot）**：
 - 读 `configureEncoderAttr`（IngenicVideo.cpp:691）→ i2d 仅 `GetI2dAttr` 做 90/270 旋转的 W/H 交换，**不 SetI2dAttr、不碰硬件** → i2d **不可能是 VPU 触发源**（省了一版 boot）。
@@ -35,11 +36,22 @@ wm 的 cm==1（photo=JPEG → record=H264，同进程顺序）在**干净 SD**�
 
 ## 3. 结论（definitive）
 
-1. **IMP 流程层面全清**：6 个 variant（lifecycle / group 复用 / IVDC / SetChnAttr / 并发缩略图 / exit-reinit）**无一复现** wedge。SDK 流程在所有受测配置下安全。
+1. **IMP 流程层面全清**：7 个 variant（lifecycle / group 复用 / IVDC / SetChnAttr / 并发缩略图 / exit-reinit / OSD）**无一复现** wedge，photo 阶段 IMP 序列已**逐行复刻完整**。SDK 流程在所有受测配置下安全。
 2. **不是原厂 driver bug**（SDK 自身流程不 wedge）→ **不需要向 T32 原厂提 issue**。
-3. **不是 singleton 持久化**：`seq-g0-wm` 用了与 singleton **完全相同**的持久 IMP（单 session、photo→record），却 clean。用户的 singleton 假设**被 sample 推翻**（持久模式本身不 wedge）。
+3. **不是 IMP 持久化模式**：`seq-g0-wm` 用了与 singleton **完全相同**的持久 IMP（单 session、photo→record），却 clean。
 4. **不是 exit→re-Init**：`seq-split` 证明 fresh-IMP-per-session 可行。
-5. **wedge 必在 wm 的 `IngenicVideo` C++ hal 代码**里——IMP 调用全 rc=0、纯 IMP-call 复现不出来；使 kernel hang 的是 wm C++ 层做了 sample 没做的事。**头号未测嫌疑：`IspOsdManager`**（wm `IngenicVideo::configure` 每次 session 都调 `IspOsdManager::prepare/start`；serial 日志实证 `IspOsdManager: CreateOsdRgn/stamp`；sample 完全无 OSD）。
+5. **OSD 也排除**：`seq-g0-wm-osd` 复刻 wm OSD engagement，仍 clean。
+6. **wedge 必在 wm 的 `IngenicVideo` C++ hal 代码**里——IMP 调用全 rc=0、纯 IMP-call 复现不出来；使 kernel hang 的是 wm C++ 层做了 sample 没做的事。
+
+### 3.1 为何 sample-based reproducer **结构上无法**验证 singleton 假设（关键）
+
+用户怀疑 `SharedVideo` singleton（持久 `IngenicVideo` C++ 对象）是元凶。但 sample reproducer 用的是 `sample_system_init`（C，**没有 singleton**）。它复刻的是 wm 的 **IMP 调用序列**（全 rc=0），而 singleton 的独有之处是它的 **C++ 对象状态**（`~IngenicVideoStream` 的 ref-counted release、持久 `IspOsdManager` 实例、`IngenicVideo::init` 内容）——这些**不在 IMP 调用层面**，sample reproducer 触及不到。
+
+→ **要验证 singleton 假设，必须用一个用「真 singleton」的 standalone C++ harness**（链 wm 的 .so，调 `media::sharedVideo()` + `IngenicVideoStream` 做 photo+record，无 SimPir/scheduler/DB/upload）：
+- 若 wedge → singleton/`IngenicVideo` capture 路径本身就是元凶（与 scheduler 无关）。
+- 若 clean → scheduler/并发是必需的（不同方向）。
+
+`IngenicVideo::init`（:1255）相对 `sample_system_init` 的额外项（VTS workaround `IMP_ISP_SetSensorRegister`、`IspOsdManager` 创建）已确认，但都非 VPU 触发源特征（sensor timing / OSD 已测）。
 
 ## 4. 用户约束 vs 结论
 

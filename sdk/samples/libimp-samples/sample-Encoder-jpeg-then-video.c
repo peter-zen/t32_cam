@@ -277,12 +277,13 @@ static int jpeg_session_g0(int use_ivdc, int reconf) {
  * vs seq-g0-full (which omits the concurrent group-2 thumbnail). If this wedges where
  * seq-g0-full did not, the concurrent group-2 thumbnail (extra VPU encoder) is the residue
  * source that poisons the subsequent H264. */
-static int photo_session_wm(int use_ivdc, int reconf) {
+static int photo_session_wm(int use_ivdc, int reconf, int with_osd) {
 	IMPEncoderCHNAttr attr;
 	IMPEncoderStream stream;
 	int rc;
+	int osdH = -1;  /* OSD region handle on group 0 (wm IspOsdManager equivalent) */
 
-	TRACE(">>> PHOTO-WM SESSION (g0 main + g2 thumb concurrent) ivdc=%d reconf=%d START\n", use_ivdc, reconf);
+	TRACE(">>> PHOTO-WM SESSION (g0 main + g2 thumb concurrent) ivdc=%d reconf=%d osd=%d START\n", use_ivdc, reconf, with_osd);
 
 	/* group 0 main JPEG (chn 12) */
 	if (reconf) reconfigure_group(0, 2560, 1440, 15, 1);
@@ -318,6 +319,15 @@ static int photo_session_wm(int use_ivdc, int reconf) {
 	IMP_FrameSource_EnableChn(2);
 	IMP_Encoder_StartRecvPic(14);
 
+	/* OSD region on group 0 (mirrors wm IspOsdManager::ensureRegion — the one wm-photo
+	 * element the reproducer still omits). If this arms the VPU IRQ / wedges the later
+	 * H264, OSD is the trigger. */
+	if (with_osd) {
+		TRACE("--> IMP_ISP_Tuning_CreateOsdRgn(0)  [wm OSD engagement]\n");
+		osdH = IMP_ISP_Tuning_CreateOsdRgn(0, NULL);
+		TRACE("<-- CreateOsdRgn handle=%d\n", osdH);
+	}
+
 	/* capture one main + one thumbnail (wm burst=1) */
 	TRACE("--> PollingStream(12)\n"); rc = IMP_Encoder_PollingStream(12, 1000); TRACE("<-- rc=%d\n", rc);
 	if (rc >= 0) { IMP_Encoder_GetStream(12, &stream, 1); IMP_Encoder_ReleaseStream(12, &stream); }
@@ -325,6 +335,11 @@ static int photo_session_wm(int use_ivdc, int reconf) {
 	if (rc >= 0) { IMP_Encoder_GetStream(14, &stream, 1); IMP_Encoder_ReleaseStream(14, &stream); }
 
 	/* teardown both (mirrors wm ~ImageSnap order: g2 first, then g0) */
+	if (with_osd && osdH >= 0) {
+		TRACE("--> IMP_ISP_Tuning_DestroyOsdRgn(0, %d)\n", osdH);
+		IMP_ISP_Tuning_DestroyOsdRgn(0, osdH);
+		TRACE("<-- DestroyOsdRgn\n");
+	}
 	TRACE("--> DisableChn(2) + DisableChn(0)\n");
 	IMP_FrameSource_DisableChn(2);
 	IMP_FrameSource_DisableChn(0);
@@ -388,7 +403,7 @@ static int run_seq_split(void) {
 	if (sample_framesource_init() < 0) { sample_system_exit(); return -1; }
 	chn[0].payloadType = PT_H264;
 	if (create_groups() < 0) { sample_framesource_exit(); sample_system_exit(); return -1; }
-	photo_session_wm(1, 1);
+	photo_session_wm(1, 1, 0);
 	destroy_groups();
 	sample_framesource_exit();
 	TRACE("--> sample_system_exit (end session 1) — then RE-INIT for record\n");
@@ -465,7 +480,14 @@ int main(int argc, char *argv[]) {
 		 * + IVDC + SetChnAttr, exactly per the wedge hal_trace.log. seq-g0-full (no thumbnail)
 		 * was clean; this adds the one remaining wm-photo element (concurrent g2 thumbnail). */
 		direct_switch = 1;
-		photo_session_wm(1, 1);
+		photo_session_wm(1, 1, 0);
+		video_session(1);
+	} else if (strcmp(mode, "seq-g0-wm-osd") == 0) {
+		/* seq-g0-wm + OSD region on group 0 (IMP_ISP_Tuning_CreateOsdRgn, mirroring wm
+		 * IspOsdManager). The last untested wm-photo element. Tests whether OSD engagement
+		 * is what arms the VPU IRQ / wedges the subsequent H264. */
+		direct_switch = 1;
+		photo_session_wm(1, 1, 1);
 		video_session(1);
 	} else if (strcmp(mode, "rev") == 0) {
 		video_session(0);
@@ -473,7 +495,7 @@ int main(int argc, char *argv[]) {
 	} else if (strcmp(mode, "concurrent") == 0) {
 		concurrent_session();
 	} else {
-		printf("usage: %s [seq|seq-g0|seq-g0-ivdc|seq-g0-full|seq-g0-wm|seq-split|rev|concurrent]\n", argv[0]);
+		printf("usage: %s [seq|seq-g0|seq-g0-ivdc|seq-g0-full|seq-g0-wm|seq-g0-wm-osd|seq-split|rev|concurrent]\n", argv[0]);
 		fflush(stdout);
 	}
 
