@@ -15,16 +15,37 @@
 
 #include "SharedVideo.h"
 #include "IVideo.h"
+#include "minimp4.h"
 #include <cstdio>
 #include <cstdlib>
 #include <unistd.h>
+#include <cstdint>
+#include <cstring>
 
 #define TRACE(...) do { printf("[HARNESS] " __VA_ARGS__); fflush(stdout); } while (0)
+
+/* MP4 mux helpers — copied from VideoRecorder.cpp to replicate its MP4 record path. */
+static int harnessWriteCb(int64_t offset, const void *buffer, size_t size, void *token) {
+    FILE *f = (FILE *)token;
+    fseek(f, offset, SEEK_SET);
+    return fwrite(buffer, 1, size, f) != size;
+}
+static ssize_t harnessGetNALSize(uint8_t *buf, ssize_t size) {
+    ssize_t pos = 3;
+    while ((size - pos) > 3) {
+        if (buf[pos] == 0 && buf[pos + 1] == 0 && buf[pos + 2] == 1) return pos;
+        if (buf[pos] == 0 && buf[pos + 1] == 0 && buf[pos + 2] == 0 && buf[pos + 3] == 1) return pos;
+        pos++;
+    }
+    return size;
+}
 
 int main(int argc, char **argv) {
     int ivdc = (argc > 1 && atoi(argv[1]) == 0) ? 0 : 1;       // argv[1]=0 disables IVDC
     int rec_thumb = (argc > 2 && atoi(argv[2]) == 0) ? 0 : 1;  // argv[2]=0 disables record-time CH2 thumb
-    TRACE("=== singleton_harness: media::sharedVideo() + IVideoStream, ivdc=%d rec_thumb=%d ===\n", ivdc, rec_thumb);
+    int rec_delay = (argc > 3) ? atoi(argv[3]) : 0;            // argv[3]=seconds to sleep between H264 start and first poll (mimics wm record startup: getInfo/fopen/MP4E/captureThumbnail)
+    int rec_mp4 = (argc > 4 && atoi(argv[4]) == 0) ? 0 : 1;    // argv[4]=0 disables MP4 muxing (the last untested wm-record behavior)
+    TRACE("=== singleton_harness: media::sharedVideo() + IVideoStream, ivdc=%d rec_thumb=%d rec_delay=%d rec_mp4=%d ===\n", ivdc, rec_thumb, rec_delay, rec_mp4);
 
     TRACE("--> media::sharedVideo()  [singleton IngenicVideo init]\n");
     auto video = media::sharedVideo();
@@ -82,6 +103,18 @@ int main(int argc, char **argv) {
         TRACE("--> start H264\n");
         recS->start();
 
+        /* Mimic the wm VideoRecorder::record startup delay between H264 StartRecvPic and
+         * the first poll (getInfo/fopen/MP4E_open/mp4_h26x_write_init/captureThumbnail take
+         * seconds). During this delay the H264 encoder produces frames with NO consumer.
+         * The harness/reproducer poll immediately (no delay) and are clean; cm==2 has the
+         * same delay but works — so this tests whether the delay AFTER the photo overflows
+         * the encoder buffer and wedges. */
+        if (rec_delay > 0) {
+            TRACE("--> sleep %ds (mimics wm record startup: H264 running, no consumer)\n", rec_delay);
+            sleep(rec_delay);
+            TRACE("<-- delay done; now poll\n");
+        }
+
         /* captureThumbnail: a brief CH2 JPEG grab right after H264 start, mirroring
          * VideoRecorder::record's concurrentSnap captureThumbnail (the leading suspect —
          * the harness record WITHOUT this was CLEAN). If this wedges, the record-time
@@ -101,14 +134,53 @@ int main(int argc, char **argv) {
             }
         }
 
-        TRACE("--> polling/getFrame loop (FIRST POLL = WEDGE POINT)\n");
+        /* MP4 mux setup (mirrors VideoRecorder::record) — the last untested wm-record behavior. */
+        FILE *mp4Fp = NULL;
+        MP4E_mux_t *muxer = NULL;
+        mp4_h26x_writer_t mp4wr;
+        if (rec_mp4) {
+            TRACE("--> fopen + MP4E_open + mp4_h26x_write_init (MP4 mux, mirrors VideoRecorder::record)\n");
+            mp4Fp = fopen("/mnt/sdcard/DCIM/harness.mp4", "wb");
+            if (mp4Fp) {
+                muxer = MP4E_open(0, 1, mp4Fp, harnessWriteCb);
+                if (muxer && mp4_h26x_write_init(&mp4wr, muxer, 2560, 1440, 0) == MP4E_STATUS_OK) {
+                    TRACE("<-- MP4 mux ready\n");
+                } else {
+                    TRACE("MP4E_open/write_init failed; continuing without mux\n");
+                    if (muxer) MP4E_close(muxer);
+                    muxer = NULL;
+                }
+            }
+        }
+
+        TRACE("--> polling/getFrame loop (SUSTAINED 900 frames via IVideoStream%s)\n", muxer ? " + MP4 mux" : "");
         hal::VideoEncodedFrame f;
-        for (int i = 0; i < 10; i++) {
-            TRACE("--> poll %d\n", i);
-            if (!recS->polling(1000)) { TRACE("poll timeout\n"); break; }
-            if (recS->getFrame(f)) recS->releaseFrame(f);
+        for (int i = 0; i < 900; i++) {
+            if ((i % 50) == 0) TRACE("--> poll %d\n", i);
+            if (!recS->polling(1000)) { TRACE("poll timeout at %d\n", i); break; }
+            if (recS->getFrame(f)) {
+                if (muxer && f.piece_count > 0) {
+                    /* mux piece 0's NALs (H264 frame) — mirrors VideoRecorder::record */
+                    uint8_t *data = (uint8_t *)f.pieces[0].data;
+                    ssize_t datasize = (ssize_t)f.pieces[0].size, pos = 0;
+                    while (pos < datasize) {
+                        ssize_t nal_size = harnessGetNALSize(data + pos, datasize - pos);
+                        if (nal_size < 4) { pos += 1; continue; }
+                        mp4_h26x_write_nal(&mp4wr, data + pos, (int)nal_size, 3000);  /* 3000 = 90000/30 */
+                        pos += nal_size;
+                    }
+                }
+                recS->releaseFrame(f);
+            }
         }
         recS->stop();
+
+        if (muxer) {
+            TRACE("--> mp4_h26x_write_close + MP4E_close + fclose\n");
+            mp4_h26x_write_close(&mp4wr);
+            MP4E_close(muxer);
+            if (mp4Fp) fclose(mp4Fp);
+        }
     }
     TRACE("========== HARNESS DONE ==========\n");
     return 0;
