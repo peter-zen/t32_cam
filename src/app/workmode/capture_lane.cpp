@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include "Settings.h"   // cameraMode
+#include "SharedVideo.h"  // media::resetSharedVideo (HTC_CM1_RESET)
 #include "Logger.h"
 
 namespace app_workmode {
@@ -29,6 +30,15 @@ bool CaptureLane::trigger() {
     }
     if (cm == 1) {            // 拍照 + 录影（顺序：先拍完再录，避免 CH2 争用）
         snap_->trigger();     // 同步：返回时拍照已完成
+        // HTC_CM1_RESET=1: 在 photo/record 之间做完整 IMP reset（resetSharedVideo →
+        // IMP_System_Exit → record 时 re-init），逼近「分开 app」的 fresh-session-per-
+        // capture，规避同 session 里 photo 状态残留导致的 wedge。默认关。
+        if (const char *e = std::getenv("HTC_CM1_RESET")) {
+            if (e[0] == '1') {
+                Logger::log(LogLevel::INFO, "CaptureLane: HTC_CM1_RESET — resetSharedVideo between photo and record");
+                media::resetSharedVideo();
+            }
+        }
         return record_->trigger();
     }
     // cm==3（并发拍录）不在 wm 范围（spec §5.1，CH2 8M 约束）。

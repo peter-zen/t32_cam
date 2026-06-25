@@ -80,3 +80,72 @@ sample 已穷尽；要定位须直接改 wm hal（`src/hal/ingenic/IngenicVideo.
 | `src/hal/ingenic/IngenicVideo.cpp` | wedge 真正所在；`configureEncoderAttr`(:691)、`init`(:1255)、`configure`、`IspOsdManager` 调用点 |
 | `src/media/video/SharedVideo.cpp` | 进程级 IngenicVideo singleton（用户怀疑点，sample 已证非持久化本身） |
 | wedge `hal_trace.log`（SD，cm==1 那次） | photo phase 0-79 行 + record 80-119 行（止于 getInfo，无 capture loop）= wm 真实序列，sample 逐行对照基准 |
+
+---
+
+# 续（2026-06-25 当日后续）：singleton harness 演进 + wm 侧二分 + 多进程决定性发现
+
+## 8. singleton harness（用 wm 真 singleton + IVideoStream）— 4 种演进，全 CLEAN
+
+新建 `src/media/video/singleton_harness.cpp`（链 media_recorder，调 `media::sharedVideo()` + `IVideoStream` 做 photo[group0 main + g2 thumb] → record[H264]）。逐版加 wm 特性：
+
+| 演进 | 加的 wm 要素 | 结果 |
+|------|------------|------|
+| 10-frame record | 基线 | ✅ CLEAN |
+| sustained 900-frame | 持续录制（reproducer 已证 raw-IMP 900 帧 clean） | ✅ CLEAN → 非 sustained |
+| +4s startup delay | 模拟 wm record 启动（getInfo/fopen/MP4E，H264 跑着无人消费） | ✅ CLEAN → 非 buffer 溢出 |
+| +MP4 muxing | fopen/MP4E_open/mp4_h26x_write_init + 每帧 mp4_h26x_write_nal（复刻 VideoRecorder::record） | ✅ CLEAN → 非 MP4 |
+
+→ **singleton + IVideoStream + photo + H264-record + MP4 + sustained + delay 全部复刻，仍 CLEAN**。wedge 不在 IMP-call 层、不在 singleton、不在 IVideoStream、不在 MP4。**必在 wm C++ 层（ImageSnap/VideoRecorder/scheduler/ProcessLifecycle）做了 sample 没做的事**。
+
+## 9. wm 侧二分（Path B：让 cm==1 逼近不宕机的流程）— 3 个 env，仍全 wedge
+
+wm 加了 3 个 env-gated 诊断（默认关，零正常运行影响）：
+| env | 作用 | 结果 |
+|-----|------|------|
+| `HTC_RECORD_NO_THUMBNAIL=1` | record 跳过 captureThumbnail（record_task.cpp:68 已有） | 仍 wedge（fopen 处）→ captureThumbnail 非元凶 |
+| `HTC_NO_MEDIA_SCANNER=1` | 跳过 MediaScanner（`cfg.skipMediaScanner`，wm_app 新增） | 仍 wedge → MediaScanner 非元凶 |
+| `HTC_CM1_RESET=1` | photo/record 之间 `media::resetSharedVideo()`（→ `IMP_System_Exit` → record re-init，逼近「分开 app」fresh-session-per-capture；SharedVideo 改可 reset + capture_lane 加门） | reset 跑通（log 证 `IMP_System_Exit` + record re-init），**仍 wedge（fopen 处）** → **wedge 非 photo 的 IMP 残留** |
+
+→ **完整 `IMP_System_Exit` 都救不了**。wedge 在 IMP 之外（wm-app 编排/状态，或 kernel driver 里 wm 的 exit 没清干净的东西）。
+
+## 10. 多进程决定性发现（回答「两个独立程序是否宕机」）
+
+**用户疑问**：两个独立 sample 程序（一个拍照、一个录影）在一次启动里先后跑，是否宕机？（用户记忆：不宕机。）
+
+**实测（一次启动里连跑）**：
+| 进程 | 结果 |
+|------|------|
+| `sample-Encoder-jpeg` ×3（photo）+ `sample-Encoder-jpeg-then-video seq` ×1（photo+record）= **4 个 sample IMP 进程** | **全部成功，无 wedge，设备全程存活**（reproducer 作为第 4 个进程跑了完整 photo+record cycle，`system_init rc=0` → DONE） |
+| `wm -m 0 HTC_WM_CAMERA_MODE=0`（cm==0 photo，第 5 个进程） | photo 拍到了（thumbnail + desc），**shutdown 时设备挂**（probe 超时） |
+
+**结论（决定性）**：
+1. **用户的记忆是对的**：多个独立 **sample** 程序在一次启动里**不宕机，且都成功**。**1-IMP-per-boot 对 sample/IMP driver 是错的** —— IMP driver 完全支持一次启动多个 IMP session。
+2. **但 wm 不行**：wm 作为**非首个** IMP 进程，**shutdown（IMP teardown）会挂**。→ **fork/exec 用 wm 进程拆 cm==1 的 photo/record 行不通**（第 2 个 wm 的 shutdown 会挂）。
+3. **wedge 确认是 wm 专属**：IMP driver 干净（多 sample 进程都行）、captures 干净（reproducer/harness 复现不出来）。问题在 **wm 自己的 IMP 用法**。
+4. **新线索**：wm 的 **IMP teardown（`IngenicVideo::exit`）作为非首个进程会挂** —— 跟 cm==1 wedge 可能同根（都是 wm 的 IMP 生命周期没干净复位）。
+
+## 11. 更新后的根因判断
+
+wedge **必在 wm 的 `IngenicVideo` IMP 生命周期**（init/exit/release）里 —— IMP 调用全 rc=0（hal_trace 证），但**状态没干净复位**（多进程证：wm 第 2 个 session 的 teardown 挂；cm==1 单进程里 photo→record 也挂）。即 **wm 的 IMP release 不彻底**，sample 的彻底。handoff 当初的「framesource reset」方向**可能对**，但在比 framesource 更深的层（wm 的 `IngenicVideo::exit`/release 序列比 sample 的 `sample_system_exit` 少了/错了某步）。
+
+## 12. 下一步方向（新 session 接续）
+
+**主攻：对比 wm 的 `IngenicVideo::init`/`exit` vs sample 的 `sample_system_init`/`sample_system_exit`**，找 wm 的 exit/release 少了或错了哪个 IMP 步骤（导致非首个进程 teardown 挂、可能也导致 cm==1 wedge）。
+- wm exit：`src/hal/ingenic/IngenicVideo.cpp:1318` `IngenicVideo::exit()`（[HAL] exit teardown：FS disable → flush → UnBind → DestroyGroup → ISP/System）。
+- sample exit：`sdk/samples/libimp-samples/sample-common.c` `sample_system_exit()`（:710）+ `sample_framesource_exit`/`sample_jpeg_exit`/`sample_video_exit`。
+- 关键对比点：encoder group/channel 的销毁顺序、ISP 关闭、`IMP_System_Exit` 前是否漏了某个 DisableChn/UnBind/DestroyChn。
+
+**辅证：给 wm 的 shutdown（[HAL] exit teardown）加 `hal_trace`**（现有 hal_trace 只包 configure/start/stop，不包 exit），跑「wm 作为非首个 IMP 进程」复现 shutdown 挂，看最后一条 `-->` 无配对 `<--` = 挂在哪个 IMP 调用。这比 cm==1 wedge 更容易复现（只需 sample 跑一次 + wm 跑一次，同 boot）。
+
+**cm==1 wedge 本身**：等 exit 对比有结论后，用同思路查 cm==1 record 期间 wm 的 release 是否漏步（photo 的 release 没把某 IMP 资源复位给 record）。
+
+## 13. 本会话产出（commit 记录）
+- `a1e482a` SharedVideo 单例（上一会话遗留）。
+- `3590034` cm==1 诊断（mkdir fix + HTC_HAL_TRACE + reproducer）。
+- `a7b484a` reproducer seq-split + OSD variant + singleton-harness 结论。
+- `d091ae0` singleton_harness（IVideoStream 隔离测试）。
+- `17d1727` singleton_harness 演进（sustained + delay + MP4，全 CLEAN）。
+- `e97b402` HTC_NO_MEDIA_SCANNER。
+- （本次）SharedVideo 可 reset + capture_lane HTC_CM1_RESET 门。
+- 关键样本：`sample-Encoder-jpeg-then-video`（7 mode reproducer）、`singleton_harness`（4 演进）。两个都是干净、可复用的诊断 artifact。

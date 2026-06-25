@@ -14,4 +14,9 @@ namespace media {
 // 返回进程级唯一 IngenicVideo（首次调用 createVideo+init；后续直接返回）。永不为 exit。
 std::shared_ptr<hal::IVideo> sharedVideo();
 
+// 清掉单例引用（无人持有时 ~IngenicVideo → exit → IMP_System_Exit）；下次 sharedVideo()
+// 重新 init（fresh IMP session）。cm==1 用来在 photo/record 间做完整 IMP reset
+// （逼近「分开 app」的 fresh-session-per-capture）。见 capture_lane + HTC_CM1_RESET。
+void resetSharedVideo();
+
 }  // namespace media
