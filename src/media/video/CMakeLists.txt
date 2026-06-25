@@ -23,3 +23,12 @@ target_link_libraries(media_recorder PUBLIC minimp4 hal_video hal_audio audio_re
 set_target_properties(media_recorder PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )
+
+# Diagnostic: standalone test of the SharedVideo singleton + IngenicVideoStream C++
+# object path (the prime suspect for the wm cm==1 wedge). Links media_recorder (which
+# brings hal_video + deps transitively). See singleton_harness.cpp + reviews/2026-06-25.
+add_executable(singleton_harness ${CMAKE_CURRENT_SOURCE_DIR}/singleton_harness.cpp)
+target_link_libraries(singleton_harness PRIVATE media_recorder rt pthread)
+set_target_properties(singleton_harness PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
