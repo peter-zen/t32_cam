@@ -48,6 +48,7 @@ SAMPLES = sample-Ai-AEC \
 		  sample-Ao \
 		  sample-dmic \
 		  sample-Encoder-video-jpeg \
+		  sample-Encoder-jpeg-then-video \
 		  sample-ISP-InternalChn \
 		  sample-Audio \
 		  sample-dmic-ref \
@@ -79,6 +80,10 @@ sample-Ai-AEC: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o 
 	$(STRIP) $@
 
 sample-Encoder-jpeg: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o sample-Encoder-jpeg.o
+	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) -lpthread -lm -lrt
+	$(STRIP) $@
+
+sample-Encoder-jpeg-then-video: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o sample-Encoder-jpeg-then-video.o
 	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) -lpthread -lm -lrt
 	$(STRIP) $@
 

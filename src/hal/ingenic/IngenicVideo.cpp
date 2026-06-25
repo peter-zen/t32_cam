@@ -12,7 +12,73 @@
 #include <vector>
 #include "Logger.h"
 #include "sensor-config.h"
+#include <stdarg.h>
+#include <stdlib.h>
+#include <unistd.h>
 namespace hal {
+
+// --- hal/ IMP trace sink (debug only; env HTC_HAL_TRACE=1) -----------------
+// Writes a per-line-fsync'd trace so the last line survives a hard poweroff
+// after a kernel wedge. Each IMP call is wrapped with "--> name" / "<-- name
+// rc=N"; the last "-->" with no matching "<--" is the call that hung inside
+// the kernel ioctl. Env-gated and off by default → zero effect on normal runs.
+// Remove once cm==1 (JPEG→H264) wedge is fixed.
+static std::atomic<int> g_hal_trace_enabled{-1};   // -1 unchecked, 0 off, 1 on
+static std::atomic<int> g_hal_trace_seq{0};
+static std::mutex       g_hal_trace_mtx;
+static FILE*            g_hal_trace_fp = nullptr;
+
+static bool hal_trace_enabled() {
+    int v = g_hal_trace_enabled.load();
+    if (v == -1) {
+        const char* e = getenv("HTC_HAL_TRACE");
+        v = (e && e[0] == '1') ? 1 : 0;
+        g_hal_trace_enabled.store(v);
+    }
+    return v == 1;
+}
+
+static void hal_trace(const char* fmt, ...) {
+    if (!hal_trace_enabled()) return;
+    char buf[256];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    std::lock_guard<std::mutex> lock(g_hal_trace_mtx);
+    if (!g_hal_trace_fp) {
+        const char* envp = getenv("HTC_HAL_TRACE_PATH");
+        if (envp && envp[0]) {
+            g_hal_trace_fp = fopen(envp, "w");
+        } else {
+#ifdef BUILD_FOR_SIMULATION
+            char path[256];
+            const char* root = getenv("SIM_SD_ROOT");
+            snprintf(path, sizeof(path), "%s/logs/hal_trace.log",
+                     (root && root[0]) ? root : ".");
+            g_hal_trace_fp = fopen(path, "w");
+#else
+            g_hal_trace_fp = fopen("/mnt/sdcard/logs/hal_trace.log", "w");
+#endif
+        }
+    }
+    if (!g_hal_trace_fp) return;
+    int seq = g_hal_trace_seq.fetch_add(1);
+    fprintf(g_hal_trace_fp, "%d %s\n", seq, buf);
+    fflush(g_hal_trace_fp);
+    fsync(fileno(g_hal_trace_fp));
+}
+
+// Hot capture-loop throttle: log every IMP call for the first HAL_LOOP_FULL
+// frames (~3s), then a heartbeat every HAL_LOOP_BEAT frames, so the fsync cost
+// stays bounded during a 30s record while still catching an early wedge fully.
+static std::atomic<int> g_hal_loop_frame{0};
+static const int HAL_LOOP_FULL = 90;
+static const int HAL_LOOP_BEAT = 60;
+static bool hal_trace_loop_gate() {
+    if (!hal_trace_enabled()) return false;
+    int fr = g_hal_loop_frame.load();
+    return fr < HAL_LOOP_FULL || (fr % HAL_LOOP_BEAT == 0);
+}
 
 static std::atomic<int> g_video_init_ref_count{0};
 
@@ -27,7 +93,10 @@ static bool acquireGroup(int group_id) {
         Logger::log(LogLevel::DEBUG, "[HAL] acquireGroup(%d): shared, ref=%d", group_id, it->second);
         return true;
     }
-    if (IMP_Encoder_CreateGroup(group_id) < 0) {
+    hal_trace("--> IMP_Encoder_CreateGroup g=%d", group_id);
+    int cg_rc = IMP_Encoder_CreateGroup(group_id);
+    hal_trace("<-- IMP_Encoder_CreateGroup g=%d rc=%d", group_id, cg_rc);
+    if (cg_rc < 0) {
         Logger::log(LogLevel::WARNING, "[HAL] acquireGroup(%d): CreateGroup failed, assuming already exists", group_id);
     }
     g_group_ref_count[group_id] = 1;
@@ -44,7 +113,9 @@ static void releaseGroup(int group_id) {
     }
     it->second--;
     if (it->second <= 0) {
-        IMP_Encoder_DestroyGroup(group_id);
+        hal_trace("--> IMP_Encoder_DestroyGroup g=%d", group_id);
+        int dg_rc = IMP_Encoder_DestroyGroup(group_id);
+        hal_trace("<-- IMP_Encoder_DestroyGroup g=%d rc=%d", group_id, dg_rc);
         g_group_ref_count.erase(it);
         Logger::log(LogLevel::DEBUG, "[HAL] releaseGroup(%d): destroyed", group_id);
     } else {
@@ -63,7 +134,11 @@ static bool acquireBind(int group_id, IMPCell* fs_cell, IMPCell* enc_cell) {
         Logger::log(LogLevel::DEBUG, "[HAL] acquireBind(%d): shared, ref=%d", group_id, it->second);
         return true;
     }
-    if (IMP_System_Bind(fs_cell, enc_cell) < 0) {
+    hal_trace("--> IMP_System_Bind fs(g=%d,o=%d)->enc(g=%d,o=%d)",
+              fs_cell->groupID, fs_cell->outputID, enc_cell->groupID, enc_cell->outputID);
+    int b_rc = IMP_System_Bind(fs_cell, enc_cell);
+    hal_trace("<-- IMP_System_Bind g=%d rc=%d", group_id, b_rc);
+    if (b_rc < 0) {
         Logger::log(LogLevel::WARNING, "[HAL] acquireBind(%d): Bind failed, assuming already bound", group_id);
     }
     g_bind_ref_count[group_id] = 1;
@@ -80,7 +155,10 @@ static void releaseBind(int group_id, IMPCell* fs_cell, IMPCell* enc_cell) {
     }
     it->second--;
     if (it->second <= 0) {
-        IMP_System_UnBind(fs_cell, enc_cell);
+        hal_trace("--> IMP_System_UnBind fs(g=%d,o=%d)->enc(g=%d,o=%d)",
+                  fs_cell->groupID, fs_cell->outputID, enc_cell->groupID, enc_cell->outputID);
+        int ub_rc = IMP_System_UnBind(fs_cell, enc_cell);
+        hal_trace("<-- IMP_System_UnBind g=%d rc=%d", group_id, ub_rc);
         g_bind_ref_count.erase(it);
         Logger::log(LogLevel::DEBUG, "[HAL] releaseBind(%d): unbound", group_id);
     } else {
@@ -100,7 +178,10 @@ static bool acquireFrameSource(int group_id, bool* out_first = nullptr) {
         Logger::log(LogLevel::DEBUG, "[HAL] acquireFrameSource(%d): shared, ref=%d", group_id, it->second);
         return true;
     }
-    if (IMP_FrameSource_EnableChn(group_id) < 0) {
+    hal_trace("--> IMP_FrameSource_EnableChn g=%d", group_id);
+    int ec_rc = IMP_FrameSource_EnableChn(group_id);
+    hal_trace("<-- IMP_FrameSource_EnableChn g=%d rc=%d", group_id, ec_rc);
+    if (ec_rc < 0) {
         Logger::log(LogLevel::ERROR, "[HAL] acquireFrameSource(%d): EnableChn failed", group_id);
         if (out_first) *out_first = false;
         return false;
@@ -121,7 +202,9 @@ static bool releaseFrameSource(int group_id, bool* out_last = nullptr) {
     }
     it->second--;
     if (it->second <= 0) {
-        IMP_FrameSource_DisableChn(group_id);
+        hal_trace("--> IMP_FrameSource_DisableChn g=%d", group_id);
+        int dc_rc = IMP_FrameSource_DisableChn(group_id);
+        hal_trace("<-- IMP_FrameSource_DisableChn g=%d rc=%d", group_id, dc_rc);
         g_fs_ref_count.erase(it);
         if (out_last) *out_last = true;
         Logger::log(LogLevel::DEBUG, "[HAL] releaseFrameSource(%d): disabled", group_id);
@@ -889,14 +972,22 @@ IngenicVideoStream::~IngenicVideoStream() {
         // The earlier IMP_Encoder_Query(st.registered) gate is unreliable after
         // teardown and was removed (see artifacts/T3-analyst-evidence.md 缺陷 B).
         if (last_stream_valid_) {
-            IMP_Encoder_ReleaseStream(channel_id_, &last_stream_);
+            hal_trace("--> ~dtor IMP_Encoder_ReleaseStream chn=%d", channel_id_);
+            int rs_rc = IMP_Encoder_ReleaseStream(channel_id_, &last_stream_);
+            hal_trace("<-- ~dtor IMP_Encoder_ReleaseStream chn=%d rc=%d", channel_id_, rs_rc);
             last_stream_valid_ = false;
         }
-        IMP_Encoder_StopRecvPic(channel_id_);
+        hal_trace("--> ~dtor IMP_Encoder_StopRecvPic chn=%d", channel_id_);
+        int sr_rc = IMP_Encoder_StopRecvPic(channel_id_);
+        hal_trace("<-- ~dtor IMP_Encoder_StopRecvPic chn=%d rc=%d", channel_id_, sr_rc);
         releaseFrameSource(group_id_);
-        IMP_Encoder_UnRegisterChn(channel_id_);
+        hal_trace("--> ~dtor IMP_Encoder_UnRegisterChn chn=%d", channel_id_);
+        int ur_rc = IMP_Encoder_UnRegisterChn(channel_id_);
+        hal_trace("<-- ~dtor IMP_Encoder_UnRegisterChn chn=%d rc=%d", channel_id_, ur_rc);
         releaseBind(group_id_, &fs_cell_, &enc_cell_);
-        IMP_Encoder_DestroyChn(channel_id_);
+        hal_trace("--> ~dtor IMP_Encoder_DestroyChn chn=%d", channel_id_);
+        int de_rc = IMP_Encoder_DestroyChn(channel_id_);
+        hal_trace("<-- ~dtor IMP_Encoder_DestroyChn chn=%d rc=%d", channel_id_, de_rc);
         releaseGroup(group_id_);
         configured_ = false;
     }
@@ -916,7 +1007,10 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
     
     //update frame source attribute
     IMPFSChnAttr fs_chn_attr;
-    if(IMP_FrameSource_GetChnAttr(group_id_, &fs_chn_attr) != 0) {
+    hal_trace("--> configure IMP_FrameSource_GetChnAttr g=%d", group_id_);
+    int ga_rc = IMP_FrameSource_GetChnAttr(group_id_, &fs_chn_attr);
+    hal_trace("<-- configure IMP_FrameSource_GetChnAttr g=%d rc=%d", group_id_, ga_rc);
+    if(ga_rc != 0) {
         Logger::log(LogLevel::ERROR, "[HAL] get framesource attr error");
         return false;
     }
@@ -936,7 +1030,11 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
     fs_chn_attr.crop.height = sensor_height;
     fs_chn_attr.outFrmRateNum = cfg.fps_num;
     fs_chn_attr.outFrmRateDen = cfg.fps_den;
-    if(IMP_FrameSource_SetChnAttr(group_id_, &fs_chn_attr) != 0) {
+    hal_trace("--> configure IMP_FrameSource_SetChnAttr g=%d %dx%d fps=%d/%d crop=%dx%d",
+              group_id_, cfg.width, cfg.height, cfg.fps_num, cfg.fps_den, sensor_width, sensor_height);
+    int sa_rc = IMP_FrameSource_SetChnAttr(group_id_, &fs_chn_attr);
+    hal_trace("<-- configure IMP_FrameSource_SetChnAttr g=%d rc=%d", group_id_, sa_rc);
+    if(sa_rc != 0) {
         Logger::log(LogLevel::ERROR, "[HAL] update framesource attr error");
         return false;
     }
@@ -953,12 +1051,18 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
         return false;
     }
 
-    if (IMP_Encoder_CreateChn(channel_id_, &chn_attr) < 0) {
+    hal_trace("--> configure IMP_Encoder_CreateChn chn=%d", channel_id_);
+    int cc_rc = IMP_Encoder_CreateChn(channel_id_, &chn_attr);
+    hal_trace("<-- configure IMP_Encoder_CreateChn chn=%d rc=%d", channel_id_, cc_rc);
+    if (cc_rc < 0) {
         Logger::log(LogLevel::ERROR, "[HAL] configure: IMP_Encoder_CreateChn(%d) failed", channel_id_);
         releaseGroup(group_id_);
         return false;
     }
-    if (IMP_Encoder_RegisterChn(group_id_, channel_id_) < 0) {
+    hal_trace("--> configure IMP_Encoder_RegisterChn g=%d chn=%d", group_id_, channel_id_);
+    int rg_rc = IMP_Encoder_RegisterChn(group_id_, channel_id_);
+    hal_trace("<-- configure IMP_Encoder_RegisterChn g=%d chn=%d rc=%d", group_id_, channel_id_, rg_rc);
+    if (rg_rc < 0) {
         Logger::log(LogLevel::ERROR, "[HAL] configure: IMP_Encoder_RegisterChn(g=%d,c=%d) failed", group_id_, channel_id_);
         IMP_Encoder_DestroyChn(channel_id_);
         releaseGroup(group_id_);
@@ -995,7 +1099,10 @@ bool IngenicVideoStream::start() {
             Logger::log(LogLevel::ERROR, "[HAL] start: acquireFrameSource(%d) failed", group_id_);
             return false;
         }
-        if (IMP_Encoder_StartRecvPic(channel_id_) < 0) {
+        hal_trace("--> start IMP_Encoder_StartRecvPic chn=%d", channel_id_);
+        int st_rc = IMP_Encoder_StartRecvPic(channel_id_);
+        hal_trace("<-- start IMP_Encoder_StartRecvPic chn=%d rc=%d", channel_id_, st_rc);
+        if (st_rc < 0) {
             Logger::log(LogLevel::ERROR, "[HAL] start: IMP_Encoder_StartRecvPic(%d) failed", channel_id_);
             releaseFrameSource(group_id_);
             return false;
@@ -1019,7 +1126,9 @@ bool IngenicVideoStream::stop() {
     ref_count_--;
     if (ref_count_ == 0 && started_) {
         Logger::log(LogLevel::DEBUG, "[HAL] stop: stopping recv pic channel_id=%d", channel_id_);
-        IMP_Encoder_StopRecvPic(channel_id_);
+        hal_trace("--> stop IMP_Encoder_StopRecvPic chn=%d", channel_id_);
+        int sp_rc = IMP_Encoder_StopRecvPic(channel_id_);
+        hal_trace("<-- stop IMP_Encoder_StopRecvPic chn=%d rc=%d", channel_id_, sp_rc);
         bool last_disable = false;
         releaseFrameSource(group_id_, &last_disable);
         if (group_id_ == 0 && last_disable && IspOsdManager::getInstance()) {
@@ -1032,11 +1141,15 @@ bool IngenicVideoStream::stop() {
 }
 
 bool IngenicVideoStream::polling(int timeout_ms) {
-    if (!started_) { 
+    if (!started_) {
         Logger::log(LogLevel::WARNING, "[HAL] polling: not started channel_id=%d", channel_id_);
-        return false; 
+        return false;
     }
-    return IMP_Encoder_PollingStream(channel_id_, timeout_ms) >= 0;
+    bool lg = hal_trace_loop_gate();
+    if (lg) hal_trace("--> polling IMP_Encoder_PollingStream chn=%d to=%d", channel_id_, timeout_ms);
+    int ps_rc = IMP_Encoder_PollingStream(channel_id_, timeout_ms);
+    if (lg) hal_trace("<-- polling IMP_Encoder_PollingStream chn=%d rc=%d", channel_id_, ps_rc);
+    return ps_rc >= 0;
 }
 bool IngenicVideoStream::getFrame(VideoEncodedFrame& out) {
     if (!started_) { 
@@ -1044,14 +1157,20 @@ bool IngenicVideoStream::getFrame(VideoEncodedFrame& out) {
         return false; 
     }
     IMPEncoderStream stream;
-    if (IMP_Encoder_GetStream(channel_id_, &stream, 1) < 0) { 
+    bool lg = hal_trace_loop_gate();
+    if (lg) hal_trace("--> getFrame IMP_Encoder_GetStream chn=%d", channel_id_);
+    int gs_rc = IMP_Encoder_GetStream(channel_id_, &stream, 1);
+    if (lg) hal_trace("<-- getFrame IMP_Encoder_GetStream chn=%d rc=%d pack=%d", channel_id_, gs_rc, (int)stream.packCount);
+    if (gs_rc < 0) {
         Logger::log(LogLevel::ERROR, "[HAL] getFrame: IMP_Encoder_GetStream(%d) failed", channel_id_);
-        return false; 
+        return false;
     }
-    if (stream.packCount <= 0) { 
+    if (stream.packCount <= 0) {
         Logger::log(LogLevel::WARNING, "[HAL] getFrame: packCount<=0 channel_id=%d", channel_id_);
-        IMP_Encoder_ReleaseStream(channel_id_, &stream); 
-        return false; 
+        hal_trace("--> getFrame(empty) IMP_Encoder_ReleaseStream chn=%d", channel_id_);
+        int rse_rc = IMP_Encoder_ReleaseStream(channel_id_, &stream);
+        hal_trace("<-- getFrame(empty) IMP_Encoder_ReleaseStream chn=%d rc=%d", channel_id_, rse_rc);
+        return false;
     }
     last_pieces_.resize(stream.packCount);
     for (int i = 0; i < (int)stream.packCount; ++i) {
@@ -1064,11 +1183,15 @@ bool IngenicVideoStream::getFrame(VideoEncodedFrame& out) {
     out.key = (cfg_.payload == VideoPayloadType::JPEG) ? true : (stream.refType == IMP_Encoder_FSTYPE_IDR);
     last_stream_ = stream;
     last_stream_valid_ = true;
+    g_hal_loop_frame.fetch_add(1);   // one captured video frame → throttle counter
     return true;
 }
-void IngenicVideoStream::releaseFrame(VideoEncodedFrame& out) { 
+void IngenicVideoStream::releaseFrame(VideoEncodedFrame& out) {
     if (last_stream_valid_) {
-        IMP_Encoder_ReleaseStream(channel_id_, &last_stream_);
+        bool lg = hal_trace_loop_gate();
+        if (lg) hal_trace("--> releaseFrame IMP_Encoder_ReleaseStream chn=%d", channel_id_);
+        int rf_rc = IMP_Encoder_ReleaseStream(channel_id_, &last_stream_);
+        if (lg) hal_trace("<-- releaseFrame IMP_Encoder_ReleaseStream chn=%d rc=%d", channel_id_, rf_rc);
         last_stream_valid_ = false;
     }
     out.pieces = nullptr;
@@ -1079,7 +1202,10 @@ bool IngenicVideoStream::getInfo(VideoStreamInfo& info) {
     info.index = group_id_;
     IMPEncoderCHNStat st;
     memset(&st, 0, sizeof(st));
-    if (IMP_Encoder_Query(channel_id_, &st) >= 0) {
+    hal_trace("--> getInfo IMP_Encoder_Query chn=%d", channel_id_);
+    int q_rc = IMP_Encoder_Query(channel_id_, &st);
+    hal_trace("<-- getInfo IMP_Encoder_Query chn=%d rc=%d registered=%d", channel_id_, q_rc, st.registered);
+    if (q_rc >= 0) {
         info.enabled = st.registered ? 1 : 0;
     } else {
         info.enabled = started_ ? 1 : 0;
@@ -1088,7 +1214,10 @@ bool IngenicVideoStream::getInfo(VideoStreamInfo& info) {
     info.output_index = cfg_.channel.stream_index;
     IMPFSChnAttr fs_attr;
     memset(&fs_attr, 0, sizeof(fs_attr));
-    if (IMP_FrameSource_GetChnAttr(group_id_, &fs_attr) >= 0) {
+    hal_trace("--> getInfo IMP_FrameSource_GetChnAttr g=%d", group_id_);
+    int gai_rc = IMP_FrameSource_GetChnAttr(group_id_, &fs_attr);
+    hal_trace("<-- getInfo IMP_FrameSource_GetChnAttr g=%d rc=%d %dx%d", group_id_, gai_rc, fs_attr.picWidth, fs_attr.picHeight);
+    if (gai_rc >= 0) {
         info.width = fs_attr.picWidth;
         info.height = fs_attr.picHeight;
         info.fps_num = fs_attr.outFrmRateNum;

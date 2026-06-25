@@ -89,6 +89,19 @@ int main(int argc, char* argv[])
     if (!lc.commonStartup(cfg)) return -1;
     if (!lc.installSignalHandlers()) return -1;
 
+    // Ensure media output dirs exist (a freshly-formatted SD has no media/ yet;
+    // without this, snap/record fopen to MEDIA_TARGET_PATH ENOENT before any
+    // desc json mkdirs media/upload/ — photo+record would write 0 bytes).
+    Misc::createDirectory(MEDIA_TARGET_PATH);
+    Misc::createDirectory(MEDIA_UPLOAD_PATH);
+
+    // Debug: HTC_LOG_DEBUG=1 lowers elog filter to DEBUG on HW (default INFO)
+    // so module-level DEBUG logs surface. Used for cm==1 wedge diagnosis; no-op
+    // when unset. (hal/ IMP call-level rc trace is separate: HTC_HAL_TRACE=1.)
+    if (const char* dbg = std::getenv("HTC_LOG_DEBUG")) {
+        if (dbg[0] == '1') Logger::setLogLevel(LogLevel::DEBUG);
+    }
+
     // --- -m <0|1|2> 解析 ---
     const bool is_mode_cmd =
         (argc >= 3) && (std::string(argv[1]) == "-m" || std::string(argv[1]) == "--mode");
