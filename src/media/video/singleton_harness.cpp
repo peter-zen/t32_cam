@@ -21,6 +21,9 @@
 #include <unistd.h>
 #include <cstdint>
 #include <cstring>
+#include <thread>
+#include <atomic>
+#include <chrono>
 
 #define TRACE(...) do { printf("[HARNESS] " __VA_ARGS__); fflush(stdout); } while (0)
 
@@ -45,7 +48,9 @@ int main(int argc, char **argv) {
     int rec_thumb = (argc > 2 && atoi(argv[2]) == 0) ? 0 : 1;  // argv[2]=0 disables record-time CH2 thumb
     int rec_delay = (argc > 3) ? atoi(argv[3]) : 0;            // argv[3]=seconds to sleep between H264 start and first poll (mimics wm record startup: getInfo/fopen/MP4E/captureThumbnail)
     int rec_mp4 = (argc > 4 && atoi(argv[4]) == 0) ? 0 : 1;    // argv[4]=0 disables MP4 muxing (the last untested wm-record behavior)
-    TRACE("=== singleton_harness: media::sharedVideo() + IVideoStream, ivdc=%d rec_thumb=%d rec_delay=%d rec_mp4=%d ===\n", ivdc, rec_thumb, rec_delay, rec_mp4);
+    int photo_file = (argc > 5 && atoi(argv[5]) == 1) ? 1 : 0; // argv[5]=1 writes photo .jpg + thumb to files (mimic ImageSnap persistence)
+    int bg_upload  = (argc > 6 && atoi(argv[6]) == 1) ? 1 : 0;  // argv[6]=1 spawns bg thread reading the .jpg during record (mimic upload worker concurrent I/O)
+    TRACE("=== singleton_harness: media::sharedVideo() + IVideoStream, ivdc=%d rec_thumb=%d rec_delay=%d rec_mp4=%d photo_file=%d bg_upload=%d ===\n", ivdc, rec_thumb, rec_delay, rec_mp4, photo_file, bg_upload);
 
     TRACE("--> media::sharedVideo()  [singleton IngenicVideo init]\n");
     auto video = media::sharedVideo();
@@ -77,10 +82,22 @@ int main(int argc, char **argv) {
         hal::VideoEncodedFrame f;
         TRACE("--> main polling/getFrame x3\n");
         for (int i = 0; i < 3; i++) {
-            if (mainS->polling(1000) && mainS->getFrame(f)) mainS->releaseFrame(f);
+            if (mainS->polling(1000) && mainS->getFrame(f)) {
+                if (photo_file && i == 0) {
+                    FILE* jfp = fopen("/mnt/sdcard/DCIM/harness_photo.jpg", "wb");
+                    if (jfp) { for (int p = 0; p < f.piece_count; p++) fwrite(f.pieces[p].data, 1, f.pieces[p].size, jfp); fclose(jfp); TRACE("photo: wrote harness_photo.jpg (%d pieces)\n", (int)f.piece_count); }
+                }
+                mainS->releaseFrame(f);
+            }
         }
         TRACE("--> thumb polling/getFrame\n");
-        if (thumbS->polling(1000) && thumbS->getFrame(f)) thumbS->releaseFrame(f);
+        if (thumbS->polling(1000) && thumbS->getFrame(f)) {
+            if (photo_file) {
+                FILE* tfp = fopen("/mnt/sdcard/DCIM/harness_thumb.jpg", "wb");
+                if (tfp) { for (int p = 0; p < f.piece_count; p++) fwrite(f.pieces[p].data, 1, f.pieces[p].size, tfp); fclose(tfp); TRACE("photo: wrote harness_thumb.jpg\n"); }
+            }
+            thumbS->releaseFrame(f);
+        }
 
         TRACE("--> stop main + thumb\n");
         mainS->stop();
@@ -88,6 +105,24 @@ int main(int argc, char **argv) {
         TRACE("--> ~stream (ref-counted release — the suspected VPU-poison step)\n");
     }  // ~IngenicVideoStream for mainS + thumbS (ref-counted DisableChn/UnBind/DestroyGroup)
     TRACE("<<< PHOTO done; now RECORD\n");
+
+    /* bg upload-mimic thread: reads harness_photo.jpg repeatedly during the record,
+     * mimicking the wm upload worker's concurrent file/network I/O (a cm==1 corruption
+     * suspect — HTC_NO_UPLOAD moved the wedge deeper). Only spawned if bg_upload=1. */
+    std::atomic<int> bgRun{1};
+    std::thread bgTh;
+    if (bg_upload) {
+        TRACE("--> spawn bg upload-mimic thread (reads harness_photo.jpg ~20x/s during record)\n");
+        bgTh = std::thread([&bgRun]() {
+            char buf[4096];
+            while (bgRun.load()) {
+                FILE* fp = fopen("/mnt/sdcard/DCIM/harness_photo.jpg", "rb");
+                if (fp) { while (fread(buf, 1, sizeof(buf), fp) > 0) {} fclose(fp); }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            TRACE("<-- bg upload-mimic thread exiting\n");
+        });
+    }
 
     /* ---------------- RECORD: H264 (group 0) — WEDGE POINT is the first poll ---------------- */
     TRACE(">>> RECORD via singleton IVideoStream H264 g0 2560x1440 30fps\n");
@@ -182,6 +217,8 @@ int main(int argc, char **argv) {
             if (mp4Fp) fclose(mp4Fp);
         }
     }
+    bgRun.store(0);
+    if (bgTh.joinable()) bgTh.join();
     TRACE("========== HARNESS DONE ==========\n");
     return 0;
 }

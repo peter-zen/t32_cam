@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstring>
 #include <ctime>
+#include <cstdlib>
 #include <unistd.h>
 
 namespace hal {
@@ -113,6 +114,14 @@ void IspOsdManager::exit() {
 }
 
 bool IspOsdManager::ensureRegion() {
+    if (std::getenv("HTC_NO_OSD")) {
+        // cm==1 bisect: skip OSD region creation (IMP_ISP_Tuning_CreateOsdRgn) — wm's
+        // record engages OSD on the H264 stream; the harness does NOT. Test whether the
+        // ISP overlay pipeline racing with the post-photo group-0-reused H264 stream is
+        // the corruption trigger. Default off.
+        Logger::log(LogLevel::INFO, "IspOsdManager: ensureRegion SKIPPED (HTC_NO_OSD) <<<cm==1 bisect>>>");
+        return true;
+    }
     if (timeHandle_ >= 0) {
         return true;
     }

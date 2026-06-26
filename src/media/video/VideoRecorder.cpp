@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <cstdlib>
+#include <cstdio>
 #include "Common.h"
 #include "Logger.h"
 #include "SharedVideo.h"   // media::sharedVideo() (进程级 IngenicVideo 单例)
@@ -417,12 +418,65 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
     }
 }
 
+// cm==1 diag: memory snapshot at phase boundaries. No CMA/ION on this kernel
+// ("cma: Failed to reserve 16 MiB" every boot → CmaTotal=0), so the cm==1 wedge is
+// plain RAM exhaustion + zram swap-thrash (fopen stalls ~57s) → watchdog, NOT CMA.
+// Track MemAvail (system pressure), the process's own VmRSS/VmSwap (who holds the RAM),
+// and buddyinfo high-order columns (contiguous-page availability). Remove after root-caused.
+static void logMemInfo(const char* tag) {
+    long memFree = -1, memAvail = -1, swapFree = -1, swapCached = -1;
+    if (FILE* f = fopen("/proc/meminfo", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (!strncmp(line, "MemFree:", 8)) memFree = atol(line + 9);
+            else if (!strncmp(line, "MemAvailable:", 13)) memAvail = atol(line + 14);
+            else if (!strncmp(line, "SwapFree:", 9)) swapFree = atol(line + 10);
+            else if (!strncmp(line, "SwapCached:", 11)) swapCached = atol(line + 12);
+        }
+        fclose(f);
+    }
+    long vmSize = -1, vmRSS = -1, vmSwap = -1;
+    if (FILE* f = fopen("/proc/self/status", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            if (!strncmp(line, "VmSize:", 7)) vmSize = atol(line + 7);
+            else if (!strncmp(line, "VmRSS:", 6)) vmRSS = atol(line + 6);
+            else if (!strncmp(line, "VmSwap:", 7)) vmSwap = atol(line + 7);
+        }
+        fclose(f);
+    }
+    Logger::log(LogLevel::INFO,
+        "MEMINFO[%s] MemFree=%ld MemAvail=%ld SwapFree=%ld SwapCached=%ld kB | "
+        "VmSize=%ld VmRSS=%ld VmSwap=%ld kB",
+        tag, memFree, memAvail, swapFree, swapCached, vmSize, vmRSS, vmSwap);
+    if (FILE* f = fopen("/proc/buddyinfo", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            size_t n = strlen(line);
+            while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = 0;
+            Logger::log(LogLevel::INFO, "BUDDY[%s] %s", tag, line);
+        }
+        fclose(f);
+    }
+}
+
 bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &filename, int duration)
 {
     int i = 0;
+    logMemInfo("record-entry");
 
     hal::VideoStreamInfo info{};
-    if (stream_) {
+    if (std::getenv("HTC_SKIP_ACTIVE_GETINFO")) {
+        // cm==1 bisect: skip the record()-time getInfo (IMP_Encoder_Query chn=0) which
+        // silently deadlocks after photo→record group-0 reuse + CH2 concurrent start.
+        // getInfo only provided width/height here (fps already has a vidParam fallback
+        // below), so pull resolution from vidParam. Default off.
+        int rw = 0, rh = 0;
+        if (vidParam) vidParam->getResolution(rw, rh);
+        info.width = rw;
+        info.height = rh;
+        Logger::log(LogLevel::INFO, "record: getInfo SKIPPED (HTC_SKIP_ACTIVE_GETINFO) using %dx%d <<<cm==1 bisect>>>", rw, rh);
+    } else if (stream_) {
         if (stream_->getInfo(info)) {
             logStreamInfo("record stream info active", info);
         } else {
@@ -432,11 +486,14 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
 
     Logger::log(LogLevel::DEBUG, "%s: Open file %s", __func__, filename.c_str());
 
+    logMemInfo("pre-fopen");  // cm==1 diag: state going into the fopen that stalls ~57s
     FILE *fp = fopen(filename.c_str(), "wb");
     if (!fp) {
         Logger::log(LogLevel::ERROR, "fopen %s failed", filename.c_str());
         return false;
     }
+    Logger::log(LogLevel::INFO, "record TRACE [1/4]: fopen ok -> MP4E_open");
+    logMemInfo("post-fopen");  // cm==1 diag: after the swap-thrash, right before MP4E_open hangs
     MP4E_mux_t *muxer = MP4E_open(0, 1, fp, writeCallback);
 
     if (!muxer) {
@@ -444,6 +501,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
         fclose(fp);
         return false;
     }
+    Logger::log(LogLevel::INFO, "record TRACE [2/4]: MP4E_open ok -> mp4_h26x_write_init");
 
     mp4_h26x_writer_t mp4wr;
     if (MP4E_STATUS_OK != mp4_h26x_write_init(&mp4wr, muxer, info.width, info.height, payloadType == VideoCodecFormat::H265)) {
@@ -452,6 +510,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
         fclose(fp);
         return false;
     }
+    Logger::log(LogLevel::INFO, "record TRACE [3/4]: mp4_h26x_write_init ok -> fps/captureThumbnail/loop");
 
     audio_track_id = -1;
     int configuredAudioChannels = audioChannels > 0 ? audioChannels : 1;
@@ -596,6 +655,8 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     }
     
     bool audioAdtsLogged = false;
+    Logger::log(LogLevel::INFO, "record TRACE [4/4]: entering record loop (first poll next)");
+    logMemInfo("record-loop-entry");
     while (checkRecordCondition()) {
         auto loopWallStart = std::chrono::steady_clock::now();
         /* Polling stream, set timeout as 1000msec */
@@ -1237,6 +1298,14 @@ bool VideoRecorder::stopRecorder()
 
 bool VideoRecorder::daynight_switch(bool on)
 {
+    if (std::getenv("HTC_NO_RECORD_DAYNIGHT")) {
+        // cm==1 wedge bisect: skip the record-start controlISP (SetISPRunningMode while
+        // sensor enabled + post-photo group-0 reuse → suspected ISP ISR defog panic) AND
+        // the 5s auto-switch thread. Makes record-start daynight a no-op, matching what
+        // singleton_harness / sample-Encoder-jpeg-then-video do (both CLEAN). Default off.
+        Logger::log(LogLevel::INFO, "daynight_switch: SKIPPED (HTC_NO_RECORD_DAYNIGHT) <<<cm==1 bisect>>> on=%d", on ? 1 : 0);
+        return true;
+    }
     auto daynight_controller = DayNightSwitch::getInstance();
     if (!daynight_controller) {
         return false;

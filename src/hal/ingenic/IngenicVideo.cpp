@@ -543,13 +543,22 @@ int OSDController::setPoolSize(int modeSel) {
     return 0;
 }
 int SensorController::openISP() {
-    if (IMP_ISP_Open() < 0) return -1;
+    hal_trace("--> [HAL] init: IMP_ISP_Open");
+    int rc = IMP_ISP_Open();
+    hal_trace("<-- [HAL] init: IMP_ISP_Open rc=%d", rc);
+    if (rc < 0) return -1;
     return 0;
 }
 
 int SensorController::closeISP() {
-    if (IMP_ISP_DisableTuning() < 0) return -1;
-    if (IMP_ISP_Close() != 0) return -1;
+    hal_trace("--> [HAL] exit: closeISP IMP_ISP_DisableTuning");
+    int dt_rc = IMP_ISP_DisableTuning();
+    hal_trace("<-- [HAL] exit: closeISP IMP_ISP_DisableTuning rc=%d", dt_rc);
+    if (dt_rc < 0) return -1;
+    hal_trace("--> [HAL] exit: closeISP IMP_ISP_Close");
+    int ic_rc = IMP_ISP_Close();
+    hal_trace("<-- [HAL] exit: closeISP IMP_ISP_Close rc=%d", ic_rc);
+    if (ic_rc != 0) return -1;
     return 0;
 }
 
@@ -577,7 +586,10 @@ static int addOneSensor(int vi, const SensorConfig& c, IMPSensorInfo* info) {
     info->video_interface = (IMPSensorVinType)c.video_interface;
     info->mclk = (IMPSensorMclk)c.mclk;
     info->default_boot = c.default_boot;
-    if (IMP_ISP_AddSensor((IMPVI_NUM)vi, info) < 0) return -1;
+    hal_trace("--> [HAL] init: IMP_ISP_AddSensor vi=%d", vi);
+    int rc = IMP_ISP_AddSensor((IMPVI_NUM)vi, info);
+    hal_trace("<-- [HAL] init: IMP_ISP_AddSensor vi=%d rc=%d", vi, rc);
+    if (rc < 0) return -1;
     return 0;
 }
 int SensorController::addAll(const std::vector<SensorConfig>& sensors) {
@@ -590,10 +602,30 @@ int SensorController::addAll(const std::vector<SensorConfig>& sensors) {
 }
 int SensorController::enableAll(const std::vector<SensorConfig>& sensors) {
     int num = sensors.size();
-    if (IMP_ISP_EnableSensor(IMPVI_MAIN, &sensor_info[0]) < 0) return -1;
-    if (num > IMPISP_TOTAL_ONE) { if (IMP_ISP_EnableSensor(IMPVI_SEC, &sensor_info[1]) < 0) return -1; }
-    if (num > IMPISP_TOTAL_TWO) { if (IMP_ISP_EnableSensor(IMPVI_THR, &sensor_info[2]) < 0) return -1; }
-    if (num > IMPISP_TOTAL_THR) { if (IMP_ISP_EnableSensor(IMPVI_FOUR, &sensor_info[3]) < 0) return -1; }
+    {
+        hal_trace("--> [HAL] init: IMP_ISP_EnableSensor vi=MAIN <<<kernel oops site: tisp_awb_init>>>");
+        int rc = IMP_ISP_EnableSensor(IMPVI_MAIN, &sensor_info[0]);
+        hal_trace("<-- [HAL] init: IMP_ISP_EnableSensor vi=MAIN rc=%d", rc);
+        if (rc < 0) return -1;
+    }
+    if (num > IMPISP_TOTAL_ONE) {
+        hal_trace("--> [HAL] init: IMP_ISP_EnableSensor vi=SEC");
+        int rc = IMP_ISP_EnableSensor(IMPVI_SEC, &sensor_info[1]);
+        hal_trace("<-- [HAL] init: IMP_ISP_EnableSensor vi=SEC rc=%d", rc);
+        if (rc < 0) return -1;
+    }
+    if (num > IMPISP_TOTAL_TWO) {
+        hal_trace("--> [HAL] init: IMP_ISP_EnableSensor vi=THR");
+        int rc = IMP_ISP_EnableSensor(IMPVI_THR, &sensor_info[2]);
+        hal_trace("<-- [HAL] init: IMP_ISP_EnableSensor vi=THR rc=%d", rc);
+        if (rc < 0) return -1;
+    }
+    if (num > IMPISP_TOTAL_THR) {
+        hal_trace("--> [HAL] init: IMP_ISP_EnableSensor vi=FOUR");
+        int rc = IMP_ISP_EnableSensor(IMPVI_FOUR, &sensor_info[3]);
+        hal_trace("<-- [HAL] init: IMP_ISP_EnableSensor vi=FOUR rc=%d", rc);
+        if (rc < 0) return -1;
+    }
     return 0;
 }
 int SensorController::setAllFps(const std::vector<SensorConfig>& sensors) {
@@ -606,18 +638,58 @@ int SensorController::setAllFps(const std::vector<SensorConfig>& sensors) {
 }
 int SensorController::disableAll(const std::vector<SensorConfig>& sensors) {
     int num = sensors.size();
-    if (IMP_ISP_DisableSensor(IMPVI_MAIN) < 0) return -1;
-    if (num > IMPISP_TOTAL_ONE) { if (IMP_ISP_DisableSensor(IMPVI_SEC) < 0) return -1; }
-    if (num > IMPISP_TOTAL_TWO) { if (IMP_ISP_DisableSensor(IMPVI_THR) < 0) return -1; }
-    if (num > IMPISP_TOTAL_THR) { if (IMP_ISP_DisableSensor(IMPVI_FOUR) < 0) return -1; }
+    {
+        hal_trace("--> [HAL] exit: IMP_ISP_DisableSensor vi=MAIN");
+        int rc = IMP_ISP_DisableSensor(IMPVI_MAIN);
+        hal_trace("<-- [HAL] exit: IMP_ISP_DisableSensor vi=MAIN rc=%d", rc);
+        if (rc < 0) return -1;
+    }
+    if (num > IMPISP_TOTAL_ONE) {
+        hal_trace("--> [HAL] exit: IMP_ISP_DisableSensor vi=SEC");
+        int rc = IMP_ISP_DisableSensor(IMPVI_SEC);
+        hal_trace("<-- [HAL] exit: IMP_ISP_DisableSensor vi=SEC rc=%d", rc);
+        if (rc < 0) return -1;
+    }
+    if (num > IMPISP_TOTAL_TWO) {
+        hal_trace("--> [HAL] exit: IMP_ISP_DisableSensor vi=THR");
+        int rc = IMP_ISP_DisableSensor(IMPVI_THR);
+        hal_trace("<-- [HAL] exit: IMP_ISP_DisableSensor vi=THR rc=%d", rc);
+        if (rc < 0) return -1;
+    }
+    if (num > IMPISP_TOTAL_THR) {
+        hal_trace("--> [HAL] exit: IMP_ISP_DisableSensor vi=FOUR");
+        int rc = IMP_ISP_DisableSensor(IMPVI_FOUR);
+        hal_trace("<-- [HAL] exit: IMP_ISP_DisableSensor vi=FOUR rc=%d", rc);
+        if (rc < 0) return -1;
+    }
     return 0;
 }
 int SensorController::delAll(const std::vector<SensorConfig>& sensors) {
     int n = sensors.size();
-    if (IMP_ISP_DelSensor(IMPVI_MAIN, &sensor_info[0]) < 0) return -1;
-    if (n > 1) { if (IMP_ISP_DelSensor(IMPVI_SEC, &sensor_info[1]) < 0) return -1; }
-    if (n > 2) { if (IMP_ISP_DelSensor(IMPVI_THR, &sensor_info[2]) < 0) return -1; }
-    if (n > 3) { if (IMP_ISP_DelSensor(IMPVI_FOUR, &sensor_info[3]) < 0) return -1; }
+    {
+        hal_trace("--> [HAL] exit: IMP_ISP_DelSensor vi=MAIN");
+        int rc = IMP_ISP_DelSensor(IMPVI_MAIN, &sensor_info[0]);
+        hal_trace("<-- [HAL] exit: IMP_ISP_DelSensor vi=MAIN rc=%d", rc);
+        if (rc < 0) return -1;
+    }
+    if (n > 1) {
+        hal_trace("--> [HAL] exit: IMP_ISP_DelSensor vi=SEC");
+        int rc = IMP_ISP_DelSensor(IMPVI_SEC, &sensor_info[1]);
+        hal_trace("<-- [HAL] exit: IMP_ISP_DelSensor vi=SEC rc=%d", rc);
+        if (rc < 0) return -1;
+    }
+    if (n > 2) {
+        hal_trace("--> [HAL] exit: IMP_ISP_DelSensor vi=THR");
+        int rc = IMP_ISP_DelSensor(IMPVI_THR, &sensor_info[2]);
+        hal_trace("<-- [HAL] exit: IMP_ISP_DelSensor vi=THR rc=%d", rc);
+        if (rc < 0) return -1;
+    }
+    if (n > 3) {
+        hal_trace("--> [HAL] exit: IMP_ISP_DelSensor vi=FOUR");
+        int rc = IMP_ISP_DelSensor(IMPVI_FOUR, &sensor_info[3]);
+        hal_trace("<-- [HAL] exit: IMP_ISP_DelSensor vi=FOUR rc=%d", rc);
+        if (rc < 0) return -1;
+    }
     return 0;
 }
 
@@ -655,7 +727,10 @@ int FrameChannelController::enable(int index) {
 int FrameChannelController::disable(int index) {
     for (auto& c : channels_) {
         if (c.enable && (index < 0 || c.index == (unsigned int)index)) {
-            if (IMP_FrameSource_DisableChn(c.index) < 0) return -1;
+            hal_trace("--> [HAL] exit: IMP_FrameSource_DisableChn chn=%d", c.index);
+            int rc = IMP_FrameSource_DisableChn(c.index);
+            hal_trace("<-- [HAL] exit: IMP_FrameSource_DisableChn chn=%d rc=%d", c.index, rc);
+            if (rc < 0) return -1;
         }
     }
     return 0;
@@ -664,7 +739,10 @@ int FrameChannelController::disable(int index) {
 int FrameChannelController::destroy(int index) {
     for (auto& c : channels_) {
         if (c.enable && (index < 0 || c.index == (unsigned int)index)) {
-            if (IMP_FrameSource_DestroyChn(c.index) < 0) return -1;
+            hal_trace("--> [HAL] exit: IMP_FrameSource_DestroyChn chn=%d", c.index);
+            int rc = IMP_FrameSource_DestroyChn(c.index);
+            hal_trace("<-- [HAL] exit: IMP_FrameSource_DestroyChn chn=%d rc=%d", c.index, rc);
+            if (rc < 0) return -1;
         }
     }
     return 0;
@@ -1257,24 +1335,48 @@ bool IngenicVideo::init() {
         Logger::log(LogLevel::INFO, "IngenicVideo already initialized, ref=%d", g_video_init_ref_count.load());
         return true;
     }
+    hal_trace("==== [HAL] init() ENTERED (first ref, full IMP init) ====");
     OSDController osd;
     if (osd.setPoolSize(gosd_enable_) < 0) return false;
-	if (IMP_Encoder_SetJpegBsSize(500 * 1024) < 0) {
-		return false;
-	}
-	if (IMP_Encoder_SetMultiSectionMode(1, 250, 2) < 0) {
-		return false;
-	}
-    if (IMP_Encoder_MultiProcessInit() < 0) {
-		return false;
-	}
+    hal_trace("--> [HAL] init: IMP_Encoder_SetJpegBsSize");
+    int jbs_rc = IMP_Encoder_SetJpegBsSize(500 * 1024);
+    hal_trace("<-- [HAL] init: IMP_Encoder_SetJpegBsSize rc=%d", jbs_rc);
+    if (jbs_rc < 0) {
+        return false;
+    }
+    hal_trace("--> [HAL] init: IMP_Encoder_SetMultiSectionMode");
+    int msm_rc = IMP_Encoder_SetMultiSectionMode(1, 250, 2);
+    hal_trace("<-- [HAL] init: IMP_Encoder_SetMultiSectionMode rc=%d", msm_rc);
+    if (msm_rc < 0) {
+        return false;
+    }
+    if (getenv("HTC_NO_MULTIPROCESS")) {
+        hal_trace("--> [HAL] init: IMP_Encoder_MultiProcessInit SKIPPED (HTC_NO_MULTIPROCESS) <<<bisect>>>");
+    } else {
+        hal_trace("--> [HAL] init: IMP_Encoder_MultiProcessInit");
+        int mpi_rc = IMP_Encoder_MultiProcessInit();
+        hal_trace("<-- [HAL] init: IMP_Encoder_MultiProcessInit rc=%d", mpi_rc);
+        if (mpi_rc < 0) {
+            return false;
+        }
+    }
     auto sensors = loadSensors();
-    if (sensorMgr.openISP() < 0) return false;
-    if (sensorMgr.addAll(sensors) < 0) return false;
-    if (sensorMgr.setCameraInputMode(sensors) < 0) return false;
-    if (sensorMgr.enableAll(sensors) < 0) return false;
-    if (IMP_System_Init() < 0) return false;
-    if (IMP_ISP_EnableTuning() < 0) return false;
+    hal_trace("--> [HAL] init: sensorMgr.openISP");
+    if (sensorMgr.openISP() < 0) { hal_trace("<-- [HAL] init: openISP FAILED"); return false; }
+    hal_trace("--> [HAL] init: sensorMgr.addAll (IMP_ISP_AddSensor per sensor)");
+    if (sensorMgr.addAll(sensors) < 0) { hal_trace("<-- [HAL] init: addAll FAILED"); return false; }
+    hal_trace("--> [HAL] init: sensorMgr.setCameraInputMode");
+    if (sensorMgr.setCameraInputMode(sensors) < 0) { hal_trace("<-- [HAL] init: setCameraInputMode FAILED"); return false; }
+    hal_trace("--> [HAL] init: sensorMgr.enableAll (IMP_ISP_EnableSensor) <<< tisp_awb_init oops site >>>");
+    if (sensorMgr.enableAll(sensors) < 0) { hal_trace("<-- [HAL] init: enableAll FAILED"); return false; }
+    hal_trace("--> [HAL] init: IMP_System_Init");
+    int si_rc = IMP_System_Init();
+    hal_trace("<-- [HAL] init: IMP_System_Init rc=%d", si_rc);
+    if (si_rc < 0) return false;
+    hal_trace("--> [HAL] init: IMP_ISP_EnableTuning");
+    int et_rc = IMP_ISP_EnableTuning();
+    hal_trace("<-- [HAL] init: IMP_ISP_EnableTuning rc=%d", et_rc);
+    if (et_rc < 0) return false;
     unsigned char v = 128;
     IMP_ISP_Tuning_SetContrast(IMPVI_MAIN, &v);
     IMP_ISP_Tuning_SetSharpness(IMPVI_MAIN, &v);
@@ -1316,6 +1418,8 @@ bool IngenicVideo::init() {
     return true;
 }
 bool IngenicVideo::exit() {
+    hal_trace("---- [HAL] exit() INVOKED (exitCalled_=%d ref=%d) ----",
+              exitCalled_ ? 1 : 0, g_video_init_ref_count.load());
     if (exitCalled_) return true;
     exitCalled_ = true;
     if (g_video_init_ref_count.fetch_sub(1) > 1) {
@@ -1337,9 +1441,12 @@ bool IngenicVideo::exit() {
     //   4. UnRegisterChn/DestroyChn/DestroyGroup (g_group_ref_count)
     //   5. ISP/OSD teardown
     //   6. fsMgr.destroy() (DestroyChn FrameSource) -> IMP_System_Exit -> sensor/ISP
+    hal_trace("==== [HAL] exit() ENTERED (ref dropped to 0, teardown begins) ====");
     Logger::log(LogLevel::INFO, "[HAL] exit: teardown begin (FS disable -> flush -> UnBind -> DestroyGroup -> ISP/System)");
     // 1. Disable FrameSource so UnBind is legal (imp_system.h:130).
+    hal_trace("--> [HAL] exit: fsMgr.disable() (IMP_FrameSource_DisableChn per chn)");
     fsMgr.disable();
+    hal_trace("<-- [HAL] exit: fsMgr.disable()");
     // 2. Stop encoder recv / flush in-flight frames for any residual channel so
     //    IMP_System_Exit() is never called while the encoder holds a stream.
     {
@@ -1354,7 +1461,9 @@ bool IngenicVideo::exit() {
             // RTSP uses H264 where channel_id == group_id (see configure()).
             int chn = grp;
             Logger::log(LogLevel::INFO, "[HAL] exit: flush/StopRecvPic(chn=%d)", chn);
-            IMP_Encoder_StopRecvPic(chn);
+            hal_trace("--> [HAL] exit: IMP_Encoder_StopRecvPic chn=%d", chn);
+            int sr_rc = IMP_Encoder_StopRecvPic(chn);
+            hal_trace("<-- [HAL] exit: IMP_Encoder_StopRecvPic chn=%d rc=%d", chn, sr_rc);
         }
     }
     // 3. UnBind (after FS disabled). IMP_System_UnBind on an unbound pair is
@@ -1379,7 +1488,9 @@ bool IngenicVideo::exit() {
             enc_cell.groupID = grp;
             enc_cell.outputID = 0;
             Logger::log(LogLevel::INFO, "[HAL] exit: fallback UnBind(group=%d)", grp);
-            IMP_System_UnBind(&fs_cell, &enc_cell);
+            hal_trace("--> [HAL] exit: IMP_System_UnBind g=%d", grp);
+            int ub_rc = IMP_System_UnBind(&fs_cell, &enc_cell);
+            hal_trace("<-- [HAL] exit: IMP_System_UnBind g=%d rc=%d", grp, ub_rc);
         }
         {
             std::lock_guard<std::mutex> lock(g_bind_mutex);
@@ -1401,9 +1512,15 @@ bool IngenicVideo::exit() {
         for (int grp : groups) {
             int chn = grp;
             Logger::log(LogLevel::INFO, "[HAL] exit: fallback destroy chn/group (group=%d, chn=%d)", grp, chn);
-            IMP_Encoder_UnRegisterChn(chn);
-            IMP_Encoder_DestroyChn(chn);
-            IMP_Encoder_DestroyGroup(grp);
+            hal_trace("--> [HAL] exit: IMP_Encoder_UnRegisterChn chn=%d", chn);
+            int ur_rc = IMP_Encoder_UnRegisterChn(chn);
+            hal_trace("<-- [HAL] exit: IMP_Encoder_UnRegisterChn chn=%d rc=%d", chn, ur_rc);
+            hal_trace("--> [HAL] exit: IMP_Encoder_DestroyChn chn=%d", chn);
+            int dc_rc = IMP_Encoder_DestroyChn(chn);
+            hal_trace("<-- [HAL] exit: IMP_Encoder_DestroyChn chn=%d rc=%d", chn, dc_rc);
+            hal_trace("--> [HAL] exit: IMP_Encoder_DestroyGroup g=%d", grp);
+            int dg_rc = IMP_Encoder_DestroyGroup(grp);
+            hal_trace("<-- [HAL] exit: IMP_Encoder_DestroyGroup g=%d rc=%d", grp, dg_rc);
         }
         {
             std::lock_guard<std::mutex> lock(g_group_mutex);
@@ -1412,21 +1529,55 @@ bool IngenicVideo::exit() {
     }
     // 5. ISP/OSD teardown.
     if (ispOsdMgr_) {
+        hal_trace("--> [HAL] exit: ispOsdMgr->exit()");
         ispOsdMgr_->exit();
+        hal_trace("<-- [HAL] exit: ispOsdMgr->exit()");
         ispOsdMgr_.reset();
     }
     // 6. Destroy FrameSource channels, then IMP_System_Exit, then sensor/ISP.
-    if (fsMgr.destroy() < 0) return false;
-    IMP_System_Exit();
-    auto sensors = loadSensors();
-    if (sensorMgr.disableAll(sensors) < 0) return false;
-    if (sensorMgr.delAll(sensors) < 0) return false;
-	if(IMP_ISP_DisableTuning() < 0) {
+    hal_trace("--> [HAL] exit: fsMgr.destroy() (IMP_FrameSource_DestroyChn per chn)");
+    if (fsMgr.destroy() < 0) {
+        hal_trace("<-- [HAL] exit: fsMgr.destroy() rc=-1 (FAILED)");
         return false;
     }
-    if (sensorMgr.closeISP() < 0) return false;
-    IMP_Encoder_MultiProcessExit();
+    hal_trace("<-- [HAL] exit: fsMgr.destroy() rc=0");
+    hal_trace("--> [HAL] exit: IMP_System_Exit");
+    int se_rc = IMP_System_Exit();
+    hal_trace("<-- [HAL] exit: IMP_System_Exit rc=%d", se_rc);
+    auto sensors = loadSensors();
+    hal_trace("--> [HAL] exit: sensorMgr.disableAll (IMP_ISP_DisableSensor)");
+    if (sensorMgr.disableAll(sensors) < 0) {
+        hal_trace("<-- [HAL] exit: sensorMgr.disableAll rc=-1 (FAILED)");
+        return false;
+    }
+    hal_trace("<-- [HAL] exit: sensorMgr.disableAll rc=0");
+    hal_trace("--> [HAL] exit: sensorMgr.delAll (IMP_ISP_DelSensor)");
+    if (sensorMgr.delAll(sensors) < 0) {
+        hal_trace("<-- [HAL] exit: sensorMgr.delAll rc=-1 (FAILED)");
+        return false;
+    }
+    hal_trace("<-- [HAL] exit: sensorMgr.delAll rc=0");
+    hal_trace("--> [HAL] exit: IMP_ISP_DisableTuning");
+	if(IMP_ISP_DisableTuning() < 0) {
+        hal_trace("<-- [HAL] exit: IMP_ISP_DisableTuning rc<0 (FAILED)");
+        return false;
+    }
+    hal_trace("<-- [HAL] exit: IMP_ISP_DisableTuning rc=0");
+    hal_trace("--> [HAL] exit: sensorMgr.closeISP (IMP_ISP_DisableTuning + IMP_ISP_Close)");
+    if (sensorMgr.closeISP() < 0) {
+        hal_trace("<-- [HAL] exit: sensorMgr.closeISP rc=-1 (FAILED)");
+        return false;
+    }
+    hal_trace("<-- [HAL] exit: sensorMgr.closeISP rc=0");
+    if (getenv("HTC_NO_MULTIPROCESS")) {
+        hal_trace("--> [HAL] exit: IMP_Encoder_MultiProcessExit SKIPPED (HTC_NO_MULTIPROCESS) <<<bisect>>>");
+    } else {
+        hal_trace("--> [HAL] exit: IMP_Encoder_MultiProcessExit");
+        IMP_Encoder_MultiProcessExit();
+        hal_trace("<-- [HAL] exit: IMP_Encoder_MultiProcessExit");
+    }
     Logger::log(LogLevel::INFO, "[HAL] exit: teardown complete");
+    hal_trace("==== [HAL] exit() COMPLETE ====");
     return true;
 }
 std::shared_ptr<IVideoStream> IngenicVideo::createVideoStream() {
