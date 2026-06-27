@@ -17,17 +17,18 @@ namespace app_workmode {
 //  → 按 FILE_MANAGE 删除策略）。录影/拍照线程只需 enqueue(desc) 即可返回，不被上传阻塞。
 //
 // 并发模型：单 worker 线程串行消费 desc；文件级上传复用 StorageServClient 自带的
-// uploadThread（send(socket_fd) 只在该线程跑）。worker 线程仅在 start() 时 connect+auth
-// （此时上传队列空，不与 uploadThread 的 send 并发）。故 -wm 0（无心跳）场景下 socket
-// send 不并发，暂不需要 send_mutex；若后续事件循环加入心跳/下发并发 send，需给
-// Client::sendMessage + StorageServClient::upload 的 ::send 加共享锁。
+// uploadThread（send(socket_fd) 只在该线程跑）。start() 只保存 server 配置；
+// 真正 connect/auth 延迟到 worker 线程第一次拿到 desc。故 -wm 0（无心跳）场景下
+// socket send 不并发，暂不需要 send_mutex；若后续事件循环加入心跳/下发并发 send，
+// 需给 Client::sendMessage + StorageServClient::upload 的 ::send 加共享锁。
 class UploadWorker {
 public:
     UploadWorker();
     ~UploadWorker();
 
-    // 启动 worker：连接 mgmt server + authenticate + 建 StorageServClient（会话级，一次）。
-    // mgmt 连接/鉴权失败时 worker 仍可 enqueue，但上传会失败（desc 留 SD，F_UploadedTag=0）。
+    // 启动 worker：只保存 mgmt server 配置并启动消费线程。首次 desc 入队后才
+    // lazy connect + authenticate + 建 StorageServClient（会话级，一次）。mgmt
+    // 连接/鉴权失败时 desc 留 SD，F_UploadedTag=0。
     void start(const std::string& mgmtAddr, int mgmtPort);
 
     // 录影/拍照产物 desc 落盘后入队。线程安全、非阻塞。
@@ -68,7 +69,7 @@ private:
     std::string mgmtAddr_;
     int mgmtPort_ = 0;
     bool connected_ = false;
-    void ensureConnected();
+    bool ensureConnected();
 };
 
 }  // namespace app_workmode

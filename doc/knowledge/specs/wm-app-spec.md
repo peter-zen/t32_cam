@@ -211,6 +211,7 @@ Shutdown task（或 MCU override）的 teardown 序：
 | `HTC_WM_ONE_SHOT` | env | 0 | 1=首个 Capture 后屏蔽触发（§3.5） |
 | `HTC_SIM_PIR_INTERVAL_MS` | env | 10000 | SimPir 间隔（sim/test，§4） |
 | `HTC_TEST_NO_POWEROFF` | env | 0 | 1=关机走 `_exit(0)`（devtest，§1） |
+| `HTC_WM_CONFIG_FILE` | env | unset | 真机调试时强制 wm 使用指定 config.ini；否则若 `/config/htc/config.ini` 缺失/测试 PID 且 `/mnt/huntcam/config.ini` 有真实 PID，wm 会自动切到 `/mnt/huntcam/config.ini`，与 `upload_test` 对齐 |
 | NTP server / `MS_IP` / `MS_PORT` | config ini（`server` 段） | — | NTP 与上传服务器 |
 
 > 原则：**产品配置走 setting.json，运行时/调试旋钮走 HTC_\* env**（与现有 `HTC_UPLOAD_TIMEOUT_MS`/`HTC_TEST_RECORD_COUNT` 一致）。

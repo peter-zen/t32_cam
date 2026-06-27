@@ -16,8 +16,14 @@ class Client {
 	virtual int start();
 	virtual int stop();
 	virtual bool isConnected();
+	void shutdownSocket();
+
     protected:
 	virtual int sendMessage(int message_type, const std::string &message);
+	// O_NONBLOCK + select(timeoutSec) 守护的 ::send(),供派生类绕开
+	// sendMessage 直接发裸字节时复用,避免在 mgmt server 半关/RST 后
+	// 被 TCP 重传 (13–30s) 锁死。返回 send() 的字节数,< 0 表示失败。
+	int sendWithTimeout(int fd, const void *buf, size_t len, int timeoutSec);
 	virtual void receiveFunction();
 	virtual int receive(char *buffer, size_t length, int flags);
 	virtual int receiveCommand(char *buffer, size_t length);
@@ -37,6 +43,7 @@ class Client {
 	size_t recv_buffer_size;
 	size_t send_buffer_size;
 	bool is_connected;
+	bool owns_socket;
 };
 }
 #endif

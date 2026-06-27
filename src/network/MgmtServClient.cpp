@@ -4,6 +4,8 @@
 #include <json/json.h>
 #include <sys/time.h>
 #include <cstring>
+#include <cstdlib>
+#include <cctype>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <condition_variable>
@@ -32,6 +34,40 @@
 
 using namespace network;
 
+namespace {
+
+int authTimeoutMs()
+{
+	const char *env = std::getenv("HTC_AUTH_TIMEOUT_MS");
+	if (env && env[0] != '\0') {
+		int v = std::atoi(env);
+		if (v > 0) {
+			return v;
+		}
+	}
+	return 10000;
+}
+
+bool isSyncKeyPidShapeSupported(const std::string &pid)
+{
+	if (pid.length() < 5) {
+		return false;
+	}
+	for (unsigned char c : pid) {
+		if (!std::isalnum(c)) {
+			return false;
+		}
+	}
+
+	const char c = pid[pid.length() - 1];
+	return (c >= '0' && c <= '9') ||
+	       (std::strchr("QWERTYUIOP", c) != nullptr) ||
+	       (std::strchr("ASDFGHJKL", c) != nullptr) ||
+	       (std::strchr("ZXCVBNM", c) != nullptr);
+}
+
+}  // namespace
+
 MgmtServClient::MgmtServClient(const std::string &address, int port)
 	: Client(address, port)
 {
@@ -39,8 +75,8 @@ MgmtServClient::MgmtServClient(const std::string &address, int port)
 	enable_firmware_update = 0;
 	need_euid = true;
 	remote_wakeup = false;
-	auth_success = false;
-	auth_result_received = false;
+	auth_success.store(false);
+	auth_result_received.store(false);
 	storage_serv_client = nullptr;
 	Logger::log(LogLevel::INFO, "MgmtServClient: Constructor");
 }
@@ -134,10 +170,22 @@ int MgmtServClient::authenticate()
 	auto security_code = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_SMODE, 0);
 	Logger::log(LogLevel::INFO, "MgmtServClient: Security code: %d", security_code);
 	std::string pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
+	std::string config_file = EnvManager::getInstance()->getEnv("CONFIG_FILE", "");
+	int timeout_ms = authTimeoutMs();
+	Logger::log(LogLevel::INFO, "MgmtServClient: CONFIG_FILE: %s", config_file.c_str());
 	Logger::log(LogLevel::INFO, "MgmtServClient: PID: %s", pid.c_str());
+	Logger::log(LogLevel::INFO, "MgmtServClient: auth timeout: %d ms", timeout_ms);
 	if (security_code == 0) {
+		Logger::log(LogLevel::INFO, "MgmtServClient: generating sync key");
+		if (!isSyncKeyPidShapeSupported(pid)) {
+			Logger::log(LogLevel::ERROR,
+			            "MgmtServClient: PID cannot generate a server-compatible Sync_Key: %s",
+			            pid.c_str());
+			return EC_FAILED;
+		}
 		sync_key = generateSyncKey(pid, dev_type::DEV_CAMERA);
 	} else {
+		Logger::log(LogLevel::INFO, "MgmtServClient: encoding sync key");
 		char buffer[48] = { 0 };
 		uint32_t output_data_len = 0;
 		if (Base64::encode((char*)pid.c_str(), pid.length(), buffer, &output_data_len)) {
@@ -160,27 +208,35 @@ int MgmtServClient::authenticate()
 	if (remote_wakeup) {
 		root["Remote_Wakeup"] = "1";
 	}
+	Logger::log(LogLevel::INFO, "MgmtServClient: auth message ready");
 
 	Json::StreamWriterBuilder writer;
 	std::string message = Json::writeString(writer, root);
 
+	auth_result_received.store(false);
+	auth_success.store(false);
+
+	Logger::log(LogLevel::INFO, "MgmtServClient: sending auth message");
 	if (EC_SUCCESS != sendMessage(MSG_TYPE_AUTH, message)) {
+		Logger::log(LogLevel::ERROR, "MgmtServClient: send auth message failed");
 		return EC_FAILED;
 	}
+	Logger::log(LogLevel::INFO, "MgmtServClient: auth message sent, waiting response");
 
 	//wait for auth response
 	{
 		std::unique_lock<std::mutex> lock(auth_mutex);
-		auth_result_received = false;
-		auth_success = false;
-		auth_cv.wait_for(
+		bool received = auth_cv.wait_for(
 			lock
-			, std::chrono::seconds(1)
-			, [this] { return auth_result_received;}
+			, std::chrono::milliseconds(timeout_ms)
+			, [this] { return auth_result_received.load();}
 		);
+		if (!received) {
+			Logger::log(LogLevel::ERROR, "MgmtServClient: auth response timeout after %d ms", timeout_ms);
+		}
 	}
 
-	return auth_success ? EC_SUCCESS : EC_FAILED;
+	return auth_success.load() ? EC_SUCCESS : EC_FAILED;
 }
 
 int MgmtServClient::receiveCommand(char *buffer, size_t length)
@@ -268,6 +324,15 @@ void MgmtServClient::handleAuthCommand(const Json::Value &root)
 	settings->setting_mark = root.get("Setting_Mark", 0).asInt();
 	settings->enable_firmware_update = root.get("Firmware_Update", 0).asInt();
 	int status_id = root.get("Status_ID", 0).asInt();
+	std::string error_description;
+	if (root.isMember("Error_Description") && root["Error_Description"].isString()) {
+		error_description = root["Error_Description"].asString();
+	}
+
+	//notify auth result
+	auth_success.store(status_id == 0);
+	auth_result_received.store(true);
+	auth_cv.notify_one();
 
 	Logger::log(LogLevel::DEBUG, "Comm_Code: %s", settings->comm_code.c_str());
 	Logger::log(LogLevel::DEBUG, "EUID: %s", settings->euid.c_str());
@@ -275,13 +340,11 @@ void MgmtServClient::handleAuthCommand(const Json::Value &root)
 	Logger::log(LogLevel::DEBUG, "Setting_Mark: %d", settings->setting_mark);
 	Logger::log(LogLevel::DEBUG, "Firmware_Update: %d", settings->enable_firmware_update);
 	Logger::log(LogLevel::DEBUG, "Status_ID: %d", status_id);
-
-	//notify auth result
-	{
-		std::lock_guard<std::mutex> lock(auth_mutex);
-		auth_result_received = true;
-		auth_success = (status_id == 0);
-		auth_cv.notify_one();
+	if (status_id == 0) {
+		Logger::log(LogLevel::INFO, "MgmtServClient: auth accepted");
+	} else {
+		Logger::log(LogLevel::ERROR, "MgmtServClient: auth rejected status=%d error=%s",
+		            status_id, error_description.c_str());
 	}
 	
 	if (status_id == 0) {
@@ -643,6 +706,10 @@ char *MgmtServClient::HTTPStrHToAscii(char *dest)
 	} while ((s[i] |= 0));
 
 	return dest;
+}
+
+bool MgmtServClient::isAuthSuccess() {
+    return auth_success.load();
 }
 
 int MgmtServClient::sendHeartbeat(const std::string &message)

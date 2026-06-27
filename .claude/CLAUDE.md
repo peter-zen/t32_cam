@@ -53,9 +53,10 @@ tar xjf ref/Tassadar-T32-1.0.6-20250613/software/pc/toolchain/mips-gcc540-glibc2
 
 ```bash
 ./script/build_t32@206.sh        # company build host 192.168.0.206
+./script/build_t32@200.sh        # home build host 192.168.31.200 (this PC)
 ```
 
-**Pick the script by build host** (`hostname -I`): each build PC gets its own `script/build_t32@<host>.sh`, because the toolchain path / system cmake location can differ across machines. On a new host (e.g. home WSL on `192.168.31.x`), copy the closest one to `build_t32@<host>.sh` and edit the `TOOLCHAIN_DIR` / `CMAKE_BIN` knobs at the top of the file.
+**Pick the script by build host** (`hostname -I`): each build PC gets its own `script/build_t32@<host>.sh`, because the toolchain path / system cmake location can differ across machines. On a new host (e.g. another home WSL on `192.168.31.x`), copy the closest one to `build_t32@<host>.sh` and edit the `TOOLCHAIN_DIR` / `CMAKE_BIN` knobs at the top of the file. Note: `@206` carries `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` (cmake 4.x compat); `@200` omits it (cmake 3.28.3 still accepts old `cmake_minimum_required` natively). If you upgrade the host's system cmake to 4.x, copy the knob back in from `@206`.
 
 The bare commands the script runs (for reference / debugging):
 

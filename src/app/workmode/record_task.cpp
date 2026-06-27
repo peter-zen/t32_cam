@@ -1,6 +1,7 @@
 #include "record_task.h"
 
 #include "upload_worker.h"
+#include "wm_paths.h"
 
 #include "CameraRecorder.h"        // service::camera::CameraRecorder / RecordOptions / RecordResult / RecordError
 #include "MetadataDao.h"           // MetadataDao::saveThumbnail
@@ -8,7 +9,6 @@
 #include "Manifest.h"              // manifest::generateDescInfo
 #include "Common.h"
 #include "Logger.h"
-#include "app.h"                   // MEDIA_TARGET_PATH / MEDIA_UPLOAD_PATH
 
 #include <chrono>
 #include <ctime>
@@ -56,7 +56,7 @@ bool RecordTask::trigger() {
     // ~VideoRecorder→deinitialize→thread.join() join 的是已退出线程，安全（不 self-join）。
     recorder_->releaseVideoResources();
 
-    std::string record_path = std::string(MEDIA_TARGET_PATH) + formatNow() + ".mp4";
+    std::string record_path = std::string(kWmMediaPath) + formatNow() + ".mp4";
 
     service::camera::RecordOptions opts;
     opts.audio = false;        // 默认关（当前设备无 audio 硬件）
@@ -115,7 +115,7 @@ void RecordTask::onCompleteRecord(const std::string& record_path,
         std::vector<std::string> files = { record_path };
         std::string desc_info;
         if (manifest::generateDescInfo(files, desc_info) == 0) {
-            std::string desc_filename = std::string(MEDIA_UPLOAD_PATH) + formatNow() + ".json";
+            std::string desc_filename = std::string(kWmUploadPath) + formatNow() + ".json";
             service::camera::RecordingPostProcess::writeWorkModeDescJson(desc_info, desc_filename);
             if (uploadWorker_) {
                 uploadWorker_->enqueue(desc_filename);

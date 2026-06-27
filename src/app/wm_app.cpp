@@ -21,33 +21,101 @@
 #include <limits.h>
 #include <csignal>
 #include <memory>
+#include <fstream>
 
 #include "wm_scheduler.h"     // app_workmode::WmScheduler + WmMode
 #include "wm_time.h"          // app_workmode::acquireTimeChain / writebackMcuTime
 #include "upload_worker.h"    // app_workmode::UploadWorker
 #include "capture_lane.h"     // app_workmode::CaptureLane (m0/m1)
 #include "pir_trigger.h"      // app_workmode::SimPirTrigger / IPirTrigger (m0/m1)
+#include "wm_paths.h"         // wm-local storage roots under /mnt/huntcam
 #include "WorkModeRunner.h"   // CMD_* (仅为 commonStartupPostDispatch 的 netif 选择)
 #include "ProcessLifecycle.h" // app_lifecycle::ProcessLifecycle + Startup/ShutdownContext
 #include "DeviceConfig.h"
 #include "Common.h"
 #include "Logger.h"
+#include "ElogInit.h"
 #include "EnvManager.h"
 #include "misc/Misc.h"
 #include "Settings.h"
 #include "StringConvert.h"    // stoi_custom / to_string_custom (uClibc-safe)
-#include "app.h"              // ENV_FILE_PATHNAME, POWER_HOLD_PIN, INI_*, MEDIA_UPLOAD_PATH
+#include "app.h"              // ENV_FILE_PATHNAME, POWER_HOLD_PIN
 #include "Power.h"
 #include "DayNightSwitch.h"
 #include "GPIO.h"             // GPIO, GPIO_VALUE, GPIO_DIRECTION, POWER_HOLD_PIN
 
 namespace {
 
+#ifdef BUILD_FOR_SIMULATION
 std::string normalizePath(const std::string& path) {
     char resolved[PATH_MAX];
     if (realpath(path.c_str(), resolved) != nullptr) return std::string(resolved);
     return path;
 }
+#else
+std::string trimIniValue(const std::string& value) {
+    size_t start = 0;
+    while (start < value.size() && (value[start] == ' ' || value[start] == '\t')) ++start;
+    size_t end = value.size();
+    while (end > start && (value[end - 1] == ' ' || value[end - 1] == '\t' ||
+                           value[end - 1] == '\r' || value[end - 1] == '\n')) {
+        --end;
+    }
+    return value.substr(start, end - start);
+}
+
+std::string readIniString(const std::string& path, const std::string& section, const std::string& key) {
+    std::ifstream file(path);
+    if (!file.is_open()) return "";
+
+    std::string current;
+    std::string line;
+    while (std::getline(file, line)) {
+        line = trimIniValue(line);
+        if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+        if (line.front() == '[' && line.back() == ']') {
+            current = line.substr(1, line.size() - 2);
+            continue;
+        }
+        if (current != section) continue;
+        size_t pos = line.find('=');
+        if (pos == std::string::npos) continue;
+        std::string k = trimIniValue(line.substr(0, pos));
+        if (k == key) return trimIniValue(line.substr(pos + 1));
+    }
+    return "";
+}
+
+bool isTestPid(const std::string& pid) {
+    return pid.empty() ||
+           pid.find("MCUTEST") == 0 ||
+           pid.find("TEST_") == 0 ||
+           pid.find("TEST-") == 0;
+}
+
+void selectWmHardwareConfig(std::string& note) {
+    auto env = EnvManager::getInstance();
+    const char* explicitConfig = std::getenv("HTC_WM_CONFIG_FILE");
+    if (explicitConfig && explicitConfig[0] != '\0') {
+        env->setEnv("CONFIG_FILE", explicitConfig);
+        setenv("CONFIG_FILE", explicitConfig, 1);
+        note = std::string("HTC_WM_CONFIG_FILE override: ") + explicitConfig;
+        return;
+    }
+
+    const std::string current = env->getEnv("CONFIG_FILE", "");
+    const std::string currentPid = readIniString(current, INI_SECTION_DEVICE, INI_KEY_PID);
+    const std::string huntcamConfig = "/mnt/huntcam/config.ini";
+    const std::string huntcamPid = readIniString(huntcamConfig, INI_SECTION_DEVICE, INI_KEY_PID);
+
+    if (isTestPid(currentPid) && !isTestPid(huntcamPid)) {
+        env->setEnv("CONFIG_FILE", huntcamConfig);
+        setenv("CONFIG_FILE", huntcamConfig.c_str(), 1);
+        note = std::string("CONFIG_FILE switched from ") + current + " (pid=" + currentPid +
+               ") to " + huntcamConfig + " (pid=" + huntcamPid + ")";
+    }
+}
+#endif  // BUILD_FOR_SIMULATION
 
 }  // namespace
 
@@ -60,6 +128,7 @@ int main(int argc, char* argv[])
     std::shared_ptr<app_workmode::UploadWorker> uploadWorker;
     bool ntpSynced = false;
     std::string ntpServer = "www.aidetcloud.com:123";  // 默认；config 加载后覆盖
+    std::string configSelectionNote;
 
     // --- S1 path inputs → StartupConfig (sim vs HW) ---
     app_lifecycle::StartupConfig cfg;
@@ -78,9 +147,10 @@ int main(int argc, char* argv[])
 #else
     cfg.isSimulation = false;
     EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);  // 必须在最开始
-    cfg.dbPath    = EnvManager::getInstance()->getEnv("DB_PATH", "/mnt/sdcard/data/db");
-    cfg.mediaRoot = "/mnt/sdcard/DCIM";
-    cfg.logRoot   = "/mnt/sdcard/logs";
+    selectWmHardwareConfig(configSelectionNote);
+    cfg.dbPath    = EnvManager::getInstance()->getEnv("DB_PATH", app_workmode::kWmDbPath);
+    cfg.mediaRoot = app_workmode::kWmMediaRoot;
+    cfg.logRoot   = "/mnt/huntcam/logs";
     cfg.logFile   = cfg.logRoot + "/app.log";
 #endif
 
@@ -90,16 +160,32 @@ int main(int argc, char* argv[])
         if (e[0] == '1') cfg.skipMediaScanner = true;
     }
 
+    // Debug: HTC_NO_MCU=1 makes MCU::getInstance() skip I2C probe and short-circuit
+    // every read/write (no [MCU]read failed noise when the board is missing). Pairs
+    // with the if (!iic) return guards injected in src/hardware/mcu/MCU.cpp.
+    if (std::getenv("HTC_NO_MCU")) {
+        Logger::log(LogLevel::INFO, "[wm] MCU disabled (HTC_NO_MCU)");
+    }
+
     // --- S1-S8 + signal install ---
     app_lifecycle::ProcessLifecycle lc;
     if (!lc.commonStartup(cfg)) return -1;
     if (!lc.installSignalHandlers()) return -1;
+#ifndef BUILD_FOR_SIMULATION
+    // wm is a single-shot worker. Keep the authoritative app.log file, but do
+    // not synchronously flush every log line to the serial console while HAL
+    // teardown and upload auth run in parallel.
+    elog_set_terminal_output(false);
+#endif
+    if (!configSelectionNote.empty()) {
+        Logger::log(LogLevel::INFO, "[wm] %s", configSelectionNote.c_str());
+    }
+    Logger::log(LogLevel::INFO, "[wm] CONFIG_FILE=%s",
+                EnvManager::getInstance()->getEnv("CONFIG_FILE", "").c_str());
 
-    // Ensure media output dirs exist (a freshly-formatted SD has no media/ yet;
-    // without this, snap/record fopen to MEDIA_TARGET_PATH ENOENT before any
-    // desc json mkdirs media/upload/ — photo+record would write 0 bytes).
-    Misc::createDirectory(MEDIA_TARGET_PATH);
-    Misc::createDirectory(MEDIA_UPLOAD_PATH);
+    // Ensure wm-local output dirs exist before snap/record/upload paths are used.
+    Misc::createDirectory(cfg.mediaRoot);
+    Misc::createDirectory(app_workmode::kWmUploadPath);
 
     // Debug: HTC_LOG_DEBUG=1 lowers elog filter to DEBUG on HW (default INFO)
     // so module-level DEBUG logs surface. Used for cm==1 wedge diagnosis; no-op
@@ -186,6 +272,9 @@ int main(int argc, char* argv[])
         auto ms_ip   = config->get(INI_SECTION_SERVER, INI_KEY_MS_IP, "");
         auto ms_port = config->get(INI_SECTION_SERVER, INI_KEY_MS_PORT, 0);
         if (!ms_ip.empty() && ms_port > 0) {
+            auto pid = config->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
+            Logger::log(LogLevel::INFO, "[wm] upload config server=%s:%d pid=%s",
+                        ms_ip.c_str(), ms_port, pid.c_str());
             uploadWorker->start(ms_ip, ms_port);
         } else {
             Logger::log(LogLevel::WARNING, "[wm] mgmt server not configured; upload will fail (desc kept on SD)");

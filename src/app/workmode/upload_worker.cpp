@@ -6,17 +6,30 @@
 #include "Common.h"
 #include "misc/Misc.h"
 #include "Logger.h"
-#include "app.h"
 
 #include <json/json.h>
 #include <fstream>
 #include <vector>
 #include <chrono>
+#include <cstdlib>
 #include <unistd.h>
 
 using namespace network;
 
 namespace app_workmode {
+
+namespace {
+
+int64_t connectGraceMs() {
+    const char *env = std::getenv("HTC_UPLOAD_CONNECT_GRACE_MS");
+    if (env && env[0] != '\0') {
+        int v = std::atoi(env);
+        if (v > 0) return v;
+    }
+    return 30000;
+}
+
+}  // namespace
 
 UploadWorker::UploadWorker() = default;
 
@@ -34,21 +47,34 @@ void UploadWorker::start(const std::string& mgmtAddr, int mgmtPort) {
     worker_ = std::thread(&UploadWorker::workerLoop, this);
 }
 
-void UploadWorker::ensureConnected() {
-    if (connected_) return;
-    mgmt_ = std::make_shared<MgmtServClient>(mgmtAddr_, mgmtPort_);
-    if (EC_SUCCESS != mgmt_->connect(3000)) {
+bool UploadWorker::ensureConnected() {
+    if (connected_) return true;
+    Logger::log(LogLevel::INFO, "UploadWorker: connecting [%s:%d]", mgmtAddr_.c_str(), mgmtPort_);
+    auto mgmt = std::make_shared<MgmtServClient>(mgmtAddr_, mgmtPort_);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mgmt_ = mgmt;
+    }
+    if (EC_SUCCESS != mgmt->connect(3000)) {
         Logger::log(LogLevel::ERROR, "UploadWorker: connect [%s:%d] failed", mgmtAddr_.c_str(), mgmtPort_);
-        return;
+        return false;
     }
-    if (EC_SUCCESS != mgmt_->authenticate()) {
+    Logger::log(LogLevel::INFO, "UploadWorker: connected socket, authenticating");
+    if (EC_SUCCESS != mgmt->authenticate()) {
         Logger::log(LogLevel::ERROR, "UploadWorker: auth failed");
-        return;
+        return false;
     }
-    storage_ = mgmt_->newStorageServClient();
-    connected_ = true;
+    Logger::log(LogLevel::INFO, "UploadWorker: auth returned success, creating storage client");
+    auto storage = mgmt->newStorageServClient();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        storage_ = storage;
+        connected_ = true;
+        firstEnqueueTime_ = std::chrono::steady_clock::now();
+    }
     Logger::log(LogLevel::INFO, "UploadWorker: connected + authed [%s:%d] (lazy, after first record)",
                 mgmtAddr_.c_str(), mgmtPort_);
+    return true;
 }
 
 void UploadWorker::enqueue(const std::string& descPath) {
@@ -70,8 +96,12 @@ bool UploadWorker::isIdle() {
 int64_t UploadWorker::firstEnqueueAgeMs() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (queue_.empty() && !busy_) return 0;  // 完全空闲（在队+在途皆无）
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
+    // auth 期间给一段宽限，避免正常慢 auth 被 upload timeout 提前杀掉；
+    // 超过宽限后仍要返回 age，否则 connected_=false && busy_=true 会让 wm 永久等待。
+    int64_t age = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - firstEnqueueTime_).count();
+    if (!connected_ && age < connectGraceMs()) return 0;
+    return age;
 }
 
 bool UploadWorker::flush(int timeoutMs) {
@@ -82,9 +112,19 @@ bool UploadWorker::flush(int timeoutMs) {
 }
 
 void UploadWorker::stop() {
+    std::shared_ptr<StorageServClient> storage;
+    std::shared_ptr<MgmtServClient> mgmt;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stopRequested_ = true;
+        storage = storage_;
+        mgmt = mgmt_;
+    }
+    if (storage) {
+        storage->requestStop();
+    }
+    if (mgmt) {
+        mgmt->shutdownSocket();
     }
     cv_.notify_all();
     if (worker_.joinable()) {
@@ -105,11 +145,17 @@ void UploadWorker::workerLoop() {
             busy_ = true;  // 标记在途：上传未完成前 isIdle() 返回 false（同锁内设置，无空窗）
         }
 
+        bool ready = true;
         if (!connected_) {
-            ensureConnected();  // lazy：第一次拿到 desc（录影完成后）才 connect/auth
+            ready = ensureConnected();  // lazy：第一次拿到 desc（录影完成后）才 connect/auth
         }
 
-        uploadOneDesc(descPath);
+        if (ready) {
+            uploadOneDesc(descPath);
+        } else {
+            Logger::log(LogLevel::WARNING, "UploadWorker: upload skipped, desc kept on SD: %s",
+                        descPath.c_str());
+        }
 
         // 在途结束：清 busy_，唤醒 flush()/EventLoop 等待排空的调用方。
         {
@@ -186,7 +232,13 @@ void UploadWorker::uploadOneDesc(const std::string& desc_filename) {
         descfile_uploaded = true;
     }
 
-    if (descfile_uploaded) {
+    // NOTE: 原代码用 if (descfile_uploaded) 把整个 file_inf 上传块 gate 住,要求
+    // desc 先收到 server 的 Status_ID ack 才上传 jpg。devtest mgmt server 接受
+    // auth + login resp 但**不**回 desc 的 Status_ID,导致 8s 后 descfile_uploaded
+    // 仍是 false,file_inf 里的 jpg 永远不被 uploadFile()(=spec B2 设计)。即便
+    // desc 没 ack,server 通常仍能收 jpg upload 命令,故放开 gate:file_inf 总是
+    // 尝试上传,desc 自身的 tag 落盘仍受上面 8s wait 保护。
+    {
         bool allFileUploaded = true;
         const Json::Value file_inf_array = root["file_inf"];
         std::vector<std::string> uploaded_file_list;

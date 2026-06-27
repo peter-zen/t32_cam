@@ -10,11 +10,8 @@
 #include "upload_worker.h"      // UploadWorker
 #include "capture_lane.h"       // CaptureLane
 #include "pir_trigger.h"        // IPirTrigger
+#include "wm_paths.h"
 #include "misc/Misc.h"          // Misc::listFilenames
-// Common.h MUST precede app.h: app.h opens `extern "C"` then #includes Common.h
-// inside it — if Common.h isn't already parsed, its templates land under C linkage.
-#include "Common.h"
-#include "app.h"                // MEDIA_UPLOAD_PATH
 #include "Power.h"              // Power::requestShutdown (upload-timeout -> SIGTERM)
 #include "Logger.h"
 
@@ -47,14 +44,14 @@ void WmScheduler::run() {
     if (mode_ == WmMode::UploadOnly) {
         int enq = 0;
         if (upload_) {
-            std::vector<std::string> files = Misc::listFilenames(MEDIA_UPLOAD_PATH);
+            std::vector<std::string> files = Misc::listFilenames(kWmUploadPath);
             for (const std::string& f : files) {
-                upload_->enqueue(std::string(MEDIA_UPLOAD_PATH) + f);
+                upload_->enqueue(std::string(kWmUploadPath) + f);
                 ++enq;
             }
         }
         Logger::log(LogLevel::INFO, "[wm] op=start mode=2 enqueued=%d from=%s",
-                    enq, MEDIA_UPLOAD_PATH);
+                    enq, kWmUploadPath);
         bool uploadStopped = false;
         int64_t idleStart = 0;
         while (true) {
@@ -86,7 +83,6 @@ void WmScheduler::run() {
     // ---------- m0/m1: CaptureOnly / CaptureUpload ----------
     const bool oneShot = (std::getenv("HTC_WM_ONE_SHOT") != nullptr);
     bool masked = false;
-    bool captureTriggered = false;
     bool uploadStopped = false;
     int64_t idleStart = 0;
     Logger::log(LogLevel::INFO, "[wm] op=start mode=%d oneShot=%d",
@@ -94,11 +90,26 @@ void WmScheduler::run() {
 
     while (true) {
         // 1) trigger -> capture（cm==1 时 trigger 内同步等拍照完再起录影，避免 CH2 争用）
-        if (trigger_ && !masked && trigger_->waitForTrigger(kPollMs) == 1) {
-            if (capture_) capture_->trigger();
-            captureTriggered = true;
-            if (oneShot) masked = true;   // one-shot：首次触发后立即屏蔽——异步 record 期间二次
-                                          // trigger 会抢 IMP 通道（snap failed）→ 破坏状态 → teardown wedge
+        //
+        // PIR 门 = !capture_->isBusy() && !masked。
+        //   - capture_->isBusy() 在 cm==1 下覆盖 snap+record 整体（snap 期间由
+        //     CaptureLane 自身 atomic 标记，record 期间由 RecordTask 自报）——
+        //     PIR 撞进行中的原子动作时直接屏蔽。
+        //   - masked 仅 oneShot 模式生效（用户显式 opt-in：只触发一次就走完程序）。
+        //   - 两条独立：oneShot=1 时首次触发后 masked=true，但 record 完成后
+        //     isBusy()=false 也回到可触发态；任意一条锁住都不放过 PIR。
+        if (trigger_ && !masked && !(capture_ && capture_->isBusy())
+            && trigger_->waitForTrigger(kPollMs) == 1) {
+            bool accepted = true;
+            if (capture_) accepted = capture_->trigger();
+            if (oneShot) masked = true;   // one-shot：首次触发后立即屏蔽——用户 opt-in 的
+                                          // 「首拍后即收尾」语义，避开后续 cm==1 撞 IMP wedge
+            if (oneShot && mode_ == WmMode::CaptureOnly) {
+                Logger::log(LogLevel::INFO,
+                            "[wm] op=shutdown reason=one-shot-capture mode=%d accepted=%d",
+                            static_cast<int>(mode_), accepted ? 1 : 0);
+                break;
+            }
             idleStart = 0;   // 捕获活动：重置 idle-grace（sync SnapTask 的 isBusy 恒 false，
                              // 不会经 else 分支重置；显式重置确保 grace 从上次捕获起算）
         }

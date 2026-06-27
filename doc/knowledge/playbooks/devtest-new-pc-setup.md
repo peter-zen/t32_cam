@@ -45,7 +45,29 @@ tools/devctl/devctl run 'cp /mnt/huntcam/.devtest_sync/mount_nfs.sh /mnt/sdcard/
 rm -rf build/.devtest_sync
 ```
 
-> home（`192.168.31.x`/`192.168.31.200`）同理：换 home build 机 IP 时，改 `script/mount_nfs_home.sh` + 设备 SD 卡副本 + CLAUDE.md 表 + devctl `ENVS` home 回退值；bringup 本身不用动。
+> home（`192.168.31.x`/`192.168.31.200`）同理：换 home build 机 IP 时，改 `script/mount_nfs_home.sh` + 设备 SD 卡副本 + CLAUDE.md 表 + devctl `ENVS` home 回退值；bringup 本身不用动。详见 §B.2。
+
+## B.2 build 机 IP 迁移清单（home `192.168.31.x`）
+
+与 §B 同构。下面是当前 home 现状（`192.168.31.200`，home SSID `no_mesh_02_2.4G`）对应的 8 个同步点；如果 home build 机 IP 漂移（DHCP 换号、或换 build PC），按此表逐项改：
+
+| # | 位置 | 当前值 / 状态 | 动作 |
+|---|------|---------------|------|
+| 1 | `tools/devctl/devctl` (`ENVS` home `nfs_host` 回退值) | `192.168.31.200` | 改（IP 漂移时） |
+| 2 | `devctl bringup` 实际挂载 | 自动用本机 IP | **不用改** ✓ |
+| 3 | `script/mount_nfs_home.sh`（home，人手敲用） | `NFS_HOST=192.168.31.200` | 改（IP 漂移时） |
+| 4 | 设备 SD 卡 `/mnt/sdcard/mount_nfs_home.sh` 副本 | 同上 | 改（IP 漂移时），SD 卡中转重推命令见 §B 同步 SD 卡副本块 |
+| 5 | `.claude/CLAUDE.md` 双环境表 | home NFS server `.200` | 改（IP 漂移时） |
+| 6 | `script/build_t32@200.sh` 顶部 `TOOLCHAIN_DIR` / `CMAKE_BIN` | 跟公司 @206 同形 | **host 切换时改**：换一台 home build PC 时（不是 IP 漂移，是机器换了），按新机的 toolchain/cmake 路径改这两个 knob；文件名 `build_t32@<新host>.sh`，并更新 CLAUDE.md §Build 引导行 |
+| 7 | build 机 `/etc/exports` | — | 同 §B #7：按路径+客户端白名单 export `build/`；`exportfs -a` |
+| 8 | （建议）build 机静态 IP | — | 同 §B #8：固定 `.200` 省心 |
+
+**home 与公司的两个固定差异**（写脚本/文档时记住）：
+
+- **SSID**：home `no_mesh_02_2.4G` / company `no_mesh_01_2.4G`（CLAUDE.md §T32 deployment 双环境表）。
+- **NFS 挂载脚本**：`mount_nfs_home.sh` vs `mount_nfs.sh`（两脚本路径不同，SD 卡副本各一份，不能混用）。
+
+> 经验法则：先按 §B（company）8 项跑一遍流程验证环境对，再回到 §B.2 把 home 同样的 8 项对照；两边条目数量一致但**文件不同**，最容易踩坑的就是第 4 项 SD 卡副本被混改。
 
 ## C. 日常流程（每次冷启后）
 

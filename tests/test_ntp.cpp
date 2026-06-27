@@ -13,7 +13,8 @@
 //   3. RTC graceful-failure — on a host with no RTC device, getTime/setTime
 //      return false instead of crashing (RTC.cpp:77-80,127-130); the contract
 //      that makes the sim/sandbox path safe.
-//   4. MCU::getDatetime on sim — no /dev/hc32l13x → zeroed (implausible) tm.
+//   4. HTC_NO_MCU — MCU public read/write paths short-circuit without touching
+//      I2C; time reads return a zeroed (implausible) tm.
 //
 // Exit: 0 = all pass, non-zero = failure. Build under BUILD_FOR_SIMULATION only.
 
@@ -22,6 +23,7 @@
 #include "Common.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
@@ -132,15 +134,25 @@ void testRtcGracefulFailure()
                  "no RTC device -> getTime returns false (not crash)");
 }
 
-// 4) MCU::getDatetime on sim — no /dev/hc32l13x -> I2C read fails -> zeroed tm
-//    (MCU.cpp memsets then returns), which is implausible. This documents the
-//    no-stub sim behavior syncSystemTime relies on for its MCU fallback.
-void testMcuGetDatetimeImplausibleInSim()
+// 4) HTC_NO_MCU — the singleton leaves iic null. Every public method that may
+//    be hit by wm startup/shutdown or status APIs must return a default value
+//    rather than dereferencing iic.
+void testMcuNoMcuShortCircuit()
 {
+    setenv("HTC_NO_MCU", "1", 1);
     auto mcu = MCU::getInstance();
     struct tm t = mcu->getDatetime();
     EXPECT_FALSE(plausible(t),
-                 "MCU::getDatetime implausible in sim (no /dev/hc32l13x)");
+                 "MCU::getDatetime implausible with HTC_NO_MCU");
+    EXPECT_FALSE(mcu->setDatetime(&t),
+                 "MCU::setDatetime returns false with HTC_NO_MCU");
+    EXPECT_TRUE(mcu->readPID().empty(), "MCU::readPID empty with HTC_NO_MCU");
+    EXPECT_TRUE(mcu->readUPID().empty(), "MCU::readUPID empty with HTC_NO_MCU");
+    EXPECT_TRUE(mcu->readUPWD().empty(), "MCU::readUPWD empty with HTC_NO_MCU");
+    EXPECT_TRUE(mcu->readSignalType().empty(), "MCU::readSignalType empty with HTC_NO_MCU");
+    EXPECT_TRUE(mcu->readDEVICE_NAME().empty(), "MCU::readDEVICE_NAME empty with HTC_NO_MCU");
+    EXPECT_TRUE(mcu->readGps() == ",,,,,", "MCU::readGps empty NMEA fields with HTC_NO_MCU");
+    EXPECT_TRUE(mcu->readESOR_Value() == 0, "MCU::readESOR_Value zero with HTC_NO_MCU");
 }
 
 }  // namespace
@@ -150,7 +162,7 @@ int main()
     testTimePlausible();
     testRtcSetTimeValidation();
     testRtcGracefulFailure();
-    testMcuGetDatetimeImplausibleInSim();
+    testMcuNoMcuShortCircuit();
 
     if (g_failures == 0) {
         std::printf("test_ntp: ALL PASS\n");

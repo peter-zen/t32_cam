@@ -4,6 +4,7 @@
 #include <string>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <memory>
 #include <condition_variable>
 #include <json/json.h>
@@ -13,16 +14,19 @@
 
 namespace network {
 class MgmtServClient : public Client {
-    public:
+public:
 	MgmtServClient(const std::string &address, int port);
 	~MgmtServClient();
 
-    public:
+public:
 	int authenticate();
 	int sendHeartbeat();
 	std::shared_ptr<StorageServClient> newStorageServClient();
+	// recv_thread 异步处理 server resp 后会设 auth_success=true。
+	// 结果用 atomic 存储，避免接收线程在认证完成路径上被等待线程的 mutex 状态卡住。
+	bool isAuthSuccess();
 
-    private:
+private:
 	int receiveCommand(char *buffer, size_t length);
 	void processCommand(std::unique_ptr<char[]> &buffer, size_t length);
 	void handleAuthCommand(const Json::Value &root);
@@ -40,7 +44,7 @@ class MgmtServClient : public Client {
 	int str2week(const std::string& str);
 	int str2week(char * str);
 
-    private:
+private:
 	std::string sync_key;
 	bool need_euid;
 	bool remote_wakeup;
@@ -51,9 +55,9 @@ class MgmtServClient : public Client {
 	int rtmp_duration;
 	std::shared_ptr<Rtmp> rtmp;
 	std::mutex auth_mutex;
-    std::condition_variable auth_cv;
-	bool auth_result_received;
-    bool auth_success;
+	std::condition_variable auth_cv;
+	std::atomic<bool> auth_result_received;
+	std::atomic<bool> auth_success;
 	std::shared_ptr<StorageServClient> storage_serv_client;
 };
 }

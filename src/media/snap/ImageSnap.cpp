@@ -372,6 +372,16 @@ bool ImageSnap::snap_internal(const std::vector<std::string> &filenames)
         stream_->releaseFrame(frame);
 
         long fileSize = ftell(fp);
+        if (fflush(fp) != 0) {
+            Logger::log(LogLevel::ERROR, "snap(int): fflush %s failed", filename.c_str());
+            fclose(fp);
+            return false;
+        }
+        if (::fileno(fp) >= 0 && ::fsync(::fileno(fp)) != 0) {
+            Logger::log(LogLevel::ERROR, "snap(int): fsync %s failed", filename.c_str());
+            fclose(fp);
+            return false;
+        }
         fclose(fp);
         Logger::log(LogLevel::INFO, "snap(int): saved %s (%ld bytes)", filename.c_str(), fileSize);
 
@@ -508,6 +518,12 @@ bool ImageSnap::snap_large_burst_internal(const std::vector<std::string> &filena
             break;
         }
         size_t wr = fwrite(reinterpret_cast<const uint8_t*>(frame->virAddr), 1, nv12Size, fp);
+        if (wr == nv12Size) {
+            if (fflush(fp) != 0 || (::fileno(fp) >= 0 && ::fsync(::fileno(fp)) != 0)) {
+                Logger::log(LogLevel::ERROR, "snap_large_burst: sync %s failed", tmpPath);
+                wr = 0;
+            }
+        }
         fclose(fp);
         IMP_FrameSource_ReleaseFrameEx(SNAP_SENSOR_ID, frame);
         if (wr != nv12Size) {

@@ -1,5 +1,5 @@
 // app_lifecycle::ProcessLifecycle — extracted verbatim from src/app/main_app.cpp
-// (Phase C-1, T14). The signal machinery, S1-S13 common startup, and the
+// (Phase C-1, T14). The signal machinery, S1-S12 common startup, and the
 // main_exit tail live here so both htc_main_app and the future htc_workmode_app
 // can share them. Behavior is byte-identical to the monolith: the bodies below
 // are verbatim (only `static`→method/member-wrap + ref rewrites).
@@ -282,6 +282,11 @@ bool ProcessLifecycle::commonStartup(const StartupConfig& cfg) {
     setEnvIfEmpty(env_manager, "ISP_FILE_PATH", simRootPath + "/media/audio/");
 #else
     EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
+    if (const char* configOverride = std::getenv("CONFIG_FILE")) {
+        if (configOverride[0] != '\0') {
+            EnvManager::getInstance()->setEnv("CONFIG_FILE", configOverride);
+        }
+    }
 #endif
 
     // S2 — Initialize Database
@@ -344,6 +349,23 @@ bool ProcessLifecycle::commonStartup(const StartupConfig& cfg) {
 #endif
 
 #ifndef BUILD_FOR_SIMULATION
+    // S4b — Timezone (HW-only). MUST run before S4.5 syncSystemTime():
+    // RTC::getTime() (RTC.cpp:160) uses mktime() to convert the RTC's wall-
+    // clock fields into an epoch, and mktime() interprets tm in the CURRENT TZ.
+    // If TZ is unset when syncSystemTime runs, mktime treats RTC fields as UTC
+    // and writes the right epoch. If S13 (setTimezone to UTC+8 / POSIX UTC-8)
+    // runs AFTER syncSystemTime, every later localtime()/elog tick shifts the
+    // visible clock by 8h — exactly the symptom we hit. Set TZ first so the
+    // system clock we land in is the correct local epoch.
+    {
+        auto config = DeviceConfig::getInstance();
+        std::string timezone = config->get(INI_SECTION_NTP, INI_KEY_TIMEZONE, "");
+        if (!timezone.empty()) {
+            Logger::log(LogLevel::INFO, "Set timezone to %s", timezone.c_str());
+            Timezone::setTimezone(timezone);
+        }
+    }
+
     // S4.5 — Sync system time early (RTC first, MCU fallback) so downstream log
     // timestamps / media filenames are trustworthy. PC sim uses the host clock.
     syncSystemTime();
@@ -514,15 +536,6 @@ bool ProcessLifecycle::commonStartupPostDispatch(const StartupConfig& cfg, int c
                 config->flush_control(false);
                 return false;
             }
-        }
-    }
-
-    // S13 — timezone (HW-only)
-    {
-        std::string timezone = config->get(INI_SECTION_NTP, INI_KEY_TIMEZONE, "");
-        if (!timezone.empty()) {
-            Logger::log(LogLevel::INFO, "Set timezone to %s", timezone.c_str());
-            Timezone::setTimezone(timezone);
         }
     }
 #endif

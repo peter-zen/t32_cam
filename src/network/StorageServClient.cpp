@@ -5,7 +5,7 @@
 #include <json/json.h>
 #include <sys/time.h>
 #include <unistd.h>
-#include <string.h>
+#include <cstring>
 #include "utils/crc/CRC.h"
 #include <iomanip>
 #include <sstream>
@@ -24,7 +24,6 @@ StorageServClient::StorageServClient(const char *address, int port)
 	: Client(address, port)
 {
 	upload_thread_run = true;
-	upload_thread_started = false;
 	upload_thread = std::make_shared<std::thread>(&StorageServClient::uploadThread, this);
 	Logger::log(LogLevel::INFO, "StorageServClient: Constructor");
 }
@@ -34,17 +33,32 @@ StorageServClient::StorageServClient(int socket_fd)
 {
 	Logger::log(LogLevel::INFO, "StorageServClient: Constructor");
 	upload_thread_run = true;
-	upload_thread_started = false;
 	upload_thread = std::make_shared<std::thread>(&StorageServClient::uploadThread, this);
 }
 
 StorageServClient::~StorageServClient()
 {
-	upload_thread_run = false;
+	requestStop();
 	if (upload_thread && upload_thread->joinable()) {
 		upload_thread->join();
 	}
 	Logger::log(LogLevel::INFO, "StorageServClient: Destructor");
+}
+
+void StorageServClient::requestStop()
+{
+	{
+		std::lock_guard<std::mutex> lock(upload_queue_mutex);
+		upload_thread_run = false;
+	}
+	upload_queue_cv.notify_all();
+	{
+		std::lock_guard<std::mutex> lock(upload_mutex);
+		upload_result_received = true;
+		upload_success = false;
+	}
+	upload_cv.notify_all();
+	shutdownSocket();
 }
 
 void StorageServClient::bindUploadCallback(UploadCallback callback)
@@ -54,42 +68,60 @@ void StorageServClient::bindUploadCallback(UploadCallback callback)
 
 void StorageServClient::uploadThread()
 {
-	while (upload_thread_run) {
-		upload_thread_started = true;
-		if (socket_fd == -1 || upload_queue.empty()) {
-			usleep(200000);
-			continue;
+	while (true) {
+		std::string file_path;
+		{
+			std::unique_lock<std::mutex> lock(upload_queue_mutex);
+			upload_queue_cv.wait(lock, [this] {
+				return !upload_thread_run || !upload_queue.empty();
+			});
+			if (!upload_thread_run) {
+				break;
+			}
+			if (socket_fd == -1) {
+				lock.unlock();
+				usleep(200000);
+				continue;
+			}
+			file_path = upload_queue.front();
+			upload_queue.pop_front();
+			upload_in_progress = true;
 		}
-		std::unique_lock<std::mutex> lock(upload_queue_mutex);
-		std::string file_path = upload_queue.front();
-		lock.unlock();
+
+		Logger::log(LogLevel::DEBUG, "StorageServClient: upload begin: %s", file_path.c_str());
 
 		int error_code = upload(file_path);
-		
-		lock.lock();
-		upload_queue.pop_front();
-		lock.unlock();
 
 		if (upload_callback) {
 			upload_callback(file_path, error_code);
 		}
+
+		{
+			std::lock_guard<std::mutex> lock(upload_queue_mutex);
+			upload_in_progress = false;
+		}
+		upload_queue_cv.notify_all();
 	}
-	upload_thread_started = false;
 }
 
 bool StorageServClient::isUploadFinished()
 {
-	return upload_queue.empty();
+	std::lock_guard<std::mutex> lock(upload_queue_mutex);
+	return upload_queue.empty() && !upload_in_progress;
 }
 
 void StorageServClient::uploadFile(const std::string &filename)
 {
-	while (upload_thread_run && !upload_thread_started) {
-	    usleep(10000);
+	{
+		std::lock_guard<std::mutex> lock(upload_queue_mutex);
+		if (!upload_thread_run) {
+			Logger::log(LogLevel::WARNING, "StorageServClient: upload stopped, skip %s", filename.c_str());
+			return;
+		}
+		upload_queue.push_back(filename);
+		Logger::log(LogLevel::INFO, "StorageServClient: queued upload file: %s", filename.c_str());
 	}
-
-	std::unique_lock<std::mutex> lock(upload_queue_mutex);
-	upload_queue.push_back(filename);
+	upload_queue_cv.notify_one();
 }
 
 void StorageServClient::handleUploadCommand(const Json::Value &cmd)
@@ -173,20 +205,31 @@ int StorageServClient::upload(const std::string &file_pathname)
 
 	auto start_time = std::chrono::steady_clock::now();
 
+	{
+		std::lock_guard<std::mutex> lock(upload_mutex);
+		upload_result_received = false;
+		upload_success = false;
+	}
+
+	// NOTE: StorageServClient::upload 走裸 ::send(),绕过 Client::sendMessage。
+	// mgmt server 在 devtest 环境接受 auth(PID/secret 通过)后会主动关闭 socket;
+	// 上传 JPG payload (72KB) 单次 send 超 send_buffer_size 阈值时即便单包也
+	// 可能撞内核 TCP 重传 (13–30s) 把 upload 线程锁死。沿用 Client::sendMessage
+	// 的 O_NONBLOCK + select(5s) 守护,统一所有 TCP send 路径的阻塞上界。
 	if (total_length <= send_buffer_size) {
 		file_stream.read(&send_buffer[fixed_length + message_length], file_size);
-		ret = send(socket_fd, send_buffer.get(), total_length, 0);
+		ret = sendWithTimeout(socket_fd, send_buffer.get(), total_length, 5);
 	} else {
 		int file_idx = send_buffer_size - fixed_length - message_length;
 		file_stream.read(&send_buffer[fixed_length + message_length], file_idx);
-		ret = send(socket_fd, send_buffer.get(), send_buffer_size, 0);
+		ret = sendWithTimeout(socket_fd, send_buffer.get(), send_buffer_size, 5);
 
 		while (ret >= 0 && file_idx < file_size) {
 			file_stream.read(&send_buffer[0], send_buffer_size);
 			int n_read = file_stream.gcount();
 			if (n_read == 0)
 				break;
-			ret = send(socket_fd, send_buffer.get(), n_read, 0);
+			ret = sendWithTimeout(socket_fd, send_buffer.get(), n_read, 5);
 			file_idx += n_read;
 		}
 	}
@@ -206,8 +249,6 @@ int StorageServClient::upload(const std::string &file_pathname)
 	//wait for response
 	{
 		std::unique_lock<std::mutex> lock(upload_mutex);
-		upload_result_received = false;
-		upload_success = false;
 		upload_cv.wait_for(
 			lock
 			, std::chrono::seconds(5)

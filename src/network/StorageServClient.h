@@ -19,12 +19,13 @@ class StorageServClient : public Client {
 	StorageServClient(int socket_fd);
 	~StorageServClient();
 
-    public:
-	using UploadCallback = std::function<void(const std::string &filename, int error_code)>;
-	void bindUploadCallback(UploadCallback callback);
-	void uploadFile(const std::string &filename);
-	void processCommand(int type, const Json::Value& cmd);
-	bool isUploadFinished();
+	    public:
+		using UploadCallback = std::function<void(const std::string &filename, int error_code)>;
+		void bindUploadCallback(UploadCallback callback);
+		void uploadFile(const std::string &filename);
+		void processCommand(int type, const Json::Value& cmd);
+		bool isUploadFinished();
+		void requestStop();
 
     private:
 	void uploadThread();
@@ -34,15 +35,16 @@ class StorageServClient : public Client {
     private:
 	UploadCallback upload_callback;
 	std::shared_ptr<std::thread> upload_thread;
-	bool upload_thread_started;
-	bool upload_thread_run;
+	bool upload_thread_run = false;
 	std::deque<std::string> upload_queue;
 	std::mutex upload_queue_mutex;
+	std::condition_variable upload_queue_cv;
+	bool upload_in_progress = false;
 
 	std::mutex upload_mutex;
     std::condition_variable upload_cv;
-	bool upload_result_received;
-    bool upload_success;
+	bool upload_result_received = false;
+    bool upload_success = false;
 };
 }
 #endif // STORAGE_SERVICE_CLIENT_H

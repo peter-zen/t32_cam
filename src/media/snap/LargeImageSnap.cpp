@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unistd.h>
 
 #define TAG "LargeSnap"
 
@@ -266,7 +267,14 @@ bool LargeImageSnap::encodeLargeJpeg(const std::string& filename, int dst_w, int
         ms_io     += (long)std::chrono::duration_cast<std::chrono::milliseconds>(t4 - t3).count();
     }
 
-    fflush(fp);
+    if (fflush(fp) != 0) {
+        Logger::log(LogLevel::ERROR, "snapLarge: fflush %s failed", filename.c_str());
+        success = false;
+    }
+    if (::fileno(fp) >= 0 && ::fsync(::fileno(fp)) != 0) {
+        Logger::log(LogLevel::ERROR, "snapLarge: fsync %s failed", filename.c_str());
+        success = false;
+    }
     long fileBytes = ftell(fp);
     fclose(fp);
     freeBuffers();
@@ -359,9 +367,16 @@ bool LargeImageSnap::snapRaw(const std::string& filename, int quality) {
     FILE* fp = fopen(filename.c_str(), "wb");
     if (!fp) { free(jpeg); return false; }
     size_t written = fwrite(jpeg, 1, jpegLen, fp);
+    bool synced = false;
+    if (written == static_cast<size_t>(jpegLen)) {
+        synced = (fflush(fp) == 0 && (::fileno(fp) < 0 || ::fsync(::fileno(fp)) == 0));
+        if (!synced) {
+            Logger::log(LogLevel::ERROR, "snapRaw: sync %s failed", filename.c_str());
+        }
+    }
     fclose(fp);
     free(jpeg);
-    return written == static_cast<size_t>(jpegLen);
+    return written == static_cast<size_t>(jpegLen) && synced;
 }
 
 } // namespace media

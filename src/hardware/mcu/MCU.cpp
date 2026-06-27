@@ -1,4 +1,5 @@
 #include "MCU.h"
+#include <cstdlib>
 #include <mutex>
 #include <string.h>
 #include <time.h>
@@ -25,6 +26,13 @@ std::shared_ptr<MCU> MCU::getInstance()
 MCU::MCU()
 	:mcu_version(0)
 {
+	// HTC_NO_MCU=1：devtest 无 MCU 板时跳过 I2C 探测与打开。所有 read/write
+	// 顶层都有 `if (!iic) return 默认值;` 短路——既不发起 i2c 传输（消除内核
+	// `i2c transfer error` 噪音），也不打 `[MCU]read failed` 日志。
+	if (std::getenv("HTC_NO_MCU")) {
+		Logger::log(LogLevel::INFO, "MCU: disabled via HTC_NO_MCU (no I2C probe)");
+		return;
+	}
 	iic = std::make_shared<IIC>(I2C_SLAVE_NAME);
 	if (iic) {
 		iic->open();
@@ -86,6 +94,7 @@ bool MCU::IsWifiStationReady()
 
 int MCU::readSignalCF()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -114,6 +123,7 @@ int MCU::readSignalCF()
 
 int MCU::readSignalRSSI()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -141,6 +151,7 @@ int MCU::readSignalRSSI()
 
 int MCU::readSignalRSRP()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -168,6 +179,7 @@ int MCU::readSignalRSRP()
 
 int MCU::readSignalRSRQ()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -195,6 +207,7 @@ int MCU::readSignalRSRQ()
 
 int MCU::readSignalSNR()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -222,6 +235,7 @@ int MCU::readSignalSNR()
 
 int MCU::readSignalTD()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -249,6 +263,7 @@ int MCU::readSignalTD()
 
 int MCU::readSignalTP()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -281,6 +296,7 @@ bool MCU::Is4gExist()
 
 bool MCU::writeRemoteWakeup(int remote_wakeup)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &remote_wakeup, sizeof(remote_wakeup));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UWS);
@@ -299,6 +315,7 @@ bool MCU::useGpsTime()
 
 int MCU::readCds()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -355,6 +372,7 @@ int MCU::readEventNum()
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 int MCU::readWorkingMode()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -375,6 +393,7 @@ int MCU::readWorkingMode()
 
 int MCU::readTemperature()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -394,6 +413,7 @@ int MCU::readTemperature()
 
 int MCU::readHumidity()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -413,6 +433,7 @@ int MCU::readHumidity()
 
 int MCU::readAtmosPressure()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -432,6 +453,7 @@ int MCU::readAtmosPressure()
 
 int MCU::readVersion()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	if (mcu_version != 0) {
 		return mcu_version;
 	}
@@ -466,6 +488,7 @@ std::string MCU::convertVersion(int ver)
 
 std::string MCU::readPID()
 {
+	if (!iic) return "";   // HTC_NO_MCU: skip I2C
 	char buf[128] = { 0 };
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PID);
 	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_PID);
@@ -500,6 +523,7 @@ std::string MCU::readPID()
 
 std::string MCU::readUPID()
 {
+	if (!iic) return "";   // HTC_NO_MCU: skip I2C
 	char buf[128] = { 0 };
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UPID);
 	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UPID);
@@ -523,6 +547,7 @@ std::string MCU::readUPID()
 
 std::string MCU::readUPWD()
 {
+	if (!iic) return "";   // HTC_NO_MCU: skip I2C
 	char buf[128] = { 0 };
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UPWD);
 	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_UPWD);
@@ -546,6 +571,7 @@ std::string MCU::readUPWD()
 
 bool MCU::writePID(const std::string &pid)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	if (pid.empty()) {
 		return false;
 	}
@@ -562,6 +588,7 @@ bool MCU::writePID(const std::string &pid)
 }
 bool MCU::writeUPID(const std::string &upid)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	if (upid.empty()) {
 		return false;
 	}
@@ -578,6 +605,7 @@ bool MCU::writeUPID(const std::string &upid)
 }
 bool MCU::writeUPWD(const std::string &password)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	if (password.empty()) {
 		return false;
 	}
@@ -595,6 +623,7 @@ bool MCU::writeUPWD(const std::string &password)
 
 int MCU::readBatteryVoltage()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -614,6 +643,7 @@ int MCU::readBatteryVoltage()
 
 int MCU::readBattery1Voltage()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -633,6 +663,7 @@ int MCU::readBattery1Voltage()
 
 int MCU::readBattery2Voltage()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -652,6 +683,7 @@ int MCU::readBattery2Voltage()
 
 int MCU::readRMSunPowerValue()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -671,6 +703,7 @@ int MCU::readRMSunPowerValue()
 
 int MCU::readExternalVoltage()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -690,6 +723,7 @@ int MCU::readExternalVoltage()
 
 bool MCU::setDatetime(const struct tm *time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	if (time == NULL) {
 		return false;
 	}
@@ -779,6 +813,7 @@ struct tm MCU::getDatetime()
 {
 	struct tm time;
 	memset(&time, 0, sizeof(time));
+	if (!iic) return time;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[32];
 	
 	// 一次性读取所有日期时间字段（从YEAR开始，共7字节：YEAR(2) + MONTH(1) + DAY(1) + HOUR(1) + MINUTE(1) + SECOND(1)）
@@ -831,6 +866,7 @@ struct tm MCU::getDatetime()
 
 std::string MCU::readGps()
 {
+	if (!iic) return ",,,,,";   // HTC_NO_MCU: skip I2C
     // if cached gps data, return it
     if (!gps_cached_data.empty()) {
         return gps_cached_data;
@@ -916,6 +952,7 @@ std::string MCU::readGps()
 bool MCU::writeGps(const std::string &gps)
 {
 	// 解析GPS字符串，格式应该为：longitude,longitude_direction,latitude,latitude_direction,altitude
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	std::vector<std::string> parts;
 	std::stringstream ss(gps);
 	std::string part;
@@ -1025,6 +1062,7 @@ std::string MCU::convertVoltage(int value)
 //系统类参数
 int MCU::readFworkMark()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1042,6 +1080,7 @@ int MCU::readFworkMark()
 
 int MCU::readEventStatus()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1070,6 +1109,7 @@ int MCU::readEventStatus()
 
 int MCU::readPType()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1088,6 +1128,7 @@ int MCU::readPType()
 //基础信息类参数
 int MCU::readUWS()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1105,6 +1146,7 @@ int MCU::readUWS()
 
 int MCU::readCDS_DN()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1122,6 +1164,7 @@ int MCU::readCDS_DN()
 
 int MCU::readCDS_Value()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1139,6 +1182,7 @@ int MCU::readCDS_Value()
 
 int MCU::readVTSAlarm()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1156,6 +1200,7 @@ int MCU::readVTSAlarm()
 
 int MCU::readVTSSens()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1173,6 +1218,7 @@ int MCU::readVTSSens()
 
 int MCU::readNUFQ()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1190,6 +1236,7 @@ int MCU::readNUFQ()
 
 int MCU::readTimeout()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1207,6 +1254,7 @@ int MCU::readTimeout()
 
 int MCU::readCamStatus()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1224,6 +1272,7 @@ int MCU::readCamStatus()
 
 int MCU::readAIAlarm()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1242,6 +1291,7 @@ int MCU::readAIAlarm()
 //信号类参数
 std::string MCU::readSignalType()
 {
+	if (!iic) return "";   // HTC_NO_MCU: skip I2C
 	char buf[128] = { 0 };
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_SIG_TYPE);
 	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_SIG_TYPE);
@@ -1254,6 +1304,7 @@ std::string MCU::readSignalType()
 
 int MCU::readSignalRL()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1272,6 +1323,7 @@ int MCU::readSignalRL()
 //传感器类参数
 int MCU::readSOR_AL()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1289,6 +1341,7 @@ int MCU::readSOR_AL()
 
 int MCU::readSOR_UVL()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1306,6 +1359,7 @@ int MCU::readSOR_UVL()
 
 int MCU::readSOR_NOISE()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1323,6 +1377,7 @@ int MCU::readSOR_NOISE()
 
 int MCU::readSOR_CO()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1340,6 +1395,7 @@ int MCU::readSOR_CO()
 
 int MCU::readSOR_CO2()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1357,6 +1413,7 @@ int MCU::readSOR_CO2()
 
 int MCU::readSOR_O2()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1375,6 +1432,7 @@ int MCU::readSOR_O2()
 //外扩无线设备类参数
 int MCU::readESOR_ADD()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1392,6 +1450,7 @@ int MCU::readESOR_ADD()
 
 int MCU::readESOR_ID()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1409,6 +1468,7 @@ int MCU::readESOR_ID()
 
 int MCU::readESOR_TYPE()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1426,6 +1486,7 @@ int MCU::readESOR_TYPE()
 
 int MCU::readESOR_BAT()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1443,6 +1504,7 @@ int MCU::readESOR_BAT()
 
 int MCU::readESOR_GPSA()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1460,6 +1522,7 @@ int MCU::readESOR_GPSA()
 
 int MCU::readESOR_GPSL()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1477,6 +1540,7 @@ int MCU::readESOR_GPSL()
 
 int MCU::readESOR_GPSH()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1494,6 +1558,7 @@ int MCU::readESOR_GPSH()
 
 unsigned int MCU::readESOR_Value()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	unsigned int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1511,6 +1576,7 @@ unsigned int MCU::readESOR_Value()
 
 bool MCU::writeESOR_WS(int ws)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &ws, sizeof(ws));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_WS);
@@ -1524,6 +1590,7 @@ bool MCU::writeESOR_WS(int ws)
 
 bool MCU::writeESOR_WID(int wid)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &wid, sizeof(wid));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_ESOR_WID);
@@ -1537,6 +1604,7 @@ bool MCU::writeESOR_WID(int wid)
 
 int MCU::readESOR_WS()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1554,6 +1622,7 @@ int MCU::readESOR_WS()
 
 int MCU::readESOR_WID()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1572,6 +1641,7 @@ int MCU::readESOR_WID()
 //参数设置类参数
 int MCU::readCAM_MAXS()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1589,6 +1659,7 @@ int MCU::readCAM_MAXS()
 
 int MCU::readPIR_MODE()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1606,6 +1677,7 @@ int MCU::readPIR_MODE()
 
 int MCU::readPIR_SENS()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1623,6 +1695,7 @@ int MCU::readPIR_SENS()
 
 int MCU::readPIR_INT()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1640,6 +1713,7 @@ int MCU::readPIR_INT()
 
 int MCU::readTIMER()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1657,6 +1731,7 @@ int MCU::readTIMER()
 
 int MCU::readPIR_EN()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1674,6 +1749,7 @@ int MCU::readPIR_EN()
 
 int MCU::readTIMER_INT()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1691,6 +1767,7 @@ int MCU::readTIMER_INT()
 
 int MCU::readTIMER_1START()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1708,6 +1785,7 @@ int MCU::readTIMER_1START()
 
 int MCU::readTIMER_1END()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1725,6 +1803,7 @@ int MCU::readTIMER_1END()
 
 int MCU::readTIMER_2START()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1742,6 +1821,7 @@ int MCU::readTIMER_2START()
 
 int MCU::readTIMER_2END()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1759,6 +1839,7 @@ int MCU::readTIMER_2END()
 
 int MCU::readTIMER_3START()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1776,6 +1857,7 @@ int MCU::readTIMER_3START()
 
 int MCU::readTIMER_3END()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1793,6 +1875,7 @@ int MCU::readTIMER_3END()
 
 int MCU::readTIMER_4START()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1810,6 +1893,7 @@ int MCU::readTIMER_4START()
 
 int MCU::readTIMER_4END()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1827,6 +1911,7 @@ int MCU::readTIMER_4END()
 
 int MCU::readTIMER_5START()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1844,6 +1929,7 @@ int MCU::readTIMER_5START()
 
 int MCU::readTIMER_5END()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1861,6 +1947,7 @@ int MCU::readTIMER_5END()
 
 int MCU::readTIMER_REPEATS()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1878,6 +1965,7 @@ int MCU::readTIMER_REPEATS()
 
 std::string MCU::readDEVICE_NAME()
 {
+	if (!iic) return "";   // HTC_NO_MCU: skip I2C
 	char buf[128] = { 0 };
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_DEVICE_NAME);
 	int nbytes = PARAM_UNPACK_BYTES(PARAM_MCU_DEVICE_NAME);
@@ -1890,6 +1978,7 @@ std::string MCU::readDEVICE_NAME()
 
 int MCU::readHEARTRATE()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1907,6 +1996,7 @@ int MCU::readHEARTRATE()
 
 int MCU::readUP_MODE()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1924,6 +2014,7 @@ int MCU::readUP_MODE()
 
 int MCU::readUP_NUFQ()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1941,6 +2032,7 @@ int MCU::readUP_NUFQ()
 
 int MCU::readTDS_CF()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1958,6 +2050,7 @@ int MCU::readTDS_CF()
 
 int MCU::readTDS_TP()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1975,6 +2068,7 @@ int MCU::readTDS_TP()
 
 int MCU::readTDS_BW()
 {
+	if (!iic) return 0;   // HTC_NO_MCU: skip I2C
 	int value = 0;
 	char *pval = (char *)&value;
 	unsigned char buf[128] = { 0 };
@@ -1992,6 +2086,7 @@ int MCU::readTDS_BW()
 
 bool MCU::writeCAM_MAXS(int max)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &max, sizeof(max));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_CAM_MAXS);
@@ -2005,6 +2100,7 @@ bool MCU::writeCAM_MAXS(int max)
 
 bool MCU::writePIR_MODE(int mode)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &mode, sizeof(mode));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_MODE);
@@ -2018,6 +2114,7 @@ bool MCU::writePIR_MODE(int mode)
 
 bool MCU::writePIR_SENS(int sens)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &sens, sizeof(sens));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_SENS);
@@ -2031,6 +2128,7 @@ bool MCU::writePIR_SENS(int sens)
 
 bool MCU::writePIR_INT(int interval)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &interval, sizeof(interval));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_INT);
@@ -2044,6 +2142,7 @@ bool MCU::writePIR_INT(int interval)
 
 bool MCU::writeTIMER(int timer)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &timer, sizeof(timer));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER);
@@ -2057,6 +2156,7 @@ bool MCU::writeTIMER(int timer)
 
 bool MCU::writePIR_EN(int en)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &en, sizeof(en));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_PIR_EN);
@@ -2070,6 +2170,7 @@ bool MCU::writePIR_EN(int en)
 
 bool MCU::writeTIMER_INT(int interval)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &interval, sizeof(interval));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_INT);
@@ -2083,6 +2184,7 @@ bool MCU::writeTIMER_INT(int interval)
 
 bool MCU::writeTIMER_1START(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_1START);
@@ -2096,6 +2198,7 @@ bool MCU::writeTIMER_1START(int time)
 
 bool MCU::writeTIMER_1END(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_1END);
@@ -2109,6 +2212,7 @@ bool MCU::writeTIMER_1END(int time)
 
 bool MCU::writeTIMER_2START(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_2START);
@@ -2122,6 +2226,7 @@ bool MCU::writeTIMER_2START(int time)
 
 bool MCU::writeTIMER_2END(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_2END);
@@ -2135,6 +2240,7 @@ bool MCU::writeTIMER_2END(int time)
 
 bool MCU::writeTIMER_3START(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_3START);
@@ -2148,6 +2254,7 @@ bool MCU::writeTIMER_3START(int time)
 
 bool MCU::writeTIMER_3END(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_3END);
@@ -2161,6 +2268,7 @@ bool MCU::writeTIMER_3END(int time)
 
 bool MCU::writeTIMER_4START(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_4START);
@@ -2174,6 +2282,7 @@ bool MCU::writeTIMER_4START(int time)
 
 bool MCU::writeTIMER_4END(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_4END);
@@ -2187,6 +2296,7 @@ bool MCU::writeTIMER_4END(int time)
 
 bool MCU::writeTIMER_5START(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_5START);
@@ -2200,6 +2310,7 @@ bool MCU::writeTIMER_5START(int time)
 
 bool MCU::writeTIMER_5END(int time)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &time, sizeof(time));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_5END);
@@ -2213,6 +2324,7 @@ bool MCU::writeTIMER_5END(int time)
 
 bool MCU::writeTIMER_REPEATS(int repeats)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &repeats, sizeof(repeats));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TIMER_REPEATS);
@@ -2226,6 +2338,7 @@ bool MCU::writeTIMER_REPEATS(int repeats)
 
 bool MCU::writeDEVICE_NAME(const std::string &name)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	if (name.empty()) {
 		return false;
 	}
@@ -2241,6 +2354,7 @@ bool MCU::writeDEVICE_NAME(const std::string &name)
 
 bool MCU::writeHEARTRATE(int rate)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &rate, sizeof(rate));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_HEARTRATE);
@@ -2254,6 +2368,7 @@ bool MCU::writeHEARTRATE(int rate)
 
 bool MCU::writeUP_MODE(int mode)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &mode, sizeof(mode));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UP_MODE);
@@ -2267,6 +2382,7 @@ bool MCU::writeUP_MODE(int mode)
 
 bool MCU::writeUP_NUFQ(int num)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &num, sizeof(num));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_UP_NUFQ);
@@ -2280,6 +2396,7 @@ bool MCU::writeUP_NUFQ(int num)
 
 bool MCU::writeTDS_CF(int cf)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &cf, sizeof(cf));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TDS_CF);
@@ -2293,6 +2410,7 @@ bool MCU::writeTDS_CF(int cf)
 
 bool MCU::writeTDS_TP(int tp)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &tp, sizeof(tp));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TDS_TP);
@@ -2306,6 +2424,7 @@ bool MCU::writeTDS_TP(int tp)
 
 bool MCU::writeTDS_BW(int bw)
 {
+	if (!iic) return false;   // HTC_NO_MCU: skip I2C
 	unsigned char buf[128] = { 0 };
 	memcpy(buf, &bw, sizeof(bw));
 	int reg_start = PARAM_UNPACK_START(PARAM_MCU_TDS_BW);

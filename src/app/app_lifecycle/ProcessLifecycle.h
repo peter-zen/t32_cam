@@ -62,9 +62,10 @@ public:
     // Returns false on a fatal step (pipe() failure) so the caller can bail.
     bool commonStartup(const StartupConfig& cfg);
 
-    // S9-S13 common startup (post-dispatch). Performs: daemon-registration,
+    // S9-S12 common startup (post-dispatch). Performs: daemon-registration,
     // Settings load, DeviceConfig + program_type capture, SD-mount + netif
-    // selection, (HW-only) factory-config + update-config, (HW-only) timezone.
+    // selection, (HW-only) factory-config + update-config. (HW-only) timezone
+    // is set earlier, in commonStartup() as S4b, before S4.5 syncSystemTime.
     // Takes `command` because S11 netif selection reads CMD_MOBILE.
     // Returns false when the caller should goto main_exit (mountSDCard /
     // factory-import / update-config-applied failures, or an unsupported
