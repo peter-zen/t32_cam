@@ -17,13 +17,14 @@ public:
 // intervalMs <= 0 时不自动注入（靠 inject() 手动，供将来接信号/HTTP 注入）。
 class SimPirTrigger : public IPirTrigger {
 public:
-    explicit SimPirTrigger(int intervalMs);
+    explicit SimPirTrigger(int intervalMs, int maxCount = 0);  // maxCount<=0 = 无限触发
     ~SimPirTrigger() override;
     int waitForTrigger(int timeoutMs) override;
     void inject();  // 手动注入一次触发（测试用）
 private:
     int efd_ = -1;
     int intervalMs_;
+    int maxCount_;            // <=0 = 无限触发；>0 = 触发 N 次后停（建模「动物离开」）
     std::atomic<bool> run_{false};
     std::thread timer_;
 };

@@ -66,6 +66,11 @@ private:
     std::atomic<bool> connected_{false};
     int taskId_ = 0;
     int64_t startedAtMs_ = 0;
+    // activity-based upload-timeout：每次有进展（传完 desc / 被 wake token 唤醒 / connect
+    // 成功）刷新；timeoutAgeMs 返回 now-lastActivityMs_。让多 trigger 长寿命 upload 不被
+    // 「活太久」误杀——只要持续有进展就不超时，真卡死（无进展）才超时。
+    // worker 线程写、scheduler 主线程读 → atomic。
+    std::atomic<int64_t> lastActivityMs_{0};
 
     // mgmt_/storage_ 在 worker 线程写、abortBlockingIO(stop) 读——用 connMutex_ 守。
     std::mutex connMutex_;

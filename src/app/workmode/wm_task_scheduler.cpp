@@ -105,10 +105,10 @@ void WmTaskSchedulerCore::bootstrap(int64_t nowMs) {
 }
 
 bool WmTaskSchedulerCore::onExternalCaptureTrigger(int64_t nowMs) {
-    if (!canAcceptCaptureTrigger()) {
+    if (const char* why = captureTriggerRejectReason()) {
         ++ignoredCaptureTriggers_;
         trace(WmSchedulerTraceOp::TriggerIgnored, TaskType::Capture, 0, TaskState::Empty,
-              TaskState::Empty, nowMs, "slot_busy_or_locked");
+              TaskState::Empty, nowMs, why);
         return false;
     }
     if (!scheduleCapture(nowMs, nullptr)) {
@@ -202,11 +202,19 @@ void WmTaskSchedulerCore::stopAll() {
     traceStopSlot(uploadSlot_, 0);
 }
 
+const char* WmTaskSchedulerCore::captureTriggerRejectReason() const {
+    // 顺序即优先级；返回 nullptr = 可接受。原 canAcceptCaptureTrigger 的布尔判定等价展开，
+    // 让 trigger_ignored 日志能精确区分（之前统一打 slot_busy_or_locked，one_shot 拒绝时误导）。
+    if (shutdownReason_ != ShutdownReason::None) return "shutdown";
+    if (config_.mode == WmMode::UploadOnly) return "upload_only";
+    if (config_.oneShot && captureStartedOnce_) return "one_shot";
+    if (!captureSlot_.isEmpty()) return "slot_busy";
+    if (captureSlot_.isLocked()) return "slot_locked";
+    return nullptr;
+}
+
 bool WmTaskSchedulerCore::canAcceptCaptureTrigger() const {
-    if (shutdownReason_ != ShutdownReason::None) return false;
-    if (config_.mode == WmMode::UploadOnly) return false;
-    if (config_.oneShot && captureStartedOnce_) return false;
-    return captureSlot_.isEmpty() && !captureSlot_.isLocked();
+    return captureTriggerRejectReason() == nullptr;
 }
 
 bool WmTaskSchedulerCore::hasTask(TaskType type) const {
@@ -255,6 +263,12 @@ bool WmTaskSchedulerCore::scheduleCapture(int64_t nowMs, WmTaskSchedulerEvents* 
 
 bool WmTaskSchedulerCore::scheduleUpload(int64_t nowMs, WmTaskSchedulerEvents* events) {
     if (shutdownReason_ != ShutdownReason::None || !uploadFactory_) return false;
+    // slot2 已有 upload task（前一轮还在跑）时绝不再 factory() 造新的 UploadTask：新造的
+    // 临时对象被 put 拒绝后析构 → ~UploadTask→stop()→signalStop() 打到【共享】wakePort，
+    // 误杀正在 park 的前一轮 upload 线程（多 trigger 下 cap2 完成时复现：upload1 被
+    // signalStop → cap2 的 video desc 漏传 → 熬到 upload-timeout）。scan-driven 下，在跑的
+    // upload 会经 capture-Done 的 wake token 自扫到新 desc，slot2 忙时无需也不应新建。
+    if (!uploadSlot_.isEmpty() || uploadSlot_.isLocked()) return false;
     if (!uploadSlot_.put(uploadFactory_())) return false;
     trace(WmSchedulerTraceOp::SlotPut, TaskType::Upload, uploadSlot_.taskTraceId(),
           TaskState::Empty, TaskState::Ready, nowMs, "schedule_upload");

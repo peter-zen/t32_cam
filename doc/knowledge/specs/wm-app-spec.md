@@ -69,6 +69,7 @@ task 按**类型**分类（接口/标签），便于未来加类型（如「日�
 7. type=2 task 结束前必须确认（三者原子）：slot 1 空、upload parked（扫描无 `F_UploadedTag==0`、无在途）、且 port 无未消费 wake token。slot 1 非空 或 port 有未消费 token 时即使 upload 暂时空闲也不能结束（等上游落定，避免漏传 desc）。
 8. 所有 slot 为空并持续 idle-grace 后，lock 全部 slot 并进入 Shutdown。
 9. 每个 task 可有超时（见 §3.4）。
+10. **slot 2 忙时不再新建 UploadTask**（`scheduleUpload` 在 slot 2 非空/locked 时直接返回 false，**不**先 `factory()` 造临时 task）。scan-driven 下，在跑的 upload 会经 capture-Done 的 wake token 自扫到新 desc，无需新建。**坑**：若先造临时 UploadTask 再被 `put` 拒绝，其析构 `~UploadTask→stop()` 会 `signalStop` **共享** wakePort，误杀正在 park 的前一轮 upload 线程 → 新 desc 漏传、slot 卡 Running 熬到 upload-timeout（多 trigger 并行 capture 时复现）。双保险：`scheduleUpload` 先判 slot 忙（不造临时）+ `UploadTask::stop()` 仅在 `worker_.joinable()`（确实 start 过）时 `signalStop`+abort+join——从未 start 的临时实例不碰共享 port；而 Done 态（poll 标完成、worker 仍 parked）必须 signalStop 唤醒以便 join，**不能**按 state==Running 门控（否则 join 永久阻塞 → tick 卡 slot.clear → 永不关机，2026-06-28 回归）。
 
 #### 3.3.1 Slot 阻塞可观察性
 
@@ -90,7 +91,7 @@ task 按**类型**分类（接口/标签），便于未来加类型（如「日�
 
 - **idle-grace**：slot 1 **且** slot 2 **全空，并持续 `G` 秒**（`HTC_WM_IDLE_GRACE_MS`，默认 30000），才 ready Shutdown task。
   - 全空期间有新触发/新 upload → 取消计时、续命。
-- **Upload 超时**：Upload task 自带 `HTC_UPLOAD_TIMEOUT_MS`（默认 60000，自 `UploadTask::start()` 起算，含 30s connect grace）；没传完 → `Power::requestShutdown()`（SIGTERM 中断 UploadTask 阻塞 I/O；该 desc `F_UploadedTag` 保持 0，下次 `-m 2` 重传）→ signal 路径进 Shutdown。
+- **Upload 超时**：Upload task 自带 `HTC_UPLOAD_TIMEOUT_MS`（默认 60000，**activity-based**：timeout = `now - lastActivityMs_`，后者在每次有进展时刷新——传完 desc / 被 capture-Done 的 wake token 唤醒 / connect 成功；connect grace 30s 仍从 `start()` 起算保护慢 auth）。即「**无进展 60s 才超时**」——多 trigger 长寿命 upload 只要持续有进展就不超时，真卡死（connect-fail 空转、无 didWork 无 token）才超时。没传完 → `Power::requestShutdown()`（SIGTERM 中断 UploadTask 阻塞 I/O；该 desc `F_UploadedTag` 保持 0，下次 `-m 2` 重传）→ signal 路径进 Shutdown。
 - Shutdown task 一旦被调度：**屏蔽外部 Capture 触发**，**不可中断**地走 teardown（§7）→ 保证一定关机。
 
 > **2026-06-24 修订（Slice 1 实现发现）**：原写「Shutdown task 不做 upload flush」**不成立**——`UploadWorker::stop()` 在 worker 阻塞 I/O（auth/upload 的 recv/send）上会**卡死**（21 desc auth-fail 时 m2 hang，已复现）。改为 **upload-timeout→`requestShutdown`(SIGTERM) + wm_app 尾 `flush(30000)+stop()`**，同 EventLoop proven 模式。详见 [`reviews/2026-06-24-wm-slice1-m2.md`](../../reviews/2026-06-24-wm-slice1-m2.md)。若要严格执行「不 flush」，需先把 `UploadWorker::stop` 改成可中断阻塞 I/O（单独任务）。
@@ -218,7 +219,7 @@ Shutdown task（或 MCU override）的 teardown 序：
 - 上传 desc 本身 + `file_inf` 里的媒体文件，走 **TCP mgmt/storage server**（`MS_IP`/`MS_PORT`，**非 HTTP**，自定义二进制帧协议，`StorageServClient.cpp:121-218`）。
 - **「未处理」= `F_UploadedTag==0`**（desc JSON 标志，desc 级 + 文件级，**非 DB 字段**）；传成功回写 tag=1，可选按 `FILE_MANAGE` 删源文件。
 - 跨 boot 持久化 = desc 文件留 SD（未传完的 `F_UploadedTag` 保持 0，下次 `-m 2` 重传）。
-- 超时：自 `UploadTask::start()` 起算（含 30s connect grace），§3.4。
+- 超时：activity-based（`now - lastActivityMs_`，进展刷新；connect grace 30s 从 start 起算），§3.4。
 
 > devtest 无 mgmt/storage 后端 → 上传必失败。HW 验证只能断「`UploadTask` 启动 + 干净失败 + 无 crash/hang」，**不能断上传成功**（与 manifest B2 一致）。
 
@@ -233,6 +234,7 @@ Shutdown task（或 MCU override）的 teardown 序：
 | `HTC_UPLOAD_TIMEOUT_MS` | env | 60000 | Upload task 超时（§3.4） |
 | `HTC_WM_ONE_SHOT` | env | 0 | 1=首个 Capture 后屏蔽触发（§3.5） |
 | `HTC_SIM_PIR_INTERVAL_MS` | env | 10000 | SimPir 间隔（sim/test，§4） |
+| `HTC_SIM_PIR_COUNT` | env | 0 | SimPir 触发次数（0=无限；>0 触发 N 次后停，建模「PIR 停」以测多 trigger robustness + 关机路径。注意 fired 计数，非 accepted——要 N 个独立 capture 需间隔 > 单次 capture 时长，§4） |
 | `HTC_TEST_NO_POWEROFF` | env | 0 | 1=关机走 `_exit(0)`（devtest，§1） |
 | `HTC_WM_CONFIG_FILE` | env | unset | 真机调试时强制 wm 使用指定 config.ini；否则若 `/config/htc/config.ini` 缺失/测试 PID 且 `/mnt/huntcam/config.ini` 有真实 PID，wm 会自动切到 `/mnt/huntcam/config.ini`，与 `upload_test` 对齐 |
 | NTP server / `MS_IP` / `MS_PORT` | config ini（`server` 段） | — | NTP 与上传服务器 |

@@ -149,6 +149,8 @@ private:
     bool scheduleCapture(int64_t nowMs, WmTaskSchedulerEvents* events);
     bool scheduleUpload(int64_t nowMs, WmTaskSchedulerEvents* events);
     bool allSlotsEmpty() const;
+    // external capture trigger 的拒绝原因（nullptr=可接受）；供 trigger_ignored 日志精确区分。
+    const char* captureTriggerRejectReason() const;
     void trace(WmSchedulerTraceOp op, TaskType type, int taskId, TaskState from,
                TaskState to, int64_t nowMs, const char* reason);
     void traceSlotTrigger(TaskType fromType, TaskType toType, int64_t nowMs, const char* reason);

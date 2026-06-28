@@ -55,6 +55,7 @@ bool UploadTask::start() {
     TaskState expected = TaskState::Ready;
     if (!state_.compare_exchange_strong(expected, TaskState::Running)) return false;
     startedAtMs_ = steadyNowMs();
+    lastActivityMs_.store(startedAtMs_);   // timeout 起算点 = 启动时刻
     worker_ = std::thread(&UploadTask::runLoop, this);
     return true;
 }
@@ -73,9 +74,17 @@ void UploadTask::stop() {
         stopRequested_.store(true);
         state_.store(TaskState::Stopping);
     }
-    wakePort_.signalStop();        // 唤醒 parkIfNoWork() 中的线程
-    abortBlockingIO();             // 断阻塞 recv/send（SIGTERM 风格）
-    if (worker_.joinable()) worker_.join();
+    // 只在确实 start() 过（worker 可 join）时才 signalStop 共享 port + abort I/O + join。
+    //  - 从未 start 的临时 UploadTask（scheduleUpload 因 slot2 忙被拒后析构的那个）worker
+    //    不可 join → 跳过，避免 signalStop 共享 port 误杀在跑的前一轮 upload（多 trigger 复现）。
+    //  - Done 态（poll 标完成）的 task worker 仍 joinable（parked）→ 必须 signalStop 唤醒它，
+    //    否则 join 永久阻塞 → tick 卡在 slot.clear() → 永不关机（2026-06-28 回归）。
+    // 故门控用 worker_.joinable()（start 过？），而非 state==Running。
+    if (worker_.joinable()) {
+        wakePort_.signalStop();        // 唤醒 parkIfNoWork() 中的线程
+        abortBlockingIO();             // 断阻塞 recv/send（SIGTERM 风格）
+        worker_.join();
+    }
     if (state_.load() == TaskState::Stopping) {
         state_.store(TaskState::Done);
     }
@@ -84,10 +93,12 @@ void UploadTask::stop() {
 int64_t UploadTask::timeoutAgeMs(int64_t /*nowMs*/, int64_t /*defaultAgeMs*/) const {
     TaskState s = state_.load();
     if (s != TaskState::Running && s != TaskState::Stopping) return 0;
-    int64_t age = steadyNowMs() - startedAtMs_;
-    // 未 connected 时给 connect grace，避免慢 auth 被超时误杀；超 grace 后如实返回 age。
-    if (!connected_.load() && age < connectGraceMs()) return 0;
-    return age;
+    const int64_t now = steadyNowMs();
+    // connect grace 仍从启动起算（保护慢 auth）；超 grace 后按「距上次活动」计——多 trigger
+    // 下 upload 长寿命，但只要持续有进展（didWork / connect / wake token 刷新 lastActivityMs_）
+    // 就不超时；真卡死（无进展）lastActivityMs_ 不动 → 60s 到点。
+    if (!connected_.load() && (now - startedAtMs_) < connectGraceMs()) return 0;
+    return now - lastActivityMs_.load();
 }
 
 void UploadTask::runLoop() {
@@ -107,11 +118,13 @@ void UploadTask::runLoop() {
         }
         if (stopRequested_.load()) break;
         if (didWork) {                  // 立即重扫（可能还有更多 desc）
+            lastActivityMs_.store(steadyNowMs());   // 成功上传 = 进展，刷新 timeout
             idleWakes = 0;
             continue;
         }
         bool woke = wakePort_.parkIfNoWork();   // 无活 → park 等 wake token / stop
         if (!woke) break;
+        lastActivityMs_.store(steadyNowMs());   // wake token = 新 capture 工作，刷新 timeout
         if (diag && ++idleWakes >= 3) {          // 连续 ≥3 次 park 醒来无活 → spin
             Logger::log(LogLevel::WARNING,
                         "[udiag] token-spin: %d consecutive idle wakes", idleWakes);
@@ -145,6 +158,7 @@ bool UploadTask::ensureConnected() {
         std::lock_guard<std::mutex> lock(connMutex_);
         storage_ = storage;
         connected_.store(true);
+        lastActivityMs_.store(steadyNowMs());   // connect 成功 = 进展，刷新 timeout 起算
     }
     Logger::log(LogLevel::INFO, "UploadTask: connected + authed [%s:%d] (lazy, after slot 2 start)",
                 mgmtAddr_.c_str(), mgmtPort_);

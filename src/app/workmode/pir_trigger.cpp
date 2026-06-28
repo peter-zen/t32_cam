@@ -12,7 +12,8 @@ namespace app_workmode {
 
 // ===================== SimPirTrigger =====================
 
-SimPirTrigger::SimPirTrigger(int intervalMs) : intervalMs_(intervalMs) {
+SimPirTrigger::SimPirTrigger(int intervalMs, int maxCount)
+    : intervalMs_(intervalMs), maxCount_(maxCount) {
     efd_ = eventfd(0, 0);
     if (efd_ < 0) {
         Logger::log(LogLevel::ERROR, "SimPirTrigger: eventfd failed");
@@ -21,6 +22,7 @@ SimPirTrigger::SimPirTrigger(int intervalMs) : intervalMs_(intervalMs) {
     if (intervalMs_ > 0) {
         run_ = true;
         timer_ = std::thread([this] {
+            int fired = 0;
             while (run_.load()) {
                 // 分段 sleep（100ms 粒度）以便及时响应 stop
                 for (int acc = 0; acc < intervalMs_ && run_.load(); acc += 100) {
@@ -30,10 +32,19 @@ SimPirTrigger::SimPirTrigger(int intervalMs) : intervalMs_(intervalMs) {
                 if (!run_.load()) break;
                 uint64_t one = 1;
                 if (write(efd_, &one, sizeof(one)) < 0) break;
+                // maxCount>0：触发 N 次后停止（建模「动物离开」——多 trigger robustness 测试用；
+                // 否则无限 trigger 下 capture/upload 流水线永不空闲 → 永不关机，测不到关机路径）。
+                if (maxCount_ > 0 && ++fired >= maxCount_) {
+                    Logger::log(LogLevel::INFO,
+                                "SimPirTrigger: fired %d events, going quiet (PIR-stop modeled)",
+                                fired);
+                    break;
+                }
             }
         });
     }
-    Logger::log(LogLevel::INFO, "SimPirTrigger: started, interval=%dms", intervalMs_);
+    Logger::log(LogLevel::INFO, "SimPirTrigger: started, interval=%dms maxCount=%d (0=inf)",
+                intervalMs_, maxCount_);
 }
 
 SimPirTrigger::~SimPirTrigger() {

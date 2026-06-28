@@ -295,7 +295,10 @@ int main(int argc, char* argv[])
         captureLane = std::make_shared<app_workmode::CaptureLane>();
         int pirIntervalMs = 10000;  // SimPirTrigger 默认 10s（HTC_SIM_PIR_INTERVAL_MS 可调）
         if (const char* e = std::getenv("HTC_SIM_PIR_INTERVAL_MS")) { int v = std::atoi(e); if (v > 0) pirIntervalMs = v; }
-        pirTrigger = std::make_shared<app_workmode::SimPirTrigger>(pirIntervalMs);
+        // 0=无限；HTC_SIM_PIR_COUNT=N 触发 N 次后停（建模「动物离开」，测多 trigger robustness）。
+        int pirCount = 0;
+        if (const char* e = std::getenv("HTC_SIM_PIR_COUNT")) { int v = std::atoi(e); if (v >= 0) pirCount = v; }
+        pirTrigger = std::make_shared<app_workmode::SimPirTrigger>(pirIntervalMs, pirCount);
     }
 
     // --- 主循环（长驻直到关机）---
