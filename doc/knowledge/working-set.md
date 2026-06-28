@@ -6,8 +6,9 @@
 
 ## 2. 当前关注点
 
-三条 active track 并行：
+四条 active track 并行：
 - **wm-app（最新）**：Phase-1 单功能验证（record/snap/upload 真机绿）完成后，**新建独立 binary `wm`**（`-m 0/1/2`：CAPTURE_ONLY / CAPTURE+UPLOAD / UPLOAD_ONLY）重组这些稳定模块，丢弃 crash 不收敛的 `htc_workmode_app`。架构=任务调度器（pending + Capture/Upload lane + Shutdown task，自管关机）。**时间链（RTC→MCU→NTP + ntpSynced + 关机回写）已用 `time_test` 真机验证通过（7/7 GREEN）**，链代码可 lift 进 wm。规格见 [`specs/wm-app-spec.md`](specs/wm-app-spec.md)，验证见 [`reviews/2026-06-23-time-chain-hw-verification.md`](../reviews/2026-06-23-time-chain-hw-verification.md)。
+- **um-app（规划中）**：wm 基本就绪后启动。**关键发现**：um 侧单元（rtsp/http/mdns/daynight）早已是独立 linkable 库，legacy 只在 `runCommands` 做 wiring——故 um=新写编排器组合现成库 + lifecycle，风险 << wm。架构=**server-lifecycle**（非 wm task-scheduler）+ **idle-timeout 自关机**（无客户端 T min→poweroff）。done=binary+L2/sim绿+并存（repoint 延后）。规格见 [`specs/um-app-spec.md`](specs/um-app-spec.md)。
 - **devtest-automation-loop**：把"串口手敲→人眼读日志→存 log→对照代码"全人工链路自动化成 WSL 上 Claude 驱动的可审计闭环。架构已 grill 定型，正执行 **Phase-0（tracer bullet）**。见 [`decisions/devtest-automation-loop.md`](decisions/devtest-automation-loop.md) + [`todo.md`](todo.md) "DevTest 自动化闭环" track。
 - **phase1-module-stabilization**（wm/um 稳定化）：devtest Phase-0 的 tracer bullet 直接服务它（"单进程可重复"判据）。场景测试清单（已有/待实现 + file:line 指针）见 [`specs/scenario-test-manifest.md`](specs/scenario-test-manifest.md)。wm-app 的模块复用依据即来自此。
 
@@ -158,6 +159,17 @@ wm/um/共享三分(REPLACE，`runCommands` 瀑布退役)→稳定判据=退役 k
 **关键决策**：新建独立 binary `wm`（`-m 0/1/2`），与旧 `htc_workmode_app` 并存；内核=任务调度器（pending + Capture/Upload lane + Shutdown task，自管关机，idle-grace G 秒）；触发=可插拔 Trigger（PIR/SimPir/信号）；时间链 wm 自跑（RTC→MCU→NTP + ntpSynced，无 `-rtc` 入参）；关机回写 MCU 仅时间。
 **最高风险已收口**：时间链（原 sim-only）已用 `time_test` 真机验证（RTC/MCU/NTP + 链 + 回写均 GREEN）；剩 §11.5 RTC-drift 待决策。
 **参考文档**：[`specs/wm-app-spec.md`](specs/wm-app-spec.md)（权威 spec + 决策日志 + 治理规则）、[`../reviews/2026-06-23-time-chain-hw-verification.md`](../reviews/2026-06-23-time-chain-hw-verification.md)（时间链真机验证 + 发现）
+
+---
+
+### um-app（新建 um 程序，组合长驻交互服务）
+
+**状态**：规格已 grill 定型（2026-06-28），待实现
+**关键发现**：um 侧单元（rtsp/http/mdns/daynight）早已是独立 linkable 库，legacy 只在 `WorkModeRunner.cpp::runCommands` CMD_MOBILE/RTSP 分支做 wiring——故 um **不是"拆模块"而是"组合现成库 + 写 lifecycle"**，风险/工作量 << wm。um 尚未开始（无 `um_app.cpp` / CMake target）。
+**关键决策**：架构=**server-lifecycle**（bring-up/idle-wait/teardown，**非** wm task-scheduler，复用 wm 原语）；bring-up=rtsp+http+mdns+day/night（默认全开，`--no-*` flag 覆盖 `-wm4`）；**无模式只 flag**；关机=**idle-timeout 自关机**（无 RTSP 客户端 + 无 HTTP 请求 持续 T → `Power::requestShutdown()` → poweroff）；MCU on-demand 读（STATUS）；时间链复用 wm；done=binary+L2/sim绿+并存（repoint 延后，联合 C4）。
+**硬约束**：1-IMP-per-boot → um 与 wm 不能同 boot 共存 → um 是 whole-boot 进程。
+**下一步**：L1 sim smoke（idle-timeout 纯逻辑）→ `um_app.cpp` 编排器 + CMake（双平台）→ L2（re-point B3/B4 + 新增 idle-poweroff）。
+**参考文档**：[`specs/um-app-spec.md`](specs/um-app-spec.md)（权威 spec + 决策日志 + 治理规则）、[`scenario-test-manifest.md`](specs/scenario-test-manifest.md)（B3/B4 验证状态）
 
 ---
 
