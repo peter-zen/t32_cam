@@ -1,5 +1,5 @@
 # Find source files in the current directory
-file(GLOB SOURCE_FILES
+file(GLOB SOURCE_FILES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
  )
 

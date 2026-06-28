@@ -13,11 +13,16 @@ namespace app_workmode {
 // 门在 cm==1 原子语义下严格屏蔽并发触发。
 class CaptureLane {
 public:
-    explicit CaptureLane(std::shared_ptr<UploadWorker> uploadWorker);
+    CaptureLane();
 
     // 读 cameraMode 路由：0→SnapTask；2→RecordTask；1→SnapTask(同步等完)→RecordTask。
     // 返回是否成功接受（snap 同步完 + record 入队）。
     bool trigger();
+
+    // 同一个 capture 执行上下文中完成完整 type=1 生命周期：
+    // capture start → 等录影自然完成/stop 请求 → 后处理完成 → 资源释放完成。
+    // 返回 true 表示自然完成；stopRequested 中断时返回 false。
+    bool runOnceBlocking(const std::atomic<bool>& stopRequested);
 
     // cm==1 原子判定：snap 在途（lane 记录）或 record 在录（record 自报）均视为 busy。
     // wm_scheduler 据此屏蔽并发 PIR。

@@ -92,15 +92,17 @@ bool SnapTask::trigger() {
     const int H = SnapImgSize[idx].height;
 
     const std::string ts = formatNow();
-    if (!Misc::createDirectory(kWmMediaPath) || !Misc::createDirectory(kWmUploadPath)) {
+    const std::string mediaPath = wmMediaPath();
+    const std::string uploadPath = wmUploadPath();
+    if (!Misc::createDirectory(mediaPath) || !Misc::createDirectory(uploadPath)) {
         Logger::log(LogLevel::ERROR, "SnapTask: create media dirs failed target=%s upload=%s",
-                    kWmMediaPath, kWmUploadPath);
+                    mediaPath.c_str(), uploadPath.c_str());
         return false;
     }
 
     std::vector<std::string> files;
     for (int i = 0; i < burst; ++i) {
-        files.push_back(std::string(kWmMediaPath) + ts + "_" + to_string_custom(i + 1) + ".jpg");
+        files.push_back(mediaPath + ts + "_" + to_string_custom(i + 1) + ".jpg");
     }
 
     Logger::log(LogLevel::INFO, "SnapTask: snap start %dx%d burst=%d first=%s",
@@ -132,13 +134,15 @@ bool SnapTask::trigger() {
 
     if (ok) {
         std::vector<std::string> descFiles = files;   // createDescInfoFile 取非 const 引用
-        std::string desc = std::string(kWmUploadPath) + ts + ".json";
+        std::string desc = uploadPath + ts + ".json";
         if (manifest::createDescInfoFile(descFiles, desc) == 0) {
+            // uploadWorker_ 非空时 enqueue（legacy）；wm 传 nullptr，desc 只落盘——
+            // 由 type 2 UploadTask 自扫此目录上传。desc 落盘即完成 type 1 产出职责。
             if (uploadWorker_ && !std::getenv("HTC_NO_UPLOAD")) {
                 uploadWorker_->enqueue(desc);
                 Logger::log(LogLevel::INFO, "SnapTask: desc enqueued: %s", desc.c_str());
             } else {
-                Logger::log(LogLevel::INFO, "SnapTask: upload SKIPPED (HTC_NO_UPLOAD) <<<cm==1 bisect>>>");
+                Logger::log(LogLevel::INFO, "SnapTask: desc written: %s", desc.c_str());
             }
         } else {
             Logger::log(LogLevel::ERROR, "SnapTask: createDescInfoFile failed");

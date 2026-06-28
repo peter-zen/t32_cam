@@ -3,17 +3,20 @@
 #include "capture_lane.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 #include "Settings.h"   // cameraMode
 #include "SharedVideo.h"  // media::resetSharedVideo (HTC_CM1_RESET)
 #include "Logger.h"
 
 namespace app_workmode {
 
-CaptureLane::CaptureLane(std::shared_ptr<UploadWorker> uploadWorker)
+CaptureLane::CaptureLane()
     : snap_busy_(false) {
-    snap_   = std::make_shared<SnapTask>(uploadWorker);
-    record_ = std::make_shared<RecordTask>(uploadWorker);
+    // wm 路径：Snap/Record 传 nullptr → desc 只落盘不 enqueue；type 2 UploadTask 自扫 SD。
+    snap_   = std::make_shared<SnapTask>(nullptr);
+    record_ = std::make_shared<RecordTask>(nullptr);
 }
 
 bool CaptureLane::trigger() {
@@ -66,6 +69,33 @@ bool CaptureLane::isBusy() const {
     //     让 wm_scheduler 的 PIR gate（= !isBusy）严格屏蔽 snap 期间触发。
     //   - record 异步在途（~30s/段）是高频撞 PIR 的真实场景。
     return snap_busy_.load() || (record_ && record_->isRecording());
+}
+
+bool CaptureLane::runOnceBlocking(const std::atomic<bool>& stopRequested) {
+    Logger::log(LogLevel::INFO, "[wm] op=capture_run_once phase=begin");
+    if (!trigger()) {
+        Logger::log(LogLevel::ERROR, "[wm] op=capture_run_once phase=trigger_result ok=0");
+        return false;
+    }
+    Logger::log(LogLevel::INFO, "[wm] op=capture_run_once phase=trigger_result ok=1");
+
+    bool interrupted = false;
+    while (isBusy()) {
+        if (stopRequested.load()) {
+            interrupted = true;
+            Logger::log(LogLevel::INFO, "[wm] op=capture_run_once phase=stop_requested");
+            stop();
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    Logger::log(LogLevel::INFO, "[wm] op=capture_run_once phase=cleanup_begin interrupted=%d",
+                interrupted ? 1 : 0);
+    stop();
+    Logger::log(LogLevel::INFO, "[wm] op=capture_run_once phase=cleanup_end result=%s",
+                interrupted ? "interrupted" : "done");
+    return !interrupted;
 }
 
 void CaptureLane::stop() {

@@ -44,33 +44,53 @@
 
 ## 3. 架构：任务调度器
 
-wm 内核 = 一个**任务调度器**（非旧 EventLoop 的平移，是新编排）。
+wm 内核 = 一个**task slot 调度器**（非旧 EventLoop 的平移，是新编排）。详细机制见
+[`wm-task-slot-scheduler.md`](wm-task-slot-scheduler.md)；该文档是 §3 的展开规格。
 
 ### 3.1 结构
 
-- **pending 队列**：待调度的 task。
-- **Capture lane**：执行拍照/录影 task，**lane 内串行**（IMP 单 sensor，一次一个）；新触发把 Capture task 入 pending，再被调度进 lane。
-- **Upload lane**：执行上传 task，**与 Capture lane 并发**（后台 drain，复用 `UploadWorker`）。
-- **Shutdown task**：**单独摆放**，不在 pending；终态。
+- **slot 1 / Capture task**：拍照、录影、拍照+录影都作为一个原子 task，type=1。产出落盘后**不 enqueue 任何 upload 对象**。
+- **slot 2 / Upload task**：上传 task，type=2，**新建 wm 私有 `UploadTask`**（移植 `UploadWorker` 的 lazy connect/auth + per-desc 上传逻辑；**不复用、不修改** legacy 共享的 `UploadWorker`——后者仍服务于 `htc_workmode_app`）。`UploadTask` 自扫 SD 取 desc。
+- **`SlotOutputPort`（signal）**：scheduler wrapper 持有的唤醒信号通道（`mutex`+`cv`+计数）。slot 1 收尾后由 wrapper push 一个 wake token（**不携带路径**）；空闲等待中的 upload task 被 wake 后重扫 SD 取真实 desc。真实数据源是 SD 上 `F_UploadedTag==0` 的 desc 文件（持久、跨 boot resume），故 port 退化为唤醒信号而非数据通道——capture task 不直连任何 upload 对象。
+- **Shutdown task**：special terminal flow，不放入普通 slot；进入后 lock 所有 slot。
 
 ### 3.2 task 类型可扩展
 
-不写死「Capture/Upload/Shutdown」三个。task 按**类型**分类（接口/标签），便于未来加类型（如「日志上报」「固件检查」）。当前实例化三类。
+task 按**类型**分类（接口/标签），便于未来加类型（如「日志上报」「固件检查」）。当前普通 task type 为 Capture=1、Upload=2；Shutdown 是终态流程。
 
 ### 3.3 调度规则
 
-1. Capture 与 Upload **不互斥**，可同时执行。
-2. **启动时一次性 gate**：Upload lane **等首个 Capture task 完成后**才被调度启动（保证有东西可传）。`-m 2` 无 Capture → Upload 立即启动。
-3. Upload 运行中**允许** Capture 继续触发执行。
-4. 每个 task 可有超时（见 §3.4）。
+1. 不同 type 的 task 放入不同 slot；每个 slot 同时最多一个 task。
+2. task 执行完成后从 slot 移除。
+3. `-m 0` / `-m 1` 初始启动 slot 1；`-m 2` 初始启动 slot 2。
+4. `-m 1` 中，slot 1 首个 task 收尾 → wrapper 向 `SlotOutputPort` push 一个 wake token → scheduler 触发 slot 2 → `UploadTask::start()` 起即扫 SD 取真实 desc。后续拍（slot 2 已运行）时 wake token 的作用是唤醒空闲等待中的 upload 重扫。
+5. slot 1 收尾后**只**经 `SlotOutputPort` 推 wake token（signal）；真实 desc 由 upload task 扫 SD 自取。port push 必须发生在 `op=task_state type=1 ... to=Done` 之后。
+6. 外部 trigger 只在 slot 1 为空时创建新的 type=1 task；slot 1 非空则忽略本次 trigger。
+7. type=2 task 结束前必须确认（三者原子）：slot 1 空、upload parked（扫描无 `F_UploadedTag==0`、无在途）、且 port 无未消费 wake token。slot 1 非空 或 port 有未消费 token 时即使 upload 暂时空闲也不能结束（等上游落定，避免漏传 desc）。
+8. 所有 slot 为空并持续 idle-grace 后，lock 全部 slot 并进入 Shutdown。
+9. 每个 task 可有超时（见 §3.4）。
+
+#### 3.3.1 Slot 阻塞可观察性
+
+每个 slot 暴露 `SlotBlockedReason`：
+
+| 值 | 触发条件 |
+|---|---|
+| `None` | slot 正常运行（`Running`）或空且无新触发 |
+| `WaitingUpstream` | type=2 slot 在 `Running`、upload 内部空闲（parked）但 slot 1 非空 或 port 有未消费 wake token（capture 刚产活未扫到）→ upload 被占住等上游落定，不能 Done |
+| `Idle` | slot 空且无新触发、未进入 shutdown |
+| `Cleanup` | slot 正在 `stop()` 阻塞等待 task 清理完成 |
+| `Locked` | shutdown 已触发，slot lock 拒绝新触发 |
+
+`blockedReason(type)` 是只读查询；runtime 通过 `[wm] op=slot_blocked` 日志对外暴露同序信息。完整定义见 [`wm-task-slot-scheduler.md`](wm-task-slot-scheduler.md) §1。
 
 ### 3.4 Shutdown 触发（自管关机）
 
 **关机不由外部触发**（MCU 强制关机是另一条 override 流程，见 §3.6）。wm 自管：
 
-- **idle-grace**：pending 队列 **且** Capture lane **且** Upload lane 三者**全空，并持续 `G` 秒**（`HTC_WM_IDLE_GRACE_MS`，默认 30000），才 ready Shutdown task。
+- **idle-grace**：slot 1 **且** slot 2 **全空，并持续 `G` 秒**（`HTC_WM_IDLE_GRACE_MS`，默认 30000），才 ready Shutdown task。
   - 全空期间有新触发/新 upload → 取消计时、续命。
-- **Upload 超时**：Upload task 自带 `HTC_UPLOAD_TIMEOUT_MS`（默认 60000，自首次入队起算）；没传完 → `Power::requestShutdown()`（SIGTERM 中断 worker 阻塞 I/O；该 desc `F_UploadedTag` 保持 0，下次 `-m 2` 重传）→ signal 路径进 Shutdown。
+- **Upload 超时**：Upload task 自带 `HTC_UPLOAD_TIMEOUT_MS`（默认 60000，自 `UploadTask::start()` 起算，含 30s connect grace）；没传完 → `Power::requestShutdown()`（SIGTERM 中断 UploadTask 阻塞 I/O；该 desc `F_UploadedTag` 保持 0，下次 `-m 2` 重传）→ signal 路径进 Shutdown。
 - Shutdown task 一旦被调度：**屏蔽外部 Capture 触发**，**不可中断**地走 teardown（§7）→ 保证一定关机。
 
 > **2026-06-24 修订（Slice 1 实现发现）**：原写「Shutdown task 不做 upload flush」**不成立**——`UploadWorker::stop()` 在 worker 阻塞 I/O（auth/upload 的 recv/send）上会**卡死**（21 desc auth-fail 时 m2 hang，已复现）。改为 **upload-timeout→`requestShutdown`(SIGTERM) + wm_app 尾 `flush(30000)+stop()`**，同 EventLoop proven 模式。详见 [`reviews/2026-06-24-wm-slice1-m2.md`](../../reviews/2026-06-24-wm-slice1-m2.md)。若要严格执行「不 flush」，需先把 `UploadWorker::stop` 改成可中断阻塞 I/O（单独任务）。
@@ -189,15 +209,16 @@ Shutdown task（或 MCU override）的 teardown 序：
 
 ## 8. Upload lane
 
-复用已验证的 `UploadWorker`（`src/app/workmode/upload_worker.cpp`）。
+**新建 wm 私有 `UploadTask`**（`src/app/workmode/upload_task.cpp`）作为 type=2 task；lazy connect/auth + per-desc 上传逻辑移植自已验证的 `UploadWorker`（`src/app/workmode/upload_worker.cpp`），但**不复用、不修改** `UploadWorker`——后者是 legacy `htc_workmode_app` 也用的共享服务，保持原状。capture task 不再 enqueue 任何 upload 对象。
 
-- 扫 `MEDIA_UPLOAD_PATH`（`app.h:27`，`SD_CARD_PATH/media/upload/`）下 desc.json。
+- `UploadTask` 自扫 `MEDIA_UPLOAD_PATH`（`app.h:27`，`SD_CARD_PATH/media/upload/`）下 `F_UploadedTag==0` 的 desc.json（m1 新鲜产物 + m2/跨 boot resume 积压同源）。
+- 空闲时 `wait()` 在 `SlotOutputPort`（signal）上，被 capture-Done 的 wake token 唤醒后重扫。
 - 上传 desc 本身 + `file_inf` 里的媒体文件，走 **TCP mgmt/storage server**（`MS_IP`/`MS_PORT`，**非 HTTP**，自定义二进制帧协议，`StorageServClient.cpp:121-218`）。
 - **「未处理」= `F_UploadedTag==0`**（desc JSON 标志，desc 级 + 文件级，**非 DB 字段**）；传成功回写 tag=1，可选按 `FILE_MANAGE` 删源文件。
 - 跨 boot 持久化 = desc 文件留 SD（未传完的 `F_UploadedTag` 保持 0，下次 `-m 2` 重传）。
-- 超时：§3.4。
+- 超时：自 `UploadTask::start()` 起算（含 30s connect grace），§3.4。
 
-> devtest 无 mgmt/storage 后端 → 上传必失败。HW 验证只能断「worker 启动 + 干净失败 + 无 crash/hang」，**不能断上传成功**（与 manifest B2 一致）。
+> devtest 无 mgmt/storage 后端 → 上传必失败。HW 验证只能断「`UploadTask` 启动 + 干净失败 + 无 crash/hang」，**不能断上传成功**（与 manifest B2 一致）。
 
 ---
 
@@ -224,7 +245,7 @@ Shutdown task（或 MCU override）的 teardown 序：
 |------|---------------------|--------|------|
 | record（录影+缩略图+DB） | `VideoRecorder.cpp:981`（DB）、`:1171`（缩略图） | ✅ GREEN | Capture lane（录影） |
 | snap（拍照+缩略图+DB） | `ImageSnap.cpp:393`（DB）、`ImageSnap::capture_thumbnail` | ✅ GREEN（`snap_test`） | Capture lane（拍照） |
-| upload | `upload_worker.cpp` / `StorageServClient.cpp` | ✅ GREEN（仅干净失败） | Upload lane |
+| upload | 新 `upload_task.cpp`（移植自 `upload_worker.cpp`）/ `StorageServClient.cpp` | ✅ GREEN（仅干净失败，源自 UploadWorker） | Upload lane（wm 私有 UploadTask） |
 | ntp | `Misc::ntpSyncAndWait` `Misc.cpp:510` | ✅ HW（time_test 真机同步成功） | 时间链 |
 | mcu | `MCU::getDatetime:778` / `setDatetime:691` | ✅ HW（time_test 往返 match） | 时间链 + 关机回写 |
 | rtc | `RTC::getTime:122` / `setTime:62` | ✅ HW（time_test 往返 match） | 时间链 |

@@ -4,8 +4,9 @@
 //
 // main 骨架照搬 workmode_app.cpp（防 IMP-residue crash 的承重部分逐字复用）：
 //   commonStartup → installSignalHandlers → -m 解析 → commonStartupPostDispatch
-//   → setCleanupHook(stopAutoSwitch 是防 crash 关键) → 时间链 → uploadWorker.start
-//   → WmScheduler.run → wm_exit 尾（shutdown → upload stop → writebackMcu → flush → poweroff）。
+//   → setCleanupHook(stopAutoSwitch 是防 crash 关键) → 时间链 → upload mgmt 配置
+//   → WmScheduler.run（内部 UploadTask 自扫 SD 上传、capture-Done 经 SlotOutputPort 唤醒）
+//   → wm_exit 尾（shutdown → writebackMcu → flush → poweroff）。
 // IMP 懒初始化（sharedVideo 单例），进程内永不 IMP_System_Exit。
 //
 // Slice 1：只接通 m2（UploadOnly）端到端。m0/m1（capture lane + trigger）= Slice 2。
@@ -25,7 +26,6 @@
 
 #include "wm_scheduler.h"     // app_workmode::WmScheduler + WmMode
 #include "wm_time.h"          // app_workmode::acquireTimeChain / writebackMcuTime
-#include "upload_worker.h"    // app_workmode::UploadWorker
 #include "capture_lane.h"     // app_workmode::CaptureLane (m0/m1)
 #include "pir_trigger.h"      // app_workmode::SimPirTrigger / IPirTrigger (m0/m1)
 #include "wm_paths.h"         // wm-local storage roots under /mnt/huntcam
@@ -125,7 +125,6 @@ int main(int argc, char* argv[])
     std::shared_ptr<DeviceConfig> config;
     int command = 0;
     app_workmode::WmMode wm_mode = app_workmode::WmMode::UploadOnly;
-    std::shared_ptr<app_workmode::UploadWorker> uploadWorker;
     bool ntpSynced = false;
     std::string ntpServer = "www.aidetcloud.com:123";  // 默认；config 加载后覆盖
     std::string configSelectionNote;
@@ -148,8 +147,8 @@ int main(int argc, char* argv[])
     cfg.isSimulation = false;
     EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);  // 必须在最开始
     selectWmHardwareConfig(configSelectionNote);
-    cfg.dbPath    = EnvManager::getInstance()->getEnv("DB_PATH", app_workmode::kWmDbPath);
-    cfg.mediaRoot = app_workmode::kWmMediaRoot;
+    cfg.dbPath    = EnvManager::getInstance()->getEnv("DB_PATH", app_workmode::wmDbPath());
+    cfg.mediaRoot = app_workmode::wmMediaRoot();
     cfg.logRoot   = "/mnt/huntcam/logs";
     cfg.logFile   = cfg.logRoot + "/app.log";
 #endif
@@ -185,7 +184,7 @@ int main(int argc, char* argv[])
 
     // Ensure wm-local output dirs exist before snap/record/upload paths are used.
     Misc::createDirectory(cfg.mediaRoot);
-    Misc::createDirectory(app_workmode::kWmUploadPath);
+    Misc::createDirectory(app_workmode::wmUploadPath());
 
     // Debug: HTC_LOG_DEBUG=1 lowers elog filter to DEBUG on HW (default INFO)
     // so module-level DEBUG logs surface. Used for cm==1 wedge diagnosis; no-op
@@ -266,16 +265,16 @@ int main(int argc, char* argv[])
                     src.c_str(), ntpSynced ? 1 : 0);
     }
 
-    // --- Upload lane（m1/m2）：启动后台 worker ---
+    // --- Upload lane 配置（m1/m2）：mgmt server 给新 UploadTask lazy connect 用 ---
+    std::string ms_ip;
+    int ms_port = 0;
     if (wm_mode != app_workmode::WmMode::CaptureOnly) {
-        uploadWorker = std::make_shared<app_workmode::UploadWorker>();
-        auto ms_ip   = config->get(INI_SECTION_SERVER, INI_KEY_MS_IP, "");
-        auto ms_port = config->get(INI_SECTION_SERVER, INI_KEY_MS_PORT, 0);
+        ms_ip   = config->get(INI_SECTION_SERVER, INI_KEY_MS_IP, "");
+        ms_port = config->get(INI_SECTION_SERVER, INI_KEY_MS_PORT, 0);
         if (!ms_ip.empty() && ms_port > 0) {
             auto pid = config->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
             Logger::log(LogLevel::INFO, "[wm] upload config server=%s:%d pid=%s",
                         ms_ip.c_str(), ms_port, pid.c_str());
-            uploadWorker->start(ms_ip, ms_port);
         } else {
             Logger::log(LogLevel::WARNING, "[wm] mgmt server not configured; upload will fail (desc kept on SD)");
         }
@@ -291,15 +290,15 @@ int main(int argc, char* argv[])
     std::shared_ptr<app_workmode::CaptureLane>  captureLane;
     std::shared_ptr<app_workmode::IPirTrigger>  pirTrigger;
     if (wm_mode != app_workmode::WmMode::UploadOnly) {
-        captureLane = std::make_shared<app_workmode::CaptureLane>(uploadWorker);
+        captureLane = std::make_shared<app_workmode::CaptureLane>();
         int pirIntervalMs = 10000;  // SimPirTrigger 默认 10s（HTC_SIM_PIR_INTERVAL_MS 可调）
         if (const char* e = std::getenv("HTC_SIM_PIR_INTERVAL_MS")) { int v = std::atoi(e); if (v > 0) pirIntervalMs = v; }
         pirTrigger = std::make_shared<app_workmode::SimPirTrigger>(pirIntervalMs);
     }
 
     // --- 主循环（长驻直到关机）---
-    app_workmode::WmScheduler scheduler(lc, wm_mode, uploadWorker, captureLane, pirTrigger,
-                                        idleGraceMs, uploadTimeoutMs);
+    app_workmode::WmScheduler scheduler(lc, wm_mode, captureLane, pirTrigger,
+                                        ms_ip, ms_port, idleGraceMs, uploadTimeoutMs);
     scheduler.run();
     }  // end main work scope
 
@@ -312,16 +311,10 @@ wm_exit:
         sctx.rtcWorkedWell = true;   // wm 自跑链，无 -rtc 入参
         lc.shutdown(sctx);
     }
-    // flush+stop（同 workmode_app/EventLoop proven 模式）。UploadWorker::stop() 在阻塞 I/O
-    // 上可能卡，靠关机信号（upload-timeout→requestShutdown 或外部 SIGTERM）先中断 worker。
-    // 注：spec §3.4 原写「Shutdown 不 flush」——但 UploadWorker::stop 不可靠中断，故沿用
-    // proven 的 flush+stop；spec 待更新（见 reviews Slice 1）。
-    if (uploadWorker) {
-        if (!uploadWorker->flush(30000)) {
-            Logger::log(LogLevel::WARNING, "[wm] UploadWorker flush timed out, desc kept on SD");
-        }
-        uploadWorker->stop();
-    }
+    // UploadTask（新 type=2）的生命周期由 scheduler 全权管理：run() 内 idle-grace
+    // 自然 drain 完才返回；signal/upload-timeout 关机时 UploadTask::stop() 断阻塞 I/O
+    // 并 join 线程（在 scheduler.run() 返回前完成）。故此处无需单独 flush+stop
+    // （未传完的 desc F_UploadedTag 保持 0，下次 -m 2 重传）。
 #ifdef BUILD_FOR_SIMULATION
     Logger::log(LogLevel::INFO, "[SIM] wm exit normally");
     _exit(0);

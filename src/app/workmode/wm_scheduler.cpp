@@ -1,158 +1,272 @@
-// WmScheduler — see wm_scheduler.h. 3 modes: m0(CaptureOnly)/m1(CaptureUpload)/m2(UploadOnly).
+// WmScheduler — see wm_scheduler.h. Runtime wrapper around the slot scheduler
+// core in wm_task_scheduler.{h,cpp}.
 
 #include "wm_scheduler.h"
 
 #include <chrono>
+#include <atomic>
 #include <cstdlib>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 #include "ProcessLifecycle.h"   // app_lifecycle::ProcessLifecycle
-#include "upload_worker.h"      // UploadWorker
+#include "upload_task.h"        // UploadTask (new wm-private type=2 task)
 #include "capture_lane.h"       // CaptureLane
 #include "pir_trigger.h"        // IPirTrigger
-#include "wm_paths.h"
-#include "misc/Misc.h"          // Misc::listFilenames
+#include "wm_paths.h"           // wmUploadPath
 #include "Power.h"              // Power::requestShutdown (upload-timeout -> SIGTERM)
 #include "Logger.h"
 
 namespace app_workmode {
 
 namespace {
+
 int64_t steadyNowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+
+const char* taskStateName(TaskState state) {
+    switch (state) {
+    case TaskState::Empty: return "Empty";
+    case TaskState::Ready: return "Ready";
+    case TaskState::Running: return "Running";
+    case TaskState::Stopping: return "Stopping";
+    case TaskState::Done: return "Done";
+    case TaskState::Failed: return "Failed";
+    }
+    return "Unknown";
+}
+
+const char* shutdownReasonName(ShutdownReason reason) {
+    switch (reason) {
+    case ShutdownReason::None: return "none";
+    case ShutdownReason::IdleGrace: return "idle-grace";
+    case ShutdownReason::UploadTimeout: return "upload-timeout";
+    case ShutdownReason::Signal: return "signal";
+    }
+    return "unknown";
+}
+
+int taskTypeValue(TaskType type) {
+    return static_cast<int>(type);
+}
+
+int nextTaskId() {
+    static std::atomic<int> nextId{1};
+    return nextId.fetch_add(1);
+}
+
+void logTaskState(TaskType type, int taskId, TaskState from, TaskState to, const char* reason) {
+    Logger::log(LogLevel::INFO,
+                "[wm] op=task_state type=%d task_id=%d from=%s to=%s reason=%s",
+                taskTypeValue(type), taskId, taskStateName(from), taskStateName(to),
+                reason ? reason : "");
+}
+
+void logSchedulerTrace(const WmTaskSchedulerTrace& trace) {
+    switch (trace.op) {
+    case WmSchedulerTraceOp::TaskState:
+        logTaskState(trace.type, trace.taskId, trace.from, trace.to, trace.reason);
+        break;
+    case WmSchedulerTraceOp::SlotPut:
+        Logger::log(LogLevel::INFO,
+                    "[wm] op=slot_put type=%d task_id=%d state=%s reason=%s",
+                    taskTypeValue(trace.type), trace.taskId, taskStateName(trace.to),
+                    trace.reason ? trace.reason : "");
+        break;
+    case WmSchedulerTraceOp::SlotRemove:
+        Logger::log(LogLevel::INFO,
+                    "[wm] op=slot_remove type=%d task_id=%d final_state=%s reason=%s",
+                    taskTypeValue(trace.type), trace.taskId, taskStateName(trace.from),
+                    trace.reason ? trace.reason : "");
+        break;
+    case WmSchedulerTraceOp::SlotTrigger:
+        Logger::log(LogLevel::INFO,
+                    "[wm] op=slot_trigger from=%d to=%d reason=%s",
+                    taskTypeValue(trace.type), taskTypeValue(trace.targetType),
+                    trace.reason ? trace.reason : "");
+        break;
+    case WmSchedulerTraceOp::SlotLock:
+        Logger::log(LogLevel::INFO,
+                    "[wm] op=slot_lock type=%d state=%s reason=%s",
+                    taskTypeValue(trace.type), taskStateName(trace.to),
+                    trace.reason ? trace.reason : "");
+        break;
+    case WmSchedulerTraceOp::TriggerAccepted:
+        Logger::log(LogLevel::INFO,
+                    "[wm] op=trigger_accepted type=%d task_id=%d state=%s reason=%s",
+                    taskTypeValue(trace.type), trace.taskId, taskStateName(trace.to),
+                    trace.reason ? trace.reason : "");
+        break;
+    case WmSchedulerTraceOp::TriggerIgnored:
+        Logger::log(LogLevel::INFO,
+                    "[wm] op=trigger_ignored type=%d reason=%s",
+                    taskTypeValue(trace.type), trace.reason ? trace.reason : "");
+        break;
+    case WmSchedulerTraceOp::ShutdownRequested:
+        Logger::log(LogLevel::INFO,
+                    "[wm] op=shutdown_requested reason=%s",
+                    shutdownReasonName(trace.shutdownReason));
+        break;
+    }
+}
+
+class CaptureLaneTask : public WmTask {
+public:
+    explicit CaptureLaneTask(std::shared_ptr<CaptureLane> capture)
+        : capture_(std::move(capture)), taskId_(nextTaskId()) {}
+
+    ~CaptureLaneTask() override {
+        stop();
+    }
+
+    TaskType type() const override { return TaskType::Capture; }
+    TaskState state() const override { return state_.load(); }
+    int traceId() const override { return taskId_; }
+
+    bool start() override {
+        TaskState expected = TaskState::Ready;
+        if (!state_.compare_exchange_strong(expected, TaskState::Running)) return false;
+        worker_ = std::thread([this]() {
+            bool ok = capture_ && capture_->runOnceBlocking(stopRequested_);
+            ok_.store(ok);
+            state_.store(ok ? TaskState::Done : TaskState::Failed);
+        });
+        return true;
+    }
+
+    void poll(int64_t /*nowMs*/) override {
+        joinIfFinished();
+    }
+
+    void stop() override {
+        TaskState s = state_.load();
+        if (s == TaskState::Running) {
+            stopRequested_.store(true);
+            state_.store(TaskState::Stopping);
+        }
+        if (worker_.joinable()) worker_.join();
+        if (state_.load() == TaskState::Stopping) {
+            state_.store(ok_.load() ? TaskState::Done : TaskState::Failed);
+        }
+    }
+
+private:
+    void joinIfFinished() {
+        TaskState s = state_.load();
+        if ((s == TaskState::Done || s == TaskState::Failed) && worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+    std::shared_ptr<CaptureLane> capture_;
+    std::thread worker_;
+    std::atomic<TaskState> state_{TaskState::Ready};
+    std::atomic<bool> ok_{false};
+    std::atomic<bool> stopRequested_{false};
+    int taskId_ = 0;
+};
+
+// UploadTask（新 wm 私有 type=2 task，自扫 SD + SlotOutputPort 唤醒）见 upload_task.{h,cpp}。
+
 }  // namespace
 
 WmScheduler::WmScheduler(app_lifecycle::ProcessLifecycle& lc, WmMode mode,
-                         std::shared_ptr<UploadWorker> upload,
                          std::shared_ptr<CaptureLane> capture,
                          std::shared_ptr<IPirTrigger> trigger,
+                         std::string mgmtAddr, int mgmtPort,
                          int64_t idleGraceMs, int64_t uploadTimeoutMs)
-    : lc_(lc), mode_(mode), upload_(std::move(upload)), capture_(std::move(capture)),
-      trigger_(std::move(trigger)), idleGraceMs_(idleGraceMs), uploadTimeoutMs_(uploadTimeoutMs) {}
+    : lc_(lc), mode_(mode), capture_(std::move(capture)),
+      trigger_(std::move(trigger)), mgmtAddr_(std::move(mgmtAddr)), mgmtPort_(mgmtPort),
+      idleGraceMs_(idleGraceMs), uploadTimeoutMs_(uploadTimeoutMs) {}
 
 WmScheduler::~WmScheduler() {
-    // run() 末尾已 stop+reset capture_；这里兜底（run 未到尾的异常路径）。
     if (capture_) capture_->stop();
 }
 
 void WmScheduler::run() {
     const int kPollMs = 200;
+    const bool oneShot = (std::getenv("HTC_WM_ONE_SHOT") != nullptr);
 
-    // ---------- m2: UploadOnly ----------
-    if (mode_ == WmMode::UploadOnly) {
-        int enq = 0;
-        if (upload_) {
-            std::vector<std::string> files = Misc::listFilenames(kWmUploadPath);
-            for (const std::string& f : files) {
-                upload_->enqueue(std::string(kWmUploadPath) + f);
-                ++enq;
-            }
-        }
-        Logger::log(LogLevel::INFO, "[wm] op=start mode=2 enqueued=%d from=%s",
-                    enq, kWmUploadPath);
-        bool uploadStopped = false;
-        int64_t idleStart = 0;
-        while (true) {
-            bool uploadIdle = (!upload_ || upload_->isIdle());
-            if (!uploadIdle && !uploadStopped && upload_->firstEnqueueAgeMs() > uploadTimeoutMs_) {
-                Logger::log(LogLevel::WARNING,
-                            "[wm] op=timeout upload_age_ms=%lld > %lld, requestShutdown",
-                            (long long)upload_->firstEnqueueAgeMs(), (long long)uploadTimeoutMs_);
-                uploadStopped = true;
-                Power::getInstance()->requestShutdown();
-            }
-            if (uploadIdle) {
-                if (idleStart == 0) idleStart = steadyNowMs();
-                if (steadyNowMs() - idleStart >= idleGraceMs_) {
-                    Logger::log(LogLevel::INFO, "[wm] op=shutdown reason=idle-grace mode=2");
-                    break;
-                }
-            } else {
-                idleStart = 0;
-            }
-            if (lc_.waitForSignal(kPollMs) != 0) {
-                Logger::log(LogLevel::INFO, "[wm] op=shutdown reason=signal mode=2");
-                break;
-            }
-        }
-        return;
+    WmTaskSchedulerConfig cfg;
+    cfg.mode = mode_;
+    cfg.idleGraceMs = idleGraceMs_;
+    cfg.uploadTimeoutMs = uploadTimeoutMs_;
+    cfg.oneShot = oneShot;
+
+    WmTaskSchedulerCore scheduler(cfg);
+    scheduler.setTraceCallback(logSchedulerTrace);
+    if (capture_) {
+        scheduler.setCaptureFactory([this]() {
+            return std::unique_ptr<WmTask>(new CaptureLaneTask(capture_));
+        });
+    }
+    if (mode_ != WmMode::CaptureOnly) {
+        const std::string uploadDir = wmUploadPath();
+        scheduler.setUploadFactory([this, uploadDir]() {
+            // UploadTask 自扫 SD 取 desc；wakePort_ 在 capture-Done 时被 push 唤醒重扫。
+            return std::unique_ptr<WmTask>(
+                new UploadTask(wakePort_, mgmtAddr_, mgmtPort_, uploadDir, nextTaskId()));
+        });
     }
 
-    // ---------- m0/m1: CaptureOnly / CaptureUpload ----------
-    const bool oneShot = (std::getenv("HTC_WM_ONE_SHOT") != nullptr);
-    bool masked = false;
-    bool uploadStopped = false;
-    int64_t idleStart = 0;
     Logger::log(LogLevel::INFO, "[wm] op=start mode=%d oneShot=%d",
                 static_cast<int>(mode_), oneShot ? 1 : 0);
 
-    while (true) {
-        // 1) trigger -> capture（cm==1 时 trigger 内同步等拍照完再起录影，避免 CH2 争用）
-        //
-        // PIR 门 = !capture_->isBusy() && !masked。
-        //   - capture_->isBusy() 在 cm==1 下覆盖 snap+record 整体（snap 期间由
-        //     CaptureLane 自身 atomic 标记，record 期间由 RecordTask 自报）——
-        //     PIR 撞进行中的原子动作时直接屏蔽。
-        //   - masked 仅 oneShot 模式生效（用户显式 opt-in：只触发一次就走完程序）。
-        //   - 两条独立：oneShot=1 时首次触发后 masked=true，但 record 完成后
-        //     isBusy()=false 也回到可触发态；任意一条锁住都不放过 PIR。
-        if (trigger_ && !masked && !(capture_ && capture_->isBusy())
-            && trigger_->waitForTrigger(kPollMs) == 1) {
-            bool accepted = true;
-            if (capture_) accepted = capture_->trigger();
-            if (oneShot) masked = true;   // one-shot：首次触发后立即屏蔽——用户 opt-in 的
-                                          // 「首拍后即收尾」语义，避开后续 cm==1 撞 IMP wedge
-            if (oneShot && mode_ == WmMode::CaptureOnly) {
-                Logger::log(LogLevel::INFO,
-                            "[wm] op=shutdown reason=one-shot-capture mode=%d accepted=%d",
-                            static_cast<int>(mode_), accepted ? 1 : 0);
-                break;
-            }
-            idleStart = 0;   // 捕获活动：重置 idle-grace（sync SnapTask 的 isBusy 恒 false，
-                             // 不会经 else 分支重置；显式重置确保 grace 从上次捕获起算）
-        }
+    scheduler.bootstrap(steadyNowMs());
 
-        // 2) capture idle 状态（idle-grace 判定用）
-        const bool captureIdle = (!capture_ || !capture_->isBusy());
-
-        // 3) upload（m1）：idle / timeout。UploadWorker 懒连接——首个 desc（首个 capture
-        //    产物）入队才真连，自然满足「Upload 首个 Capture 完成后才启动」。
-        bool uploadIdle = (mode_ == WmMode::CaptureOnly) || (!upload_) || upload_->isIdle();
-        if (mode_ == WmMode::CaptureUpload && !uploadIdle && !uploadStopped &&
-            upload_->firstEnqueueAgeMs() > uploadTimeoutMs_) {
+    while (!scheduler.shouldShutdown()) {
+        const int64_t nowMs = steadyNowMs();
+        WmTaskSchedulerEvents events = scheduler.tick(nowMs);
+        if (events.uploadTimedOut) {
             Logger::log(LogLevel::WARNING,
-                        "[wm] op=timeout upload_age_ms=%lld > %lld, requestShutdown",
-                        (long long)upload_->firstEnqueueAgeMs(), (long long)uploadTimeoutMs_);
-            uploadStopped = true;
+                        "[wm] op=timeout upload_timeout_ms=%lld, requestShutdown",
+                        (long long)uploadTimeoutMs_);
             Power::getInstance()->requestShutdown();
+            break;
+        }
+        // capture 完成时 push wake token：唤醒空闲等待中的 UploadTask 重扫 SD
+        // （slot2 未运行时 scheduler 已在同一 tick 新建 UploadTask，token 留给后续拍）。
+        if (events.captureCompleted) {
+            wakePort_.push();
+            Logger::log(LogLevel::INFO, "[wm] op=slot_port_push type=1 port=upload count=1");
         }
 
-        // 4) all-empty 持续 idleGraceMs -> Shutdown
-        const bool allEmpty = captureIdle && (uploadIdle || uploadStopped);
-        if (allEmpty) {
-            if (idleStart == 0) idleStart = steadyNowMs();
-            if (steadyNowMs() - idleStart >= idleGraceMs_) {
-                Logger::log(LogLevel::INFO, "[wm] op=shutdown reason=idle-grace mode=%d",
-                            static_cast<int>(mode_));
-                break;
+        bool waitedForTrigger = false;
+        if (mode_ != WmMode::UploadOnly && trigger_ && scheduler.canAcceptCaptureTrigger()) {
+            waitedForTrigger = true;
+            if (trigger_->waitForTrigger(kPollMs) == 1) {
+                scheduler.onExternalCaptureTrigger(steadyNowMs());
             }
-        } else {
-            idleStart = 0;
+        } else if (mode_ != WmMode::UploadOnly && trigger_ && !scheduler.canAcceptCaptureTrigger()) {
+            waitedForTrigger = true;
+            if (trigger_->waitForTrigger(kPollMs) == 1) {
+                scheduler.onExternalCaptureTrigger(steadyNowMs());
+            }
         }
 
-        // 5) 外部信号（SIGTERM / MCU override 经 Power::requestShutdown）-> Shutdown。
-        //    非阻塞（trigger waitForTrigger 已等 kPollMs）；首个信号时跑 cleanupHook。
-        if (lc_.waitForSignal(0) != 0) {
-            Logger::log(LogLevel::INFO, "[wm] op=shutdown reason=signal mode=%d",
-                        static_cast<int>(mode_));
+        if (lc_.waitForSignal(waitedForTrigger ? 0 : kPollMs) != 0) {
+            scheduler.requestShutdown(ShutdownReason::Signal);
             break;
         }
     }
 
-    // 收尾：停 capture（record stop + 通道级释放），再 reset 防析构双停。
-    // wm_app 尾随后做 lc.shutdown（IMP teardown）——故 capture 必须先停。
+    ShutdownReason reason = scheduler.shutdownReason();
+    if (reason == ShutdownReason::IdleGrace) {
+        Logger::log(LogLevel::INFO, "[wm] op=shutdown reason=idle-grace mode=%d",
+                    static_cast<int>(mode_));
+    } else if (reason == ShutdownReason::Signal || lc_.waitForSignal(0) != 0) {
+        Logger::log(LogLevel::INFO, "[wm] op=shutdown reason=signal mode=%d",
+                    static_cast<int>(mode_));
+    } else if (reason == ShutdownReason::UploadTimeout) {
+        Logger::log(LogLevel::INFO, "[wm] op=shutdown reason=upload-timeout mode=%d",
+                    static_cast<int>(mode_));
+    }
+
+    scheduler.stopAll();
     if (capture_) {
         capture_->stop();
         capture_.reset();

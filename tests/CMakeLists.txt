@@ -125,6 +125,55 @@ set_target_properties(test_net_app_logic PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+# Pure wm slot scheduler unit test. This intentionally links no HAL, media,
+# storage, network, or lifecycle code so scheduler behavior is locked in PC sim.
+add_executable(test_wm_task_scheduler
+    test_wm_task_scheduler.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/workmode/wm_task_scheduler.cpp
+)
+
+target_include_directories(test_wm_task_scheduler PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/app/workmode
+)
+
+target_link_libraries(test_wm_task_scheduler
+    PRIVATE
+    pthread
+    rt
+    gcc
+    stdc++
+)
+
+set_target_properties(test_wm_task_scheduler PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# SlotOutputPort (slot1→slot2 wake signal) unit test. Locks the state machine behind
+# the upload Done condition (isSettled = idle && no pending token, mutex-atomic) so the
+# "no real upload before type-2 Running" + no-stranded-desc invariants stay intact.
+# Header-only port, so this links no HAL/media/network code.
+add_executable(test_slot_output_port
+    test_slot_output_port.cpp
+)
+
+target_include_directories(test_slot_output_port PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/app/workmode
+)
+
+target_link_libraries(test_slot_output_port
+    PRIVATE
+    pthread
+    rt
+    gcc
+    stdc++
+)
+
+set_target_properties(test_slot_output_port PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 # NTP/RTC time-sync decision-logic unit test (manifest §B5, module 3).
 # syncSystemTime() is not cleanly sim-testable (host clock already plausible ->
 # early-outs); this locks the TIME_PLAUSIBLE gate + RTC field validation +

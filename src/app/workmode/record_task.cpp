@@ -9,6 +9,7 @@
 #include "Manifest.h"              // manifest::generateDescInfo
 #include "Common.h"
 #include "Logger.h"
+#include "misc/Misc.h"
 
 #include <chrono>
 #include <ctime>
@@ -56,7 +57,16 @@ bool RecordTask::trigger() {
     // ~VideoRecorder→deinitialize→thread.join() join 的是已退出线程，安全（不 self-join）。
     recorder_->releaseVideoResources();
 
-    std::string record_path = std::string(kWmMediaPath) + formatNow() + ".mp4";
+    const std::string mediaPath = wmMediaPath();
+    const std::string uploadPath = wmUploadPath();
+    if (!Misc::createDirectory(mediaPath) || !Misc::createDirectory(uploadPath)) {
+        Logger::log(LogLevel::ERROR, "RecordTask: create media dirs failed target=%s upload=%s",
+                    mediaPath.c_str(), uploadPath.c_str());
+        recording_ = false;
+        return false;
+    }
+
+    std::string record_path = mediaPath + formatNow() + ".mp4";
 
     service::camera::RecordOptions opts;
     opts.audio = false;        // 默认关（当前设备无 audio 硬件）
@@ -108,18 +118,21 @@ void RecordTask::onCompleteRecord(const std::string& record_path,
     //    "Resource deadlock avoided" 崩溃。释放改到主线程：下次 trigger 的 make_shared
     //    旧 video_recorder_ 析构，或 stop()。缩略图须在释放前取（上面已取）。
 
-    // 3) desc + enqueue（仅成功完成/主动停）
+    // 3) desc 落盘（仅成功完成/主动停）。uploadWorker_ 非空时 enqueue（legacy）；
+    //    wm 路径传 nullptr，desc 只落盘——由 type 2 UploadTask 自扫上传。
     if (r.error == service::camera::RecordError::None ||
         r.error == service::camera::RecordError::UserStop) {
         completedCount_.fetch_add(1);  // 供 EventLoop 的 HTC_TEST_RECORD_COUNT 门控判定
         std::vector<std::string> files = { record_path };
         std::string desc_info;
         if (manifest::generateDescInfo(files, desc_info) == 0) {
-            std::string desc_filename = std::string(kWmUploadPath) + formatNow() + ".json";
+            std::string desc_filename = wmUploadPath() + formatNow() + ".json";
             service::camera::RecordingPostProcess::writeWorkModeDescJson(desc_info, desc_filename);
             if (uploadWorker_) {
                 uploadWorker_->enqueue(desc_filename);
                 Logger::log(LogLevel::INFO, "RecordTask: desc enqueued: %s", desc_filename.c_str());
+            } else {
+                Logger::log(LogLevel::INFO, "RecordTask: desc written: %s", desc_filename.c_str());
             }
         } else {
             Logger::log(LogLevel::ERROR, "RecordTask: generateDescInfo failed");

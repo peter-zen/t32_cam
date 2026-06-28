@@ -1,31 +1,36 @@
 #pragma once
-// WmScheduler — wm 的 3 模式任务调度器（wm-app-spec §3）。
+// WmScheduler — wm 的 3 模式任务调度器（wm-app-spec §3）的 runtime wrapper。
 //
-// 结构：pending(触发) + Capture lane + Upload lane + 终态 Shutdown。Capture/Upload
-// 并发不互斥。关机自管：三条 lane 全空持续 idleGraceMs → Shutdown；Upload 超时→
-// requestShutdown(SIGTERM)；外部信号→Shutdown。Shutdown 屏蔽触发、不可中断。
+// 结构：WmTaskSchedulerCore（纯调度内核，fs/HAL-agnostic）+ Capture lane(type 1) +
+// Upload lane(type 2, 新 wm 私有 UploadTask) + SlotOutputPort(slot1→slot2 wake signal)
+// + 终态 Shutdown。Capture/Upload 并发不互斥。关机自管：全 slot 空持续 idleGraceMs
+// → Shutdown；Upload 超时→requestShutdown(SIGTERM)；外部信号→Shutdown。Shutdown
+// 屏蔽触发、不可中断。
 //
-// m0(CaptureOnly)=仅 Capture lane；m1(CaptureUpload)=Capture+Upload；m2(UploadOnly)=仅 Upload。
+// m0(CaptureOnly)=仅 Capture；m1(CaptureUpload)=Capture+Upload；m2(UploadOnly)=仅 Upload。
+//
+// 注：不再持有 legacy 共享的 UploadWorker——type 2 由新 UploadTask 自扫 SD 上传。
 #include <cstdint>
 #include <memory>
+#include <string>
+
+#include "slot_output_port.h"
+#include "wm_task_scheduler.h"
 
 namespace app_lifecycle { class ProcessLifecycle; }
 
 namespace app_workmode {
 
-class UploadWorker;
 class CaptureLane;
 class IPirTrigger;
 
-enum class WmMode { CaptureOnly = 0, CaptureUpload = 1, UploadOnly = 2 };
-
 class WmScheduler {
 public:
-    // upload 可为 null（m0 无 upload lane）；capture/trigger 可为 null（m2 无捕获）。
+    // capture/trigger 可为 null（m2 无捕获）。mgmtAddr/mgmtPort 仅 m1/m2 用（m0 传空）。
     WmScheduler(app_lifecycle::ProcessLifecycle& lc, WmMode mode,
-                std::shared_ptr<UploadWorker> upload,
                 std::shared_ptr<CaptureLane> capture,
                 std::shared_ptr<IPirTrigger> trigger,
+                std::string mgmtAddr, int mgmtPort,
                 int64_t idleGraceMs, int64_t uploadTimeoutMs);
     ~WmScheduler();
 
@@ -36,11 +41,13 @@ public:
 private:
     app_lifecycle::ProcessLifecycle& lc_;
     WmMode  mode_;
-    std::shared_ptr<UploadWorker> upload_;
     std::shared_ptr<CaptureLane>  capture_;
     std::shared_ptr<IPirTrigger> trigger_;
+    std::string mgmtAddr_;
+    int mgmtPort_ = 0;
     int64_t idleGraceMs_;
     int64_t uploadTimeoutMs_;
+    SlotOutputPort wakePort_;  // slot1→slot2 唤醒信号（capture-Done 时 push）
 };
 
 }  // namespace app_workmode
