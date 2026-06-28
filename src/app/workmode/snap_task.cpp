@@ -37,6 +37,14 @@ std::string formatNow() {
     return ss.str();
 }
 
+// 取路径 basename 去扩展名（/a/b/ts_1.jpg → ts_1），让 desc 名与对应媒体同名。
+std::string fileStem(const std::string& path) {
+    size_t slash = path.find_last_of('/');
+    std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    size_t dot = base.find_last_of('.');
+    return (dot == std::string::npos) ? base : base.substr(0, dot);
+}
+
 // cm==1 diag: memory snapshot at photo phase boundaries (mirrors the identical
 // logMemInfo in VideoRecorder.cpp so the photo→record trajectory is comparable).
 // See there for field semantics. Remove after root-caused.
@@ -134,7 +142,7 @@ bool SnapTask::trigger() {
 
     if (ok) {
         std::vector<std::string> descFiles = files;   // createDescInfoFile 取非 const 引用
-        std::string desc = uploadPath + ts + ".json";
+        std::string desc = uploadPath + fileStem(files[0]) + ".json";
         if (manifest::createDescInfoFile(descFiles, desc) == 0) {
             // uploadWorker_ 非空时 enqueue（legacy）；wm 传 nullptr，desc 只落盘——
             // 由 type 2 UploadTask 自扫此目录上传。desc 落盘即完成 type 1 产出职责。

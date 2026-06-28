@@ -33,6 +33,14 @@ std::string formatNow() {
     return ss.str();
 }
 
+// 取路径 basename 去扩展名（/a/b/ts.mp4 → ts），让 desc 名与对应媒体同名。
+std::string fileStem(const std::string& path) {
+    size_t slash = path.find_last_of('/');
+    std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    size_t dot = base.find_last_of('.');
+    return (dot == std::string::npos) ? base : base.substr(0, dot);
+}
+
 }  // namespace
 
 RecordTask::RecordTask(std::shared_ptr<UploadWorker> uploadWorker)
@@ -126,7 +134,7 @@ void RecordTask::onCompleteRecord(const std::string& record_path,
         std::vector<std::string> files = { record_path };
         std::string desc_info;
         if (manifest::generateDescInfo(files, desc_info) == 0) {
-            std::string desc_filename = wmUploadPath() + formatNow() + ".json";
+            std::string desc_filename = wmUploadPath() + fileStem(record_path) + ".json";
             service::camera::RecordingPostProcess::writeWorkModeDescJson(desc_info, desc_filename);
             if (uploadWorker_) {
                 uploadWorker_->enqueue(desc_filename);

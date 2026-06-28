@@ -138,7 +138,9 @@ MCU 有权随时强制关机（如低电、换挡）。这是**另一条流程**
 1. **媒体文件**：带时间戳文件名（格式 `%Y%m%d_%H%M%S`，时间来自 §6）。
 2. **缩略图**：存 `thumbnails` DB（`MetadataDao::saveThumbnail`，`MetadataDao.cpp:93`）。
 3. **元数据行**：存 `media_files` DB（`MetadataDao::addMedia`，`MetadataDao.cpp:48`；`type=1` photo / `2` video）。
-4. **upload desc**：`F_UploadedTag=0`（给 Upload lane）。
+4. **upload desc**：`F_UploadedTag=0`（给 Upload lane）。**desc 文件名 = 对应媒体 basename（仅换扩展名为 `.json`）**：拍照 `<ts>_1.json` ↔ `<ts>_1.jpg`、录影 `<ts>.json` ↔ `<ts>.mp4`（`fileStem()` 从媒体路径推导，grill 2026-06-28——录影 desc 曾用「落盘时刻」`formatNow()` 命名，与 mp4「开始时刻」对不上，现统一为媒体同名）。desc→媒体的服务端关联仍靠 `file_inf.F_FileName`（确切名），文件名同名仅为人工/调试可读。
+
+> **上传后清理（capture-upload-forget，grill 2026-06-28 拍板）**：Upload task 整体上传成功（desc 自身 + 全部媒体都到服务器）后，**删除 desc 和已传媒体文件**——wm 不在 SD 留存已传内容，也止 `media/upload/` 目录无界增长（否则慢速 NFS 上每轮扫描要重读所有累积 desc，拖慢「上传完→关机」）。部分成功（有媒体未传）保留 desc，下次扫描按 `file_inf` 的 `F_UploadedTag` 重传。wm 私有 `UploadTask` 不走旧 `FileManage` 配置门（始终删）；legacy `UploadWorker`/`WorkModeRunner` 仍受 `FileManage` 配置控制，不动。
 
 ### 5.3 ⚠️ 代码坑（必避）
 
@@ -227,7 +229,7 @@ Shutdown task（或 MCU override）的 teardown 序：
 | 旋钮 | 来源 | 默认 | 说明 |
 |------|------|------|------|
 | `cameraMode` / `burstNumber` / `stillSize` / `videoSize` / `videoLength` | `setting.json`（产品配置） | — | 拍/录行为 |
-| `HTC_WM_IDLE_GRACE_MS` | env | 30000 | idle-grace G（§3.4） |
+| `HTC_WM_IDLE_GRACE_MS` | env | 2000 | idle-grace G（§3.4）。默认 2s：上传完即关机，不做 PIR 合并窗口（后续 PIR 走完整冷启流程；grill 2026-06-28 拍板，原 30s coalescing 语义废止） |
 | `HTC_UPLOAD_TIMEOUT_MS` | env | 60000 | Upload task 超时（§3.4） |
 | `HTC_WM_ONE_SHOT` | env | 0 | 1=首个 Capture 后屏蔽触发（§3.5） |
 | `HTC_SIM_PIR_INTERVAL_MS` | env | 10000 | SimPir 间隔（sim/test，§4） |

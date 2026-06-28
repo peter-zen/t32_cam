@@ -281,7 +281,9 @@ int main(int argc, char* argv[])
     }
 
     // --- 调度器旋钮 ---
-    int64_t idleGraceMs = 30000;
+    // idle-grace 默认 2s：上传完即关机（grill 2026-06-28 拍板：wm 不做 PIR 合并窗口——
+    // 后续 PIR 走完整冷启流程，换取更快关机/省电）。env HTC_WM_IDLE_GRACE_MS 可覆盖。
+    int64_t idleGraceMs = 2000;
     if (const char* e = std::getenv("HTC_WM_IDLE_GRACE_MS")) { int v = std::atoi(e); if (v > 0) idleGraceMs = v; }
     int64_t uploadTimeoutMs = 60000;
     if (const char* e = std::getenv("HTC_UPLOAD_TIMEOUT_MS")) { int v = std::atoi(e); if (v > 0) uploadTimeoutMs = v; }

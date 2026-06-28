@@ -91,6 +91,11 @@ int64_t UploadTask::timeoutAgeMs(int64_t /*nowMs*/, int64_t /*defaultAgeMs*/) co
 }
 
 void UploadTask::runLoop() {
+    // HTC_UPLOAD_DIAG=1：默认静默，仅异常时打点（grill 2026-06-28：scan-gap RCA 已完成，
+    // 逐行打点失去意义）。两类异常：① 慢空扫盘（didWork=0 却 dt 大 → NFS dir 反常慢）；
+    // ② token-spin（连续 park 醒来却无活）。正常路径只产 runLoop exit 一行。
+    const bool diag = (std::getenv("HTC_UPLOAD_DIAG") != nullptr);
+    int idleWakes = 0;   // 连续「park 醒来却 didWork=0」计数（spin 检测；正常 drain ≤1）
     while (!stopRequested_.load()) {
         wakePort_.setBusy();
         // 未连上 mgmt 时不要扫盘：否则 uploadOneDesc 因无 storage 全部 skip 却把
@@ -101,9 +106,19 @@ void UploadTask::runLoop() {
             didWork = scanAndUploadOnePass();
         }
         if (stopRequested_.load()) break;
-        if (didWork) continue;                  // 立即重扫（可能还有更多 desc）
-        if (!wakePort_.parkIfNoWork()) break;   // 无活 → park 等 wake token / stop
+        if (didWork) {                  // 立即重扫（可能还有更多 desc）
+            idleWakes = 0;
+            continue;
+        }
+        bool woke = wakePort_.parkIfNoWork();   // 无活 → park 等 wake token / stop
+        if (!woke) break;
+        if (diag && ++idleWakes >= 3) {          // 连续 ≥3 次 park 醒来无活 → spin
+            Logger::log(LogLevel::WARNING,
+                        "[udiag] token-spin: %d consecutive idle wakes", idleWakes);
+            idleWakes = 0;                       // 重置免刷屏
+        }
     }
+    if (diag) Logger::log(LogLevel::INFO, "[udiag] runLoop exit");
 }
 
 // 移植自 UploadWorker::ensureConnected（upload_worker.cpp:50-78）。
@@ -165,6 +180,8 @@ bool UploadTask::hasPendingWork(const std::string& descPath) const {
 }
 
 bool UploadTask::scanAndUploadOnePass() {
+    const bool diag = (std::getenv("HTC_UPLOAD_DIAG") != nullptr);
+    const int64_t t0 = steadyNowMs();   // 始终计时（cheap）；仅异常时用
     std::vector<std::string> files = Misc::listFilenames(uploadDir_);
     bool didWork = false;
     for (const std::string& f : files) {
@@ -174,6 +191,15 @@ bool UploadTask::scanAndUploadOnePass() {
         if (!hasPendingWork(p)) continue;   // 已传完的跳过
         uploadOneDesc(p);
         didWork = true;
+    }
+    // 异常才打：无活（didWork=0）却耗时 > 1s → 纯扫盘反常慢（原 scan-gap 症状）。
+    // didWork=1 的大 dt 是 mp4 上传 I/O，属正常，不打。
+    if (diag && !didWork) {
+        int64_t dt = steadyNowMs() - t0;
+        if (dt > 1000) {
+            Logger::log(LogLevel::WARNING, "[udiag] slow idle scan: n=%d dt=%lldms",
+                        (int)files.size(), (long long)dt);
+        }
     }
     return didWork;
 }
@@ -285,10 +311,9 @@ void UploadTask::uploadOneDesc(const std::string& desc_filename) {
                 auto pathname = file_inf_array[i]["F_FilePath"].asString() + "/" + file_inf_array[i]["F_FileName"].asString();
                 if (pathname == filename) {
                     root["file_inf"][i]["F_UploadedTag"] = 1;
-                    auto file_manage_type = DeviceConfig::getInstance()->get(INI_SECTION_POLICY, INI_KEY_FILE_MANAGE, 0);
-                    if (file_manage_type == FILE_MANAGE_DELETE) {
-                        Misc::deleteFile(pathname);
-                    }
+                    // grill 2026-06-28: wm 始终删除已传媒体（capture-upload-forget；不再走
+                    // FileManage 配置门——wm 不在 SD 留存已传内容，也止媒体目录膨胀）。
+                    Misc::deleteFile(pathname);
                 }
             }
         }
@@ -298,6 +323,14 @@ void UploadTask::uploadOneDesc(const std::string& desc_filename) {
         ofs.close();
         if (allFileUploaded) {
             Logger::log(LogLevel::INFO, "upload all files finished in %s", desc_filename.c_str());
+        }
+        // grill 2026-06-28: 整体上传成功（desc 自身 + 全部媒体）→ 删除 desc。wm 是
+        // capture-upload-forget：不在 SD 留存已传 desc，也止 upload 目录无界增长拖慢扫描。
+        // 部分成功（有媒体未传）保留 desc，下次扫描按 file_inf 的 F_UploadedTag 重传。
+        if (descfile_uploaded && allFileUploaded) {
+            Misc::deleteFile(desc_filename);
+            Logger::log(LogLevel::INFO, "UploadTask: desc removed (upload complete): %s",
+                        desc_filename.c_str());
         }
     }
 }
