@@ -5,6 +5,7 @@ file (GLOB DAEMON_APP_SOURCES "${SOURCES}/app/daemon_app.cpp")
 file (GLOB NET_APP_SOURCES "${SOURCES}/app/net_app.cpp")
 file(GLOB WORKMODE_APP_SOURCES "${SOURCES}/app/workmode_app.cpp")
 file(GLOB WM_APP_SOURCES "${SOURCES}/app/wm_app.cpp")
+file(GLOB UM_APP_SOURCES "${SOURCES}/app/um_app.cpp")
 set(NET_APP_HELPER_SOURCES
     "${SOURCES}/app/net_app_logic.cpp"
     "${SOURCES}/app/wifi_reconnect.cpp"
@@ -32,6 +33,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../common/utils/string
         ${CMAKE_CURRENT_SOURCE_DIR}/../common/utils/serial
         ${CMAKE_CURRENT_SOURCE_DIR}/workmode
+        ${CMAKE_CURRENT_SOURCE_DIR}/usermode
         ${CMAKE_CURRENT_SOURCE_DIR}/app_lifecycle
         ${CMAKE_CURRENT_SOURCE_DIR}/../hardware/daynight
         ${CMAKE_CURRENT_SOURCE_DIR}/../service/daemon
@@ -57,6 +59,7 @@ link_directories(
 )
 
 add_subdirectory(workmode)
+add_subdirectory(usermode)
 add_subdirectory(app_lifecycle)
 
 add_executable(htc_main_app ${MAIN_APP_SOURCES})
@@ -65,6 +68,7 @@ add_executable(htc_daemon_app ${DAEMON_APP_SOURCES})
 add_executable(htc_net_app ${NET_APP_SOURCES} ${NET_APP_HELPER_SOURCES})
 add_executable(htc_workmode_app ${WORKMODE_APP_SOURCES})
 add_executable(wm ${WM_APP_SOURCES})
+add_executable(um ${UM_APP_SOURCES})
 add_executable(snap_test ${CMAKE_CURRENT_SOURCE_DIR}/snap_test.cpp)
 add_executable(time_test ${CMAKE_CURRENT_SOURCE_DIR}/time_test.cpp)
 
@@ -281,6 +285,36 @@ if(BUILD_FOR_SIMULATION)
         mcu
         logger
         jsoncpp
+        sdk_stub
+        pthread
+        rt
+        gcc
+        stdc++
+    )
+
+    # um — new binary (um-app-spec). Slice 2a: server-lifecycle + idle-timeout.
+    # wm closure + the long-running services um brings up (rtsp/http/mdns/event)
+    # + um_idle (idle-timeout kernel). app_workmode transitively brings wm_time.
+    target_link_libraries(um
+        PRIVATE
+        app_workmode
+        app_lifecycle
+        common_misc
+        setting
+        env
+        devconf
+        power
+        daynight
+        gpio
+        mcu
+        logger
+        jsoncpp
+        media_rtsp
+        http_server
+        civetweb
+        discovery_service
+        event_service
+        um_idle
         sdk_stub
         pthread
         rt
@@ -521,6 +555,36 @@ target_link_libraries(wm
     gcc
     stdc++
 )
+
+# um — new binary (um-app-spec). HW closure (imp/alog/system_call + services).
+target_link_libraries(um
+    PRIVATE
+    app_workmode
+    app_lifecycle
+    common_misc
+    setting
+    env
+    devconf
+    power
+    daynight
+    gpio
+    mcu
+    logger
+    jsoncpp
+    media_rtsp
+    http_server
+    civetweb
+    discovery_service
+    event_service
+    um_idle
+    system_call
+    imp
+    alog
+    pthread
+    rt
+    gcc
+    stdc++
+)
 endif()
 
 # Set output directory
@@ -573,6 +637,10 @@ set_target_properties(htc_workmode_app PROPERTIES
 )
 
 set_target_properties(wm PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+set_target_properties(um PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

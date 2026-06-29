@@ -149,6 +149,31 @@ set_target_properties(test_wm_task_scheduler PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+# Pure um idle-timeout unit test (um-app-spec §4). Locks the idle/active decision
+# kernel with injected nowMs + tiny timeouts; links no HAL/media/network code
+# (um_idle.cpp compiled directly, mirroring test_wm_task_scheduler).
+add_executable(test_um_idle
+    test_um_idle.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/usermode/um_idle.cpp
+)
+
+target_include_directories(test_um_idle PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/app/usermode
+)
+
+target_link_libraries(test_um_idle
+    PRIVATE
+    pthread
+    rt
+    gcc
+    stdc++
+)
+
+set_target_properties(test_um_idle PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 # SlotOutputPort (slot1→slot2 wake signal) unit test. Locks the state machine behind
 # the upload Done condition (isSettled = idle && no pending token, mutex-atomic) so the
 # "no real upload before type-2 Running" + no-stranded-desc invariants stay intact.

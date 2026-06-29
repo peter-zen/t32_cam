@@ -28,6 +28,7 @@ class RtspServer {
         static int pullAudioFrame(void **data, size_t *size, uint64_t *timestamp);
         static int releaseAudioFrame(void **data, size_t *size, uint64_t *timestamp);
         static void registerOnsessionClosedCallback(std::function<void(void)> callback);
+        static void registerOnsessionPlayCallback(std::function<void(void)> callback);
         void setPort(int port);
         bool start();
         bool stop();
@@ -69,6 +70,7 @@ class RtspServer {
         bool alreadyGetSpsPps;
     private:
         static std::function<void(void)> onSessionClosedCallback;
+        static std::function<void(void)> onSessionPlayCallback;
         static int onSessionClosed(void **data, size_t *size, uint64_t *timestamp);
         static int onSessionPlay(void **data, size_t *size, uint64_t *timestamp);
         std::shared_ptr<hal::IVideo> video_;

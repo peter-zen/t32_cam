@@ -137,6 +137,7 @@ bool RtspServer::extractSpsPps(const uint8_t* h264Data, size_t dataSize, std::ve
     return foundSps || foundPps;
 };
 std::function<void(void)> RtspServer::onSessionClosedCallback = nullptr;
+std::function<void(void)> RtspServer::onSessionPlayCallback = nullptr;
 using namespace media;
 
 std::shared_ptr<RtspServer> RtspServer::getInstance()
@@ -441,6 +442,9 @@ int RtspServer::onSessionPlay(void **data, size_t *size, uint64_t *timestamp)
             }
         }
     }
+    if (onSessionPlayCallback) {
+        onSessionPlayCallback();
+    }
     return 0;
 }
 
@@ -577,6 +581,11 @@ bool RtspServer::uninitAudio()
 void RtspServer::registerOnsessionClosedCallback(std::function<void(void)> callback)
 {
     onSessionClosedCallback = callback;
+}
+
+void RtspServer::registerOnsessionPlayCallback(std::function<void(void)> callback)
+{
+    onSessionPlayCallback = callback;
 }
 
 bool RtspServer::isRunning(void)

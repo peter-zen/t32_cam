@@ -8,6 +8,7 @@
 #include "http_server.h"
 #include "http_api.h"
 #include <civetweb.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,8 @@
 static struct mg_context* g_ctx = NULL;
 static int g_running = 0;
 static HttpServerConfig g_config;
+/* 请求序号：begin_request 递增（civetweb 工作线程），um main 线程 poll 做活跃 change-detection */
+static volatile uint32_t g_request_seq = 0;
 
 /* 默认请求处理器 */
 static int log_message_handler(const struct mg_connection* conn, const char* message) {
@@ -29,6 +32,14 @@ static int log_message_handler(const struct mg_connection* conn, const char* mes
         printf("[HTTP][CIVETWEB] %s\n", message);
     }
 
+    return 0;
+}
+
+/* CivetWeb universal per-request hook（handle_request 顶部、路由查找前 fire，对所有 URI 生效）。
+ * return 0 = civetweb 继续正常路由（勿 1-999，会短路并破坏路由）。仅递增活跃序号。 */
+static int begin_request_handler(struct mg_connection* conn) {
+    (void)conn;
+    __sync_add_and_fetch(&g_request_seq, 1);   /* civetweb 工作线程写，um main 线程读 */
     return 0;
 }
 
@@ -120,6 +131,7 @@ int http_server_start(void) {
     struct mg_callbacks callbacks;
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.log_message = log_message_handler;
+    callbacks.begin_request = begin_request_handler;
     
     struct mg_init_data init_data;
     struct mg_error_data error_data;
@@ -191,4 +203,8 @@ void http_server_deinit(void) {
 
 int http_server_is_running(void) {
     return g_running;
+}
+
+uint32_t http_server_request_seq(void) {
+    return __sync_add_and_fetch(&g_request_seq, 0);   /* 原子读 + barrier */
 }

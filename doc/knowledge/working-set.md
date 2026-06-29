@@ -164,11 +164,11 @@ wm/um/共享三分(REPLACE，`runCommands` 瀑布退役)→稳定判据=退役 k
 
 ### um-app（新建 um 程序，组合长驻交互服务）
 
-**状态**：规格已 grill 定型（2026-06-28），待实现
-**关键发现**：um 侧单元（rtsp/http/mdns/daynight）早已是独立 linkable 库，legacy 只在 `WorkModeRunner.cpp::runCommands` CMD_MOBILE/RTSP 分支做 wiring——故 um **不是"拆模块"而是"组合现成库 + 写 lifecycle"**，风险/工作量 << wm。um 尚未开始（无 `um_app.cpp` / CMake target）。
+**状态**：规格已 grill 定型（2026-06-28）；**L1 sim smoke + Slice 2a 完成**——`um_idle` 纯核心（8 用例）+ `src/app/um_app.cpp` 编排器 + `um` CMake target（双平台）。idle-timeout→poweroff 通路 sim 跑通（`--no-http --no-rtsp`，1s timeout → self-SIGTERM → cleanupHook → lc.shutdown → `rc=0`；mDNS 起着仍 timeout 证 spec §4）；T32 MIPS 编译通过。**Slice 2b 完成**——`UmIdleCore` 加 mutex（线程安全：RTSP/HTTP 回调在 libevent/civetweb 线程、tick 在 main；L1 回归 8 绿逻辑不变）+ `RtspServer` 对称加 `registerOnsessionPlayCallback`（引擎单 active-session，PLAY/CLOSED 1:1）+ `um_app` 接 play/close → `onRtspConnect/Disconnect` 续命；双平台编译 + sim 不回归 `rc=0`。**Slice 2c 完成**——`http_server` `begin_request`（CivetWeb universal per-request hook，`return 0` 不破坏路由）+ `__sync` 原子 counter + `http_server_request_seq()` accessor + `um_app` idle-wait poll change-detection → `onHttpRequest`（不混 C/C++ 时钟域）。**双活跃信号 RTSP+HTTP 齐备**，um binary 功能完整（sim 侧 done：L1 8 绿 + 双平台编译 + sim 通路不回归）。待 **L2 真机联调**
+**关键发现**：um 侧单元（rtsp/http/mdns/daynight）早已是独立 linkable 库，legacy 只在 `WorkModeRunner.cpp::runCommands` CMD_MOBILE/RTSP 分支做 wiring——故 um **不是"拆模块"而是"组合现成库 + 写 lifecycle"**，风险/工作量 << wm。**关键简化**：um 不重做 IMP boot——`RtspServer::getInstance()` 构造即懒初始化整个 sensor→encoder→streaming 栈，故 `um_app.cpp` = 镜像 `wm_app.cpp` main 骨架 + CMD_MOBILE bring-up/teardown 顺序 + `event_loop` idle-wait。
 **关键决策**：架构=**server-lifecycle**（bring-up/idle-wait/teardown，**非** wm task-scheduler，复用 wm 原语）；bring-up=rtsp+http+mdns+day/night（默认全开，`--no-*` flag 覆盖 `-wm4`）；**无模式只 flag**；关机=**idle-timeout 自关机**（无 RTSP 客户端 + 无 HTTP 请求 持续 T → `Power::requestShutdown()` → poweroff）；MCU on-demand 读（STATUS）；时间链复用 wm；done=binary+L2/sim绿+并存（repoint 延后，联合 C4）。
 **硬约束**：1-IMP-per-boot → um 与 wm 不能同 boot 共存 → um 是 whole-boot 进程。
-**下一步**：L1 sim smoke（idle-timeout 纯逻辑）→ `um_app.cpp` 编排器 + CMake（双平台）→ L2（re-point B3/B4 + 新增 idle-poweroff）。
+**下一步**：~~L1 + Slice 2a/2b/2c~~ ✅（um binary 功能完整：server-lifecycle + idle-timeout + RTSP/HTTP 续命双信号）→ **L2 真机联调**（默认 RTSP IMP 起落 + RTSP 客户端预览续命 + HTTP 请求续命 + idle-poweroff 干净 teardown；re-point B3/B4 idle-timeout case）。可选后续：`--no-audio`/`--record-stream1` flag、HTTP port env 覆盖（sim 80 bind 限制）、`media_app` repoint spawn `um`（联合 wm C4）。
 **参考文档**：[`specs/um-app-spec.md`](specs/um-app-spec.md)（权威 spec + 决策日志 + 治理规则）、[`scenario-test-manifest.md`](specs/scenario-test-manifest.md)（B3/B4 验证状态）
 
 ---

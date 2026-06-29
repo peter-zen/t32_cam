@@ -9,6 +9,8 @@
 #ifndef HTTP_SERVER_H
 #define HTTP_SERVER_H
 
+#include <stdint.h>   /* uint32_t (http_server_request_seq) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -55,6 +57,10 @@ void http_server_deinit(void);
  * @return 1 运行中，0 未运行
  */
 int http_server_is_running(void);
+
+/* 最近请求序号：begin_request 每请求递增。供 idle-timeout 做活跃 change-detection
+ * （HTTP 未起时恒为 0）。线程安全：__sync 原子。 */
+uint32_t http_server_request_seq(void);
 
 #ifdef __cplusplus
 }
