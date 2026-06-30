@@ -47,6 +47,7 @@
 #include "MdnsService.h"      // service::MdnsService
 #include "MdnsParams.h"       // service::buildMdnsParams / isMdnsEnabled
 #include "TcpEventService.h"  // service::TcpEventService
+#include "CameraServiceFactory.h"  // service::CameraServiceFactory (prewarm snap channel)
 
 namespace {
 
@@ -301,6 +302,11 @@ int main(int argc, char* argv[])
     // 6) RTSP（--no-rtsp 跳过）— start() 懒初始化整个 IMP 栈（RtspServer 单例）
     if (!flags.noRtsp) {
         lc.markRtspSingletonUsed();   // 必调：gate lc.shutdown() 内的 RtspServer::shutdown()(HAL/IMP)
+        // 预热拍照 channel：在 RTSP EnableChn(group1) 前建 group0 encoder 链（官方 Bind-before-enable），
+        // 否则拍照时 Bind 落在 FrameSource 使能后 → JPEG polling 超时（um 拍照 bug 根因）。
+        if (!flags.noHttp) {
+            service::CameraServiceFactory::getInstance()->prewarm();
+        }
         media::RtspServer::getInstance()->registerOnsessionPlayCallback([&idleCore]() {
             idleCore.onRtspConnect(steadyNowMs());   // libevent 线程 → 续命
             Logger::log(LogLevel::INFO, "[um] RTSP session play (client active)");

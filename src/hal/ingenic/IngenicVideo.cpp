@@ -166,6 +166,62 @@ static void releaseBind(int group_id, IMPCell* fs_cell, IMPCell* enc_cell) {
     }
 }
 
+static std::mutex g_chn_mutex;
+static std::map<int, int> g_chn_ref_count;
+
+// CreateChn + RegisterChn，ref-counted 幂等：解决同 chn 多 stream 重复 CreateChn 冲突
+// （如 prewarm thumb enc14 + record thumb enc14）。第一次真正 CreateChn+RegisterChn，后续 ref++。
+static bool acquireChn(int group, int chn, const IMPEncoderCHNAttr* attr) {
+    std::lock_guard<std::mutex> lock(g_chn_mutex);
+    auto it = g_chn_ref_count.find(chn);
+    if (it != g_chn_ref_count.end()) {
+        it->second++;
+        Logger::log(LogLevel::DEBUG, "[HAL] acquireChn(chn=%d): shared, ref=%d", chn, it->second);
+        return true;
+    }
+    hal_trace("--> IMP_Encoder_CreateChn chn=%d", chn);
+    int cc_rc = IMP_Encoder_CreateChn(chn, attr);
+    hal_trace("<-- IMP_Encoder_CreateChn chn=%d rc=%d", chn, cc_rc);
+    if (cc_rc < 0) {
+        Logger::log(LogLevel::ERROR, "[HAL] acquireChn(chn=%d): CreateChn failed", chn);
+        return false;
+    }
+    hal_trace("--> IMP_Encoder_RegisterChn g=%d chn=%d", group, chn);
+    int rg_rc = IMP_Encoder_RegisterChn(group, chn);
+    hal_trace("<-- IMP_Encoder_RegisterChn g=%d chn=%d rc=%d", group, chn, rg_rc);
+    if (rg_rc < 0) {
+        Logger::log(LogLevel::ERROR, "[HAL] acquireChn(chn=%d): RegisterChn(g=%d) failed", chn, group);
+        IMP_Encoder_DestroyChn(chn);
+        return false;
+    }
+    g_chn_ref_count[chn] = 1;
+    Logger::log(LogLevel::DEBUG, "[HAL] acquireChn(chn=%d): created+registered, ref=1", chn);
+    return true;
+}
+
+// ref--→0 才 UnRegisterChn + DestroyChn（常驻/共享 channel 时其他 stream 仍用，不拆）。
+static void releaseChn(int chn) {
+    std::lock_guard<std::mutex> lock(g_chn_mutex);
+    auto it = g_chn_ref_count.find(chn);
+    if (it == g_chn_ref_count.end()) {
+        Logger::log(LogLevel::WARNING, "[HAL] releaseChn(chn=%d): not found", chn);
+        return;
+    }
+    it->second--;
+    if (it->second <= 0) {
+        hal_trace("--> IMP_Encoder_UnRegisterChn chn=%d", chn);
+        int ur_rc = IMP_Encoder_UnRegisterChn(chn);
+        hal_trace("<-- IMP_Encoder_UnRegisterChn chn=%d rc=%d", chn, ur_rc);
+        hal_trace("--> IMP_Encoder_DestroyChn chn=%d", chn);
+        int de_rc = IMP_Encoder_DestroyChn(chn);
+        hal_trace("<-- IMP_Encoder_DestroyChn chn=%d rc=%d", chn, de_rc);
+        g_chn_ref_count.erase(it);
+        Logger::log(LogLevel::DEBUG, "[HAL] releaseChn(chn=%d): destroyed", chn);
+    } else {
+        Logger::log(LogLevel::DEBUG, "[HAL] releaseChn(chn=%d): shared, ref=%d", chn, it->second);
+    }
+}
+
 static std::mutex g_fs_mutex;
 static std::map<int, int> g_fs_ref_count;
 
@@ -1027,6 +1083,51 @@ static bool configureEncoderAttr(const VideoStreamConfig& cfg, IMPEncoderCHNAttr
     return true;
 }
 
+// ---- Slice 1a 步骤 3a：encoder channel + FrameSource 常驻 ----
+// init 一次性 Create+Register+Bind 常驻 channel + Enable FrameSource；运行时 start/stop
+// 只 Start/StopRecvPic，不再 Enable/Disable FrameSource。根因：record stop 把 group0
+// DisableChn → photo start EnableChn 重启 ISP→FS 管线 → 3s 延迟（且随轮次恶化）。
+// group0 统一 sensor-native 2560×1440（record H264 + photo JPEG 共享；photo 改 sensor-native
+// 符合 snap 请求尺寸，顺带修复 snap 不 reconfigure 导致请求尺寸不生效）。
+struct ResidentChannelDef {
+    int group;
+    int channel;
+    VideoStreamConfig cfg;
+};
+
+static std::vector<ResidentChannelDef> buildResidentChannels() {
+    auto mk = [](int group, int channel, VideoPayloadType payload, int streamIdx,
+                 int w, int h, int fpsNum, int quality, int bitrate, int gop,
+                 VideoRcMode rc, bool ivdc) {
+        ResidentChannelDef d;
+        memset(&d.cfg, 0, sizeof(VideoStreamConfig));
+        d.group = group;
+        d.channel = channel;
+        d.cfg.payload = payload;
+        d.cfg.channel.sensor_index = 0;
+        d.cfg.channel.stream_index = streamIdx;
+        d.cfg.width = w;
+        d.cfg.height = h;
+        d.cfg.fps_num = fpsNum;
+        d.cfg.fps_den = 1;
+        d.cfg.quality = quality;
+        d.cfg.bitrate = bitrate;
+        d.cfg.gop = gop;
+        d.cfg.rc_mode = rc;
+        d.cfg.enable_ivdc = ivdc;
+        return d;
+    };
+    std::vector<ResidentChannelDef> v;
+    // group0(CH0 2560×1440): record H264 enc0 + photo JPEG enc12
+    v.push_back(mk(0, 0,  VideoPayloadType::H264, 0, 2560, 1440, 30, 0, 4096, 60, VideoRcMode::CBR,   true));
+    v.push_back(mk(0, 12, VideoPayloadType::JPEG, 0, 2560, 1440, 15, 40, 0,    0,  VideoRcMode::FIXQP, true));
+    // group1(CH1 1280×720): preview(RTSP) H264 enc1
+    v.push_back(mk(1, 1,  VideoPayloadType::H264, 1, 1280, 720,  30, 0, 2048, 60, VideoRcMode::CBR,   true));
+    // group2(CH2 320×180): thumbnail JPEG enc14
+    v.push_back(mk(2, 14, VideoPayloadType::JPEG, 2, 320,  180,  15, 80, 0,    0,  VideoRcMode::FIXQP, true));
+    return v;
+}
+
 IngenicVideoStream::IngenicVideoStream()
     : configured_(false),
       started_(false),
@@ -1059,13 +1160,8 @@ IngenicVideoStream::~IngenicVideoStream() {
         int sr_rc = IMP_Encoder_StopRecvPic(channel_id_);
         hal_trace("<-- ~dtor IMP_Encoder_StopRecvPic chn=%d rc=%d", channel_id_, sr_rc);
         releaseFrameSource(group_id_);
-        hal_trace("--> ~dtor IMP_Encoder_UnRegisterChn chn=%d", channel_id_);
-        int ur_rc = IMP_Encoder_UnRegisterChn(channel_id_);
-        hal_trace("<-- ~dtor IMP_Encoder_UnRegisterChn chn=%d rc=%d", channel_id_, ur_rc);
         releaseBind(group_id_, &fs_cell_, &enc_cell_);
-        hal_trace("--> ~dtor IMP_Encoder_DestroyChn chn=%d", channel_id_);
-        int de_rc = IMP_Encoder_DestroyChn(channel_id_);
-        hal_trace("<-- ~dtor IMP_Encoder_DestroyChn chn=%d rc=%d", channel_id_, de_rc);
+        releaseChn(channel_id_);
         releaseGroup(group_id_);
         configured_ = false;
     }
@@ -1083,39 +1179,9 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
             (int)cfg.payload, cfg.channel.sensor_index, cfg.channel.stream_index, group_id_, channel_id_,
             cfg.width, cfg.height, cfg.fps_num, cfg.fps_den, cfg.quality, (int)cfg.rc_mode, cfg.skip_m, cfg.skip_n, cfg.enable_ivdc ? 1 : 0);
     
-    //update frame source attribute
-    IMPFSChnAttr fs_chn_attr;
-    hal_trace("--> configure IMP_FrameSource_GetChnAttr g=%d", group_id_);
-    int ga_rc = IMP_FrameSource_GetChnAttr(group_id_, &fs_chn_attr);
-    hal_trace("<-- configure IMP_FrameSource_GetChnAttr g=%d rc=%d", group_id_, ga_rc);
-    if(ga_rc != 0) {
-        Logger::log(LogLevel::ERROR, "[HAL] get framesource attr error");
-        return false;
-    }
-
-    int sensor_width = fs_chn_attr.picWidth;
-    int sensor_height = fs_chn_attr.picHeight;
-    fs_chn_attr.scaler.enable = 1;
-    fs_chn_attr.scaler.outwidth = cfg.width;
-    fs_chn_attr.scaler.outheight = cfg.height;
-    fs_chn_attr.picWidth = cfg.width;
-    fs_chn_attr.picHeight = cfg.height;
-    // Enable crop to full sensor frame so scaler works on entire image instead of top-left corner
-    fs_chn_attr.crop.enable = 1;
-    fs_chn_attr.crop.top = 0;
-    fs_chn_attr.crop.left = 0;
-    fs_chn_attr.crop.width = sensor_width;
-    fs_chn_attr.crop.height = sensor_height;
-    fs_chn_attr.outFrmRateNum = cfg.fps_num;
-    fs_chn_attr.outFrmRateDen = cfg.fps_den;
-    hal_trace("--> configure IMP_FrameSource_SetChnAttr g=%d %dx%d fps=%d/%d crop=%dx%d",
-              group_id_, cfg.width, cfg.height, cfg.fps_num, cfg.fps_den, sensor_width, sensor_height);
-    int sa_rc = IMP_FrameSource_SetChnAttr(group_id_, &fs_chn_attr);
-    hal_trace("<-- configure IMP_FrameSource_SetChnAttr g=%d rc=%d", group_id_, sa_rc);
-    if(sa_rc != 0) {
-        Logger::log(LogLevel::ERROR, "[HAL] update framesource attr error");
-        return false;
-    }
+    // FS attr 由 init preBindAllChannels 稳态收敛（EnableChn 前定型）；configure 不再
+    // SetChnAttr —— EnableChn 后改 FS attr 违反 imp_system.h 约束，且 group0 record/photo
+    // 共享需统一 sensor-native 2560×1440。
 
     if (!acquireGroup(group_id_)) {
         Logger::log(LogLevel::ERROR, "[HAL] configure: acquireGroup(%d) failed", group_id_);
@@ -1129,20 +1195,8 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
         return false;
     }
 
-    hal_trace("--> configure IMP_Encoder_CreateChn chn=%d", channel_id_);
-    int cc_rc = IMP_Encoder_CreateChn(channel_id_, &chn_attr);
-    hal_trace("<-- configure IMP_Encoder_CreateChn chn=%d rc=%d", channel_id_, cc_rc);
-    if (cc_rc < 0) {
-        Logger::log(LogLevel::ERROR, "[HAL] configure: IMP_Encoder_CreateChn(%d) failed", channel_id_);
-        releaseGroup(group_id_);
-        return false;
-    }
-    hal_trace("--> configure IMP_Encoder_RegisterChn g=%d chn=%d", group_id_, channel_id_);
-    int rg_rc = IMP_Encoder_RegisterChn(group_id_, channel_id_);
-    hal_trace("<-- configure IMP_Encoder_RegisterChn g=%d chn=%d rc=%d", group_id_, channel_id_, rg_rc);
-    if (rg_rc < 0) {
-        Logger::log(LogLevel::ERROR, "[HAL] configure: IMP_Encoder_RegisterChn(g=%d,c=%d) failed", group_id_, channel_id_);
-        IMP_Encoder_DestroyChn(channel_id_);
+    if (!acquireChn(group_id_, channel_id_, &chn_attr)) {
+        Logger::log(LogLevel::ERROR, "[HAL] configure: acquireChn(g=%d,chn=%d) failed", group_id_, channel_id_);
         releaseGroup(group_id_);
         return false;
     }
@@ -1154,8 +1208,7 @@ bool IngenicVideoStream::configure(const VideoStreamConfig& cfg) {
     enc_cell_.outputID = 0;
     if (!acquireBind(group_id_, &fs_cell_, &enc_cell_)) {
         Logger::log(LogLevel::ERROR, "[HAL] configure: acquireBind(fs=%d,enc=%d) failed", fs_cell_.groupID, enc_cell_.groupID);
-        IMP_Encoder_UnRegisterChn(channel_id_);
-        IMP_Encoder_DestroyChn(channel_id_);
+        releaseChn(channel_id_);
         releaseGroup(group_id_);
         return false;
     }
@@ -1330,6 +1383,110 @@ IngenicVideo::~IngenicVideo() {
     }
 }
 
+// Slice 1a 步骤 3a：在 fsMgr.setAttr + ispOsdMgr_ init 之后、任何 consumer configure/start
+// 之前调用（g_video_init_ref_count 短路保证只在首个完整 init 跑）。对每个 group 严格按
+// imp_system.h 时序：FS attr 稳态收敛(SetChnAttr) → CreateGroup/CreateChn/RegisterChn/Bind →
+// EnableChn → group0 OSD。EnableChn 后运行期不再 SetChnAttr（违反约束）；基础 ref=1 保证
+// 运行时 stop 不 DisableChn（消除 FrameSource Enable/Disable 往返 = 录影→拍照超时根因）。
+bool IngenicVideo::preBindAllChannels() {
+    auto defs = buildResidentChannels();
+    // 按 group 聚合（同 group 多 channel 共享 FS attr + Bind）
+    std::map<int, std::vector<ResidentChannelDef>> byGroup;
+    for (auto& d : defs) byGroup[d.group].push_back(std::move(d));
+
+    for (auto& kv : byGroup) {
+        int g = kv.first;
+        auto& chs = kv.second;
+        const VideoStreamConfig& cfg0 = chs[0].cfg;
+
+        // 1. FS attr 稳态收敛（替代 consumer configure 的 SetChnAttr，EnableChn 前定型）
+        IMPFSChnAttr fs_attr;
+        hal_trace("--> preBind IMP_FrameSource_GetChnAttr g=%d", g);
+        int ga_rc = IMP_FrameSource_GetChnAttr(g, &fs_attr);
+        hal_trace("<-- preBind IMP_FrameSource_GetChnAttr g=%d rc=%d", g, ga_rc);
+        if (ga_rc != 0) {
+            Logger::log(LogLevel::ERROR, "[HAL] preBind: GetChnAttr(%d) failed", g);
+            return false;
+        }
+        int sensorW = fs_attr.picWidth;
+        int sensorH = fs_attr.picHeight;
+        fs_attr.scaler.enable = 1;
+        fs_attr.scaler.outwidth = cfg0.width;
+        fs_attr.scaler.outheight = cfg0.height;
+        fs_attr.picWidth = cfg0.width;
+        fs_attr.picHeight = cfg0.height;
+        fs_attr.crop.enable = 1;
+        fs_attr.crop.top = 0;
+        fs_attr.crop.left = 0;
+        fs_attr.crop.width = sensorW;
+        fs_attr.crop.height = sensorH;
+        fs_attr.outFrmRateNum = cfg0.fps_num;
+        fs_attr.outFrmRateDen = cfg0.fps_den;
+        hal_trace("--> preBind IMP_FrameSource_SetChnAttr g=%d %dx%d crop=%dx%d",
+                  g, cfg0.width, cfg0.height, sensorW, sensorH);
+        int sa_rc = IMP_FrameSource_SetChnAttr(g, &fs_attr);
+        hal_trace("<-- preBind IMP_FrameSource_SetChnAttr g=%d rc=%d", g, sa_rc);
+        if (sa_rc != 0) {
+            Logger::log(LogLevel::ERROR, "[HAL] preBind: SetChnAttr(%d) failed", g);
+            return false;
+        }
+
+        // 2. acquireGroup（CreateGroup 幂等）
+        if (!acquireGroup(g)) {
+            Logger::log(LogLevel::ERROR, "[HAL] preBind: acquireGroup(%d) failed", g);
+            return false;
+        }
+
+        // 3. 对每个常驻 channel: configureEncoderAttr + acquireChn（CreateChn+RegisterChn 幂等）
+        for (auto& d : chs) {
+            IMPEncoderCHNAttr chn_attr;
+            if (!configureEncoderAttr(d.cfg, &chn_attr)) {
+                Logger::log(LogLevel::ERROR, "[HAL] preBind: configureEncoderAttr(g=%d,chn=%d) failed", g, d.channel);
+                releaseGroup(g);
+                return false;
+            }
+            if (!acquireChn(g, d.channel, &chn_attr)) {
+                Logger::log(LogLevel::ERROR, "[HAL] preBind: acquireChn(g=%d,chn=%d) failed", g, d.channel);
+                releaseGroup(g);
+                return false;
+            }
+        }
+
+        // 4. acquireBind（group 级，同 group 多 channel 只 bind 一次）
+        IMPCell fs_cell, enc_cell;
+        memset(&fs_cell, 0, sizeof(fs_cell));
+        memset(&enc_cell, 0, sizeof(enc_cell));
+        fs_cell.deviceID = DEV_ID_FS;
+        fs_cell.groupID = g;
+        fs_cell.outputID = 0;
+        enc_cell.deviceID = DEV_ID_ENC;
+        enc_cell.groupID = g;
+        enc_cell.outputID = 0;
+        if (!acquireBind(g, &fs_cell, &enc_cell)) {
+            Logger::log(LogLevel::ERROR, "[HAL] preBind: acquireBind(%d) failed", g);
+            releaseGroup(g);
+            return false;
+        }
+
+        // 5. acquireFrameSource（EnableChn，基础 ref=1 → 运行时 stop 不 Disable）
+        bool first_enable = false;
+        if (!acquireFrameSource(g, &first_enable)) {
+            Logger::log(LogLevel::ERROR, "[HAL] preBind: acquireFrameSource(%d) failed", g);
+            releaseBind(g, &fs_cell, &enc_cell);
+            releaseGroup(g);
+            return false;
+        }
+
+        // 6. group0 OSD prepare + start（首次 enable；水印常驻，exit 时 stop）
+        if (g == 0 && first_enable && ispOsdMgr_) {
+            ispOsdMgr_->prepare();
+            ispOsdMgr_->start();
+        }
+        Logger::log(LogLevel::INFO, "[HAL] preBind: group=%d bound (channels=%zu, fs enabled)", g, chs.size());
+    }
+    return true;
+}
+
 bool IngenicVideo::init() {
     if (g_video_init_ref_count.fetch_add(1) > 0) {
         Logger::log(LogLevel::INFO, "IngenicVideo already initialized, ref=%d", g_video_init_ref_count.load());
@@ -1415,6 +1572,13 @@ bool IngenicVideo::init() {
         uint32_t vts = (vts_high << 8) | vts_low;
         Logger::log(LogLevel::INFO, "IngenicVideo VTS corrected to 0x%04x (%d)", vts, vts);
     }
+
+    // Slice 1a 步骤 3a：encoder channel + FrameSource 一次性常驻（在任何 consumer
+    // configure/start 前）。失败则 init 失败。
+    if (!preBindAllChannels()) {
+        Logger::log(LogLevel::ERROR, "IngenicVideo: preBindAllChannels failed");
+        return false;
+    }
     return true;
 }
 bool IngenicVideo::exit() {
@@ -1450,16 +1614,14 @@ bool IngenicVideo::exit() {
     // 2. Stop encoder recv / flush in-flight frames for any residual channel so
     //    IMP_System_Exit() is never called while the encoder holds a stream.
     {
-        std::vector<int> groups;
+        std::vector<int> chns;
         {
-            std::lock_guard<std::mutex> lock(g_group_mutex);
-            for (const auto& kv : g_group_ref_count) {
-                groups.push_back(kv.first);
+            std::lock_guard<std::mutex> lock(g_chn_mutex);
+            for (const auto& kv : g_chn_ref_count) {
+                chns.push_back(kv.first);
             }
         }
-        for (int grp : groups) {
-            // RTSP uses H264 where channel_id == group_id (see configure()).
-            int chn = grp;
+        for (int chn : chns) {
             Logger::log(LogLevel::INFO, "[HAL] exit: flush/StopRecvPic(chn=%d)", chn);
             hal_trace("--> [HAL] exit: IMP_Encoder_StopRecvPic chn=%d", chn);
             int sr_rc = IMP_Encoder_StopRecvPic(chn);
@@ -1502,6 +1664,28 @@ bool IngenicVideo::exit() {
     //    teardown; calling UnRegister/Destroy on an already-freed channel is
     //    harmless (returns <0).
     {
+        // 4a. UnRegister + Destroy 所有 encoder channel（含 JPEG enc12/14，不只 chn=grp）
+        std::vector<int> chns;
+        {
+            std::lock_guard<std::mutex> lock(g_chn_mutex);
+            for (const auto& kv : g_chn_ref_count) {
+                chns.push_back(kv.first);
+            }
+        }
+        for (int chn : chns) {
+            Logger::log(LogLevel::INFO, "[HAL] exit: fallback destroy chn=%d", chn);
+            hal_trace("--> [HAL] exit: IMP_Encoder_UnRegisterChn chn=%d", chn);
+            int ur_rc = IMP_Encoder_UnRegisterChn(chn);
+            hal_trace("<-- [HAL] exit: IMP_Encoder_UnRegisterChn chn=%d rc=%d", chn, ur_rc);
+            hal_trace("--> [HAL] exit: IMP_Encoder_DestroyChn chn=%d", chn);
+            int dc_rc = IMP_Encoder_DestroyChn(chn);
+            hal_trace("<-- [HAL] exit: IMP_Encoder_DestroyChn chn=%d rc=%d", chn, dc_rc);
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_chn_mutex);
+            g_chn_ref_count.clear();
+        }
+        // 4b. DestroyGroup（group 空，imp_encoder.h:921）
         std::vector<int> groups;
         {
             std::lock_guard<std::mutex> lock(g_group_mutex);
@@ -1510,14 +1694,6 @@ bool IngenicVideo::exit() {
             }
         }
         for (int grp : groups) {
-            int chn = grp;
-            Logger::log(LogLevel::INFO, "[HAL] exit: fallback destroy chn/group (group=%d, chn=%d)", grp, chn);
-            hal_trace("--> [HAL] exit: IMP_Encoder_UnRegisterChn chn=%d", chn);
-            int ur_rc = IMP_Encoder_UnRegisterChn(chn);
-            hal_trace("<-- [HAL] exit: IMP_Encoder_UnRegisterChn chn=%d rc=%d", chn, ur_rc);
-            hal_trace("--> [HAL] exit: IMP_Encoder_DestroyChn chn=%d", chn);
-            int dc_rc = IMP_Encoder_DestroyChn(chn);
-            hal_trace("<-- [HAL] exit: IMP_Encoder_DestroyChn chn=%d rc=%d", chn, dc_rc);
             hal_trace("--> [HAL] exit: IMP_Encoder_DestroyGroup g=%d", grp);
             int dg_rc = IMP_Encoder_DestroyGroup(grp);
             hal_trace("<-- [HAL] exit: IMP_Encoder_DestroyGroup g=%d rc=%d", grp, dg_rc);

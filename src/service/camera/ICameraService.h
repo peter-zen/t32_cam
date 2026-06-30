@@ -53,6 +53,10 @@ class ICameraService {
 public:
     virtual ~ICameraService() = default;
 
+    // 预热拍照 channel：在 RTSP 预览 EnableChn 之前建好 group0 encoder 链（Bind），
+    // 避免 FrameSource 使能后动态 Bind（违反 imp_system.h:85）。default no-op（sim 无需）。
+    virtual void prewarm() {}
+
     // --- 拍照业务 ---
     // 返回: 0 成功, 非0 错误码
     virtual int takePhoto(int channel, bool save, const std::string& format, int quality, PhotoResult& result) = 0;

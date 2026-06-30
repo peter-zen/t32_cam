@@ -46,6 +46,7 @@ public:
     
     // --- 系统 ---
     int factoryReset() override;
+    void prewarm() override;
     void initScheduler();
     void stopScheduler();
 

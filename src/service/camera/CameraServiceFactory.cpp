@@ -14,4 +14,9 @@ std::shared_ptr<ICameraService> CameraServiceFactory::create() {
 #endif
 }
 
+std::shared_ptr<ICameraService> CameraServiceFactory::getInstance() {
+    static std::shared_ptr<ICameraService> instance = create();
+    return instance;
+}
+
 } // namespace service

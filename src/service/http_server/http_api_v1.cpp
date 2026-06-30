@@ -384,11 +384,10 @@ static void ensure_sim_media_storage_ready(const std::shared_ptr<service::ICamer
 }
 
 static std::shared_ptr<service::ICameraService> get_camera_service() {
-    static std::shared_ptr<service::ICameraService> instance = []() {
-        std::shared_ptr<service::ICameraService> camera_service = service::CameraServiceFactory::create();
-        ensure_sim_media_storage_ready(camera_service);
-        return camera_service;
-    }();
+    // 用 Factory 单例：um bring-up 的 prewarm 与此处共享同一实例（prewarm 建的 image_snap_ 被 handler 复用）。
+    std::shared_ptr<service::ICameraService> instance = service::CameraServiceFactory::getInstance();
+    static bool ensured = false;
+    if (!ensured) { ensure_sim_media_storage_ready(instance); ensured = true; }
     return instance;
 }
 

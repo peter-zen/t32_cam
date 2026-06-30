@@ -119,6 +119,7 @@ private:
     int gosd_enable_;
     bool exitCalled_;
     std::unique_ptr<IspOsdManager> ispOsdMgr_;
+    bool preBindAllChannels();   // Slice 1a 步骤 3a：init 时一次性 Create+Register+Bind 常驻 channel + Enable FrameSource
 };
 
 class IngenicVideoControl : public IVideoControl {

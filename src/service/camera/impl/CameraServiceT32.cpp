@@ -149,6 +149,17 @@ CameraServiceT32::~CameraServiceT32() {
     elog_i(TAG, "CameraServiceT32 destroyed");
 }
 
+void CameraServiceT32::prewarm() {
+    // 在 RTSP 预览 EnableChn(group1) 之前建好拍照 group0 的 encoder 链（CreateChn/RegisterChn/Bind）。
+    // 否则拍照时 configure 的 Bind 落在 FrameSource 使能之后（违反 imp_system.h:85）→ JPEG polling 超时。
+    // 复用 takePhoto 的 image_snap_（构造即 initialize=configure group0），HTTP handler 后续复用、不重复 configure。
+    std::lock_guard<std::mutex> lock(op_mutex_);
+    if (!image_snap_) {
+        image_snap_ = std::make_shared<media::ImageSnap>();
+        elog_i(TAG, "prewarm: image_snap_ created (group0 encoder chain bound before preview enable)");
+    }
+}
+
 int CameraServiceT32::takePhoto(int channel, bool save, const std::string& format, int quality, PhotoResult& result) {
     std::lock_guard<std::mutex> op_lock(op_mutex_);
     std::lock_guard<std::mutex> status_lock(status_mutex_);
