@@ -297,6 +297,18 @@ int RtspServer::pullFrame(void **data, size_t *size, uint64_t *timestamp)
     return MediaSession::pullFrame(data, size, timestamp, instance->videoSession_.get());
 }
 
+int RtspServer::queryVideoDepth(void **data, size_t *size, uint64_t *timestamp)
+{
+    (void)data;
+    (void)timestamp;
+    auto instance = RtspServer::getInstance();
+    if (!instance || !instance->videoSession_ || !size) {
+        return -1;
+    }
+    *size = instance->videoSession_->fifoDepth();
+    return 0;
+}
+
 int RtspServer::releaseFrame(void **data, size_t *size, uint64_t *timestamp)
 {
     auto instance = RtspServer::getInstance();
@@ -390,6 +402,7 @@ bool RtspServer::start_internal()
     }
 
     register_function(this->rtsp_server, FUNC_ID_PULL_VIDEO_FRAME, RtspServer::pullFrame);
+    register_function(this->rtsp_server, FUNC_ID_QUERY_VIDEO_DEPTH, RtspServer::queryVideoDepth);
     register_function(this->rtsp_server, FUNC_ID_RELEASE_VIDEO_FRAME, RtspServer::releaseFrame);
     register_function(this->rtsp_server, FUNC_ID_PULL_AUDIO_FRAME, RtspServer::pullAudioFrame);
     register_function(this->rtsp_server, FUNC_ID_RELEASE_AUDIO_FRAME, RtspServer::releaseAudioFrame);

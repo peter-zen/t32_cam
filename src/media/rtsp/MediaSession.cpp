@@ -137,6 +137,11 @@ MediaParams MediaSession::getParams() const
     return MediaParams();
 }
 
+size_t MediaSession::fifoDepth() const
+{
+    return fifo_ ? fifo_->size() : 0;
+}
+
 int MediaSession::pullFrame(void** data, size_t* size, uint64_t* ts, void* user_data)
 {
     MediaSession* session = static_cast<MediaSession*>(user_data);

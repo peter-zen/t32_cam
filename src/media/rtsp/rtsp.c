@@ -181,6 +181,7 @@ typedef struct {
     bool pace_no_skip;
     func_t pull_frame;
     func_t release_frame;
+    func_t query_depth;
     bool sps_pps_bypass;
     bool has_extension;
     struct RTPExtenHeader extension;
@@ -243,6 +244,7 @@ typedef struct {
 
 static SmolRTSP_Droppable play_video(
     int fps, int sample_rate, int codec, func_t pull_frame, func_t release_frame,
+    func_t query_depth,
     bool sps_pps_bypass, struct event_base *base, struct bufferevent *bev,
     SmolRTSP_RtpTransport *t, Stream *stream,
     struct event **ev, int *streams_playing);
@@ -810,6 +812,7 @@ static void client_start_playback(Client *self, uint64_t session_id) {
                 self->peer->param.video_codec,
                 self->peer->funcs[FUNC_ID_PULL_VIDEO_FRAME],
                 self->peer->funcs[FUNC_ID_RELEASE_VIDEO_FRAME],
+                self->peer->funcs[FUNC_ID_QUERY_VIDEO_DEPTH],
                 (self->peer->param.video_sps_len && self->peer->param.video_pps_len),
                 self->base, self->bev, self->streams[i].transport, &self->streams[i],
                 &self->streams[i].ev, &self->streams_playing);
@@ -1586,14 +1589,24 @@ static void VideoCtx_drop(VSelf) {
 
 impl(SmolRTSP_Droppable, VideoCtx);
 
+/* 自适应步速：按 FIFO depth 在 calm/drain 两档带死区迟滞切换（见 specs/rtsp-adaptive-video-pacing.md）。
+ * calm=生产者速率匹配（depth 趋势向上进 drain 怀抱），drain=主动排空积压。 */
+#define VIDEO_CALM_US    33333u   /* 30fps —— 匹配生产者 */
+#define VIDEO_DRAIN_US   28571u   /* 35fps —— 排空积压 */
+#define VIDEO_DEPTH_HIGH 5        /* depth >= high → drain */
+#define VIDEO_DEPTH_LOW  2        /* depth <= low  → calm（死区 (low,high) 保持当前档）*/
+
 static SmolRTSP_Droppable play_video(
     int fps, int sample_rate, int codec, func_t pull_frame, func_t release_frame,
+    func_t query_depth,
     bool sps_pps_bypass, struct event_base *base, struct bufferevent *bev,
     SmolRTSP_RtpTransport *t, Stream *stream,
     struct event **ev, int *streams_playing) {
     const int safe_fps = fps > 0 ? fps : 15;
     const uint64_t au_retry_us = parse_u64_env_or_default("RTSP_VIDEO_AU_RETRY_US", 1000);
-    const bool pace_no_skip = parse_u64_env_or_default("RTSP_VIDEO_PACE_NO_SKIP", 0) > 0;
+    /* pace_no_skip 恒 ON：adaptive 步速依赖它让目标 fps 可达——否则晚到丢槽，
+     * 且 drain 档收紧 interval 会让丢槽更多、drain 反噬。见 specs §4.5。 */
+    const bool pace_no_skip = true;
     uint32_t interval_us = (uint32_t)(1000000 / safe_fps);
     if (interval_us < 2000) {
         interval_us = 2000;
@@ -1617,6 +1630,7 @@ static SmolRTSP_Droppable play_video(
             .pace_no_skip = pace_no_skip,
             .pull_frame = pull_frame,
             .release_frame = release_frame,
+            .query_depth = query_depth,
             .sps_pps_bypass = sps_pps_bypass,
             .has_extension = false,
             .first_frame = true,
@@ -1700,6 +1714,19 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
     
     // 只有当当前帧处理完毕（ctx->video 为空）时才获取新帧
     if (ctx->pull_frame && ctx->release_frame && U8Slice99_is_empty(ctx->video)) {
+        /* 自适应步速：新帧 pull 前按 FIFO depth 死区迟滞切 pace_interval_us。
+         * 下一帧 deadline 在帧完成时（video_schedule_next_deadline）读取此值生效，
+         * 只影响帧间间隔，不碰帧内 NALU 的 au_retry_us。见 specs/rtsp-adaptive-video-pacing.md。*/
+        size_t fifo_depth = 0;
+        if (ctx->query_depth && ctx->query_depth(NULL, &fifo_depth, NULL) == 0) {
+            if (fifo_depth >= VIDEO_DEPTH_HIGH) {
+                ctx->pace_interval_us = VIDEO_DRAIN_US;
+            } else if (fifo_depth <= VIDEO_DEPTH_LOW) {
+                ctx->pace_interval_us = VIDEO_CALM_US;
+            }
+            /* else 死区 (low, high)：保持当前档（迟滞，防抖振）*/
+        }
+
         uint8_t *video_data;
         size_t video_size;
         uint64_t timestamp = 0;
@@ -1830,7 +1857,7 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
                 (retry_lag_count_delta > 0) ? ((double)retry_lag_total_delta_us / (double)retry_lag_count_delta) : 0.0;
 
             elog_d(RTSP_LOG_TAG,
-                   "[VIDEO] sent=%d, ts=%u, size=%zu, fps=%d, obs{frame=%" PRIu64 ", nal_avg=%.2f nal_max=%" PRIu64 ", cbpf_avg=%.2f cbpf_max=%" PRIu64 ", frame_ms_avg=%.2f frame_ms_max=%.2f, cb_us_avg=%.2f cb_us_max=%.2f, lag_us_avg=%.2f lag_us_max=%.2f lag2ms=%" PRIu64 ", pace_lag_us_avg=%.2f pace_lag2ms=%" PRIu64 ", retry_lag_us_avg=%.2f retry_lag2ms=%" PRIu64 "}",
+                   "[VIDEO] sent=%d, ts=%u, size=%zu, fps=%d, obs{frame=%" PRIu64 ", nal_avg=%.2f nal_max=%" PRIu64 ", cbpf_avg=%.2f cbpf_max=%" PRIu64 ", frame_ms_avg=%.2f frame_ms_max=%.2f, cb_us_avg=%.2f cb_us_max=%.2f, lag_us_avg=%.2f lag_us_max=%.2f lag2ms=%" PRIu64 ", pace_lag_us_avg=%.2f pace_lag2ms=%" PRIu64 ", retry_lag_us_avg=%.2f retry_lag2ms=%" PRIu64 ", depth=%zu, pace_us=%u}",
                    ctx->frame_count, ctx->timestamp, video_size, ctx->fps,
                    frame_delta,
                    avg_nal_per_frame, ctx->frame_nal_max,
@@ -1840,7 +1867,8 @@ static void send_video_packet_cb(evutil_socket_t fd, short events, void *arg) {
                    avg_lag_us, (double)ctx->deadline_lag_max_us,
                    lag_over_2ms_delta,
                    avg_pace_lag_us, pace_lag_over_2ms_delta,
-                   avg_retry_lag_us, retry_lag_over_2ms_delta);
+                   avg_retry_lag_us, retry_lag_over_2ms_delta,
+                   fifo_depth, ctx->pace_interval_us);
 
             ctx->last_log_frame_done_count = ctx->frame_done_count;
             ctx->last_log_frame_nal_total = ctx->frame_nal_total;

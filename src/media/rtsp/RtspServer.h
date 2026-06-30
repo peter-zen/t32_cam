@@ -25,6 +25,7 @@ class RtspServer {
         static std::shared_ptr<RtspServer> getInstance();
         static int pullFrame(void **data, size_t *size, uint64_t *timestamp);
         static int releaseFrame(void **data, size_t *size, uint64_t *timestamp);
+        static int queryVideoDepth(void **data, size_t *size, uint64_t *timestamp);  // *size <- FIFO depth（自适应步速）
         static int pullAudioFrame(void **data, size_t *size, uint64_t *timestamp);
         static int releaseAudioFrame(void **data, size_t *size, uint64_t *timestamp);
         static void registerOnsessionClosedCallback(std::function<void(void)> callback);

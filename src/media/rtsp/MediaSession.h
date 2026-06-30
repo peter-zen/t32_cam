@@ -28,6 +28,9 @@ public:
 
     MediaParams getParams() const;
 
+    // FIFO 当前深度（自适应步速 pacing 用，见 specs/rtsp-adaptive-video-pacing.md）
+    size_t fifoDepth() const;
+
     static int pullFrame(void** data, size_t* size, uint64_t* ts, void* user_data);
     static int releaseFrame(void** data, size_t* size, uint64_t* ts, void* user_data);
 
