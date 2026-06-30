@@ -1049,8 +1049,9 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     return true;
 }
 
-// 进程级 IngenicVideo 单例已移至 media::sharedVideo()（SharedVideo.{h,cpp}），供
-// VideoRecorder(record) + ImageSnap(photo) 共享，进程内永不 IMP_System_Exit。
+// 进程级 IngenicVideo 单例由 hal::HalProvider::sharedVideo() 提供（Slice 1b 从
+// media::sharedVideo 迁至 hal 层），供 VideoRecorder(record) + ImageSnap(photo) +
+// RtspServer(preview) 共享，进程内永不 IMP_System_Exit。
 
 bool VideoRecorder::initVideo()
 {

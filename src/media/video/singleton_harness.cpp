@@ -50,7 +50,7 @@ int main(int argc, char **argv) {
     int rec_mp4 = (argc > 4 && atoi(argv[4]) == 0) ? 0 : 1;    // argv[4]=0 disables MP4 muxing (the last untested wm-record behavior)
     int photo_file = (argc > 5 && atoi(argv[5]) == 1) ? 1 : 0; // argv[5]=1 writes photo .jpg + thumb to files (mimic ImageSnap persistence)
     int bg_upload  = (argc > 6 && atoi(argv[6]) == 1) ? 1 : 0;  // argv[6]=1 spawns bg thread reading the .jpg during record (mimic upload worker concurrent I/O)
-    TRACE("=== singleton_harness: media::sharedVideo() + IVideoStream, ivdc=%d rec_thumb=%d rec_delay=%d rec_mp4=%d photo_file=%d bg_upload=%d ===\n", ivdc, rec_thumb, rec_delay, rec_mp4, photo_file, bg_upload);
+    TRACE("=== singleton_harness: hal::HalProvider::sharedVideo() + IVideoStream, ivdc=%d rec_thumb=%d rec_delay=%d rec_mp4=%d photo_file=%d bg_upload=%d ===\n", ivdc, rec_thumb, rec_delay, rec_mp4, photo_file, bg_upload);
 
     TRACE("--> hal::HalProvider::sharedVideo()  [singleton IngenicVideo init]\n");
     auto video = hal::HalProvider::sharedVideo();
