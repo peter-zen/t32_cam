@@ -15,7 +15,7 @@
 #include <cstdio>
 #include "Common.h"
 #include "Logger.h"
-#include "SharedVideo.h"   // media::sharedVideo() (进程级 IngenicVideo 单例)
+#include "HalProvider.h"   // hal::HalProvider::sharedVideo() (进程级 IngenicVideo 单例，Slice 1b)
 #include "minimp4.h"
 #include "VideoRecorder.h"
 #include "DayNightSwitch.h"
@@ -1054,7 +1054,7 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
 
 bool VideoRecorder::initVideo()
 {
-    video_ = media::sharedVideo();     // 复用进程级 IngenicVideo（已 init），不重复 createVideo/init
+    video_ = hal::HalProvider::sharedVideo();     // 复用进程级 IngenicVideo（Slice 1b，已 init），不重复 createVideo/init
     if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: sharedVideo (createVideo/init) failed");
         return false;

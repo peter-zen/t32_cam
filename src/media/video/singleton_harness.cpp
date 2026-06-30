@@ -13,7 +13,7 @@
 // Build: linked into media_recorder's CMake as `singleton_harness`.
 // Run:   /mnt/huntcam/bin/singleton_harness [ivdc]   (ivdc=0 disables IVDC; default 1)
 
-#include "SharedVideo.h"
+#include "HalProvider.h"   // hal::HalProvider::sharedVideo() (Slice 1b)
 #include "IVideo.h"
 #include "minimp4.h"
 #include <cstdio>
@@ -52,8 +52,8 @@ int main(int argc, char **argv) {
     int bg_upload  = (argc > 6 && atoi(argv[6]) == 1) ? 1 : 0;  // argv[6]=1 spawns bg thread reading the .jpg during record (mimic upload worker concurrent I/O)
     TRACE("=== singleton_harness: media::sharedVideo() + IVideoStream, ivdc=%d rec_thumb=%d rec_delay=%d rec_mp4=%d photo_file=%d bg_upload=%d ===\n", ivdc, rec_thumb, rec_delay, rec_mp4, photo_file, bg_upload);
 
-    TRACE("--> media::sharedVideo()  [singleton IngenicVideo init]\n");
-    auto video = media::sharedVideo();
+    TRACE("--> hal::HalProvider::sharedVideo()  [singleton IngenicVideo init]\n");
+    auto video = hal::HalProvider::sharedVideo();
     if (!video) { TRACE("sharedVideo FAILED\n"); return 1; }
     TRACE("<-- sharedVideo OK (singleton init'd)\n");
 

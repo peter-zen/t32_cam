@@ -1,5 +1,4 @@
 #include "ImageSnap.h"
-#include "SharedVideo.h"   // media::sharedVideo() (进程级 IngenicVideo 单例，与 VideoRecorder 共享)
 #include <mutex>
 #include <string.h>
 #include <cstdlib>
@@ -132,7 +131,7 @@ bool ImageSnap::initialize()
     Logger::log(LogLevel::INFO, "initialize: target=%dx%d sensor=%dx%d ch0cfg=%dx%d isLargeImage=%d",
                 w, h, sw, sh, cfgW, cfgH, isLargeImage_ ? 1 : 0);
 
-    video_ = media::sharedVideo();   // 进程级单例（与 VideoRecorder 共享），已 init；不再 createVideo/init
+    video_ = hal::HalProvider::sharedVideo();   // 进程级单例（Slice 1b：与 VideoRecorder/preview 共享），已 init；不再 createVideo/init
     if (!video_) {
         Logger::log(LogLevel::ERROR, "initialize: sharedVideo null");
         return false;
@@ -168,7 +167,7 @@ bool ImageSnap::initialize()
      * entirely when the caller disabled thumbnail capture (frees the CH2 sensor
      * channel, not just the per-photo capture). */
     if (params.isThumbnailEnabled()) {
-        thumbVideo_ = media::sharedVideo();   // 同一进程级单例（已 init）
+        thumbVideo_ = hal::HalProvider::sharedVideo();   // 同一进程级单例（已 init）
         if (thumbVideo_) {
             thumbStream_ = thumbVideo_->createVideoStream();
         }

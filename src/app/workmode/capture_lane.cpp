@@ -7,7 +7,7 @@
 #include <cstdlib>
 #include <thread>
 #include "Settings.h"   // cameraMode
-#include "SharedVideo.h"  // media::resetSharedVideo (HTC_CM1_RESET)
+#include "HalProvider.h"  // hal::HalProvider::resetSharedVideo (HTC_CM1_RESET, Slice 1b)
 #include "Logger.h"
 
 namespace app_workmode {
@@ -53,7 +53,7 @@ bool CaptureLane::trigger() {
         if (const char *e = std::getenv("HTC_CM1_RESET")) {
             if (e[0] == '1') {
                 Logger::log(LogLevel::INFO, "CaptureLane: HTC_CM1_RESET — resetSharedVideo between photo and record");
-                media::resetSharedVideo();
+                hal::HalProvider::resetSharedVideo();
             }
         }
         return record_->trigger();

@@ -136,13 +136,16 @@ int main(int argc, char* argv[])
     if (std::getenv("HTC_NO_MCU")) {
         Logger::log(LogLevel::INFO, "[um] MCU disabled (HTC_NO_MCU)");
     }
-    if (const char* dbg = std::getenv("HTC_LOG_DEBUG")) {
-        if (dbg[0] == '1') Logger::setLogLevel(LogLevel::DEBUG);
-    }
 
     // --- S1-S8 + signal install（顺序强制：signal 安装在 commonStartup 后、dispatch 前）---
     app_lifecycle::ProcessLifecycle lc;
     if (!lc.commonStartup(cfg)) return -1;
+    // HTC_LOG_DEBUG 必须在 commonStartup（内含 elog_init，HW 默认 INFO）之后调用，
+    // 否则 setLogLevel(DEBUG) 被 elog_init_with_config(logLevel=INFO) 覆盖 → DEBUG 失效
+    // （曾为 um 顺序 bug：原置于 commonStartup 之前；wm_app.cpp 在 commonStartup 之后，正确）。
+    if (const char* dbg = std::getenv("HTC_LOG_DEBUG")) {
+        if (dbg[0] == '1') Logger::setLogLevel(LogLevel::DEBUG);
+    }
     if (!lc.installSignalHandlers()) return -1;
 #ifndef BUILD_FOR_SIMULATION
     elog_set_terminal_output(false);

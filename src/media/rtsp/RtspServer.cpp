@@ -450,13 +450,9 @@ int RtspServer::onSessionPlay(void **data, size_t *size, uint64_t *timestamp)
 
 bool RtspServer::initVideo()
 {
-    video_ = hal::HalProvider::createVideo();
+    video_ = hal::HalProvider::sharedVideo();   // Slice 1b：进程级单例（与 record/photo 共享），已 init
     if (!video_) {
-        Logger::log(LogLevel::ERROR, "initialize: createVideo failed");
-        return false;
-    }
-    if (!video_->init()) {
-        Logger::log(LogLevel::ERROR, "initialize: video init failed");
+        Logger::log(LogLevel::ERROR, "initialize: sharedVideo failed");
         return false;
     }
     auto stream = video_->createVideoStream();
@@ -507,10 +503,9 @@ bool RtspServer::uninitVideo(void)
             videoSession_->stop();
             videoSession_.reset();
         }
-        if (video_) {
-            video_->exit();
-            video_.reset();
-        }
+        // Slice 1b：video_ 是 sharedVideo 单例引用，不 exit（单例永不 exit，进程结束清理）。
+        // 只清本地引用（单例 static 仍持有）。
+        video_.reset();
     }
     return true;
 }
