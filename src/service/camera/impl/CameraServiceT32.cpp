@@ -431,22 +431,12 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
     std::string filename = oss.str();
     current_record_file_ = filename;
 
-    /* Audio enable: caller 决定 + env var 覆盖 */
+    /* Audio enable: caller 决定 + env var 覆盖。
+     * 音频驱动加载是系统/驱动层职责，应用层不 insmod；未显式禁用即视为音频 ready
+     *（无音频硬件用 `um --no-audio` 或 HTC_NO_AUDIO=1 显式关）。 */
     const char* noAudioEnv = std::getenv("HTC_NO_AUDIO");
     bool audioDisabled = (noAudioEnv && strcmp(noAudioEnv, "1") == 0);
     bool effectiveAudio = audio && !audioDisabled;
-
-    /* 尝试加载 audio 内核模块（与现状一致）*/
-    if (effectiveAudio) {
-        int lsmodRet = system("lsmod | grep -q audio");
-        if (lsmodRet != 0) {
-            lsmodRet = system("insmod /system/modules/audio/audio.ko spk_gpio=-1 spk_level=-1 2>/dev/null");
-            if (lsmodRet != 0) {
-                elog_w(TAG, "Audio kernel module not available, disabling audio recording");
-                effectiveAudio = false;
-            }
-        }
-    }
 
     /* 释放旧 recorder（CameraRecorder 内部会等线程结束） */
     if (video_recorder_) {

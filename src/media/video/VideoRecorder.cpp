@@ -369,6 +369,11 @@ bool VideoRecorder::record(const std::string &filename, std::function<void(bool)
         if (onRecordDone) onRecordDone(false);
         return false;
     }
+    // 连续录影重建编码器通道后，编码器可能先吐非 IDR slice（无 SPS/PPS），mp4 muxer 要求
+    // 首帧为带 SPS/PPS 的 IDR。此处强制首发 IDR；record loop 还会丢掉首批非 IDR 帧兜底。
+    if (!stream_->requestIDR()) {
+        Logger::log(LogLevel::WARNING, "record: requestIDR failed (will drain to first keyframe in loop)");
+    }
     // CH2 缩略图通道与 CH0 同线程顺序 start(避免并发 SDK 调用干扰主码流),
     // 之后 record loop 直接从已 streamon 的 CH2 抓首帧当缩略图。
     if (jpegStream_ && !jpegStream_->start()) {
@@ -657,6 +662,11 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
     bool audioAdtsLogged = false;
     Logger::log(LogLevel::INFO, "record TRACE [4/4]: entering record loop (first poll next)");
     logMemInfo("record-loop-entry");
+    // 丢掉开头的非 IDR 帧：连续录影重建编码器通道后，首帧可能是无 SPS/PPS 的 slice，
+    // mp4 muxer（need_sps）会拒收导致整段录影静默失败。拿到第一个 keyframe(IDR) 再开写。
+    bool gotFirstKeyframe = false;
+    int drainSkip = 0;
+    const int kMaxDrainSkip = 120;  // ~4s @30fps 上限，防编码器永不 IDR 时死循环
     while (checkRecordCondition()) {
         auto loopWallStart = std::chrono::steady_clock::now();
         /* Polling stream, set timeout as 1000msec */
@@ -679,6 +689,24 @@ bool VideoRecorder::record(VideoCodecFormat payloadType, const std::string &file
             mp4_h26x_write_close(&mp4wr);
             fclose(fp);
             return false;
+        }
+
+        // 首帧必须是带 SPS/PPS 的 IDR；否则 releaseFrame 丢弃，继续 poll 下一帧。
+        if (!gotFirstKeyframe) {
+            if (!frame.key) {
+                drainSkip++;
+                stream_->releaseFrame(frame);
+                if (drainSkip >= kMaxDrainSkip) {
+                    Logger::log(LogLevel::ERROR, "record: no IDR keyframe within %d frames, abort", drainSkip);
+                    MP4E_close(muxer);
+                    mp4_h26x_write_close(&mp4wr);
+                    fclose(fp);
+                    return false;
+                }
+                continue;
+            }
+            gotFirstKeyframe = true;
+            Logger::log(LogLevel::INFO, "record: first IDR keyframe after draining %d non-key frames", drainSkip);
         }
 
         videoFrameCount++;

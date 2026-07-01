@@ -81,6 +81,7 @@ struct UmCliFlags {
     bool noRtsp   = false;
     bool noHttp   = false;
     bool noMdns   = false;
+    bool noAudio  = false;
     bool forceDay = false;
 };
 
@@ -91,6 +92,7 @@ UmCliFlags parseFlags(int argc, char* argv[]) {
         if      (a == "--no-rtsp")   f.noRtsp = true;
         else if (a == "--no-http")   f.noHttp = true;
         else if (a == "--no-mdns")   f.noMdns = true;
+        else if (a == "--no-audio")  f.noAudio = true;
         else if (a == "--force-day") f.forceDay = true;
         else Logger::log(LogLevel::WARNING, "[um] unknown arg: %s", a.c_str());
     }
@@ -155,9 +157,10 @@ int main(int argc, char* argv[])
 
     // --- CLI flag 解析（无模式，只 --no-* 开关）---
     UmCliFlags flags = parseFlags(argc, argv);
-    Logger::log(LogLevel::INFO, "[um] flags no_rtsp=%d no_http=%d no_mdns=%d force_day=%d",
-                flags.noRtsp, flags.noHttp, flags.noMdns, flags.forceDay);
+    Logger::log(LogLevel::INFO, "[um] flags no_rtsp=%d no_http=%d no_mdns=%d no_audio=%d force_day=%d",
+                flags.noRtsp, flags.noHttp, flags.noMdns, flags.noAudio, flags.forceDay);
     if (flags.forceDay) setenv("HTC_FORCE_RECORD_DAY_MODE", "1", 1);  // CMD_MOBILE :585 同款 env
+    if (flags.noAudio)  setenv("HTC_NO_AUDIO", "1", 1);                // 同 -m/--mobile :226；无音频硬件显式关
 
     // command = CMD_MOBILE（仅供 commonStartupPostDispatch S11 netif 选择；um 要 serve 必有 IP）
     command = CMD_MOBILE;
