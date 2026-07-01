@@ -254,3 +254,26 @@ set_target_properties(test_http_api PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+# Async-elogy property test (elog_cfg.h ELOG_ASYNC_OUTPUT_ENABLE path). Locks
+# per-call latency under an 8-thread burst, drop-oldest + drop counter, single-
+# thread ordering, and drain-on-deinit (no tail loss). Links the logger lib
+# (ElogInit.cpp) + easylogger (elog_async.c / elog_port.c consumer thread).
+add_executable(test_elog_async test_elog_async.cpp)
+
+target_link_libraries(test_elog_async
+    PRIVATE
+    logger
+    easylogger
+    pthread
+)
+
+target_include_directories(test_elog_async PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/logger
+    ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
+)
+
+set_target_properties(test_elog_async PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)

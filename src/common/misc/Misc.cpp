@@ -18,6 +18,7 @@
 #include "Common.h"
 #include "Misc.h"
 #include "Logger.h"
+#include "ElogInit.h"
 #include "system_call.h"
 #include "StringConvert.h"
 
@@ -667,6 +668,12 @@ void Misc::poweroff()
 	Logger::log(LogLevel::INFO, "[SIM] poweroff requested (not executed on PC)");
 	return;
 #else
+	// Drain the async log ring and do a final flush BEFORE the board freezes —
+	// otherwise the shutdown/poweroff-scene logs still buffered in the async
+	// ring (and in libc's stdio buffer) are lost. Idempotent: safe even if elog
+	// was never initialized (e.g. htc_daemon_app calling poweroff). SIM/devtest
+	// _exit(0) paths rely on the consumer's 100 ms periodic flush instead.
+	elog_deinit_all();
 	std::string command = "poweroff";
 	syscall((char*)command.c_str(), 10000);
 #endif

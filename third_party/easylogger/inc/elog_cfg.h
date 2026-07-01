@@ -32,6 +32,25 @@
 /* enable log output. */
 #define ELOG_OUTPUT_ENABLE
 
+/*
+ * Enable asynchronous output. When defined, elog_output() pushes each
+ * formatted line into a lock-protected ring buffer (elog_async.c) instead of
+ * calling elog_port_output() synchronously. A dedicated consumer thread
+ * (created in elog_port_init) pulls from the ring and performs the actual
+ * fwrite/fflush, so hot threads (RTSP/capture/encode) never block on I/O.
+ *
+ * On ring full the oldest entry is dropped (drop-oldest) and a drop counter
+ * is incremented — see elog_async_get_drop_count(). The ring is a statically
+ * allocated array, so deinit needs no free and is safe regardless of the
+ * core's async_deinit-before-port_deinit ordering.
+ */
+#define ELOG_ASYNC_OUTPUT_ENABLE
+
+/* Number of ring slots (each ELOG_LINE_BUF_SIZE bytes). 128 slots ~= 64 KB. */
+#ifndef ELOG_ASYNC_OUTPUT_BUF_SIZE
+#define ELOG_ASYNC_OUTPUT_BUF_SIZE              128
+#endif
+
 /* setting static output log level. range: from ELOG_LVL_ASSERT to ELOG_LVL_VERBOSE */
 #define ELOG_OUTPUT_LVL                          ELOG_LVL_VERBOSE
 

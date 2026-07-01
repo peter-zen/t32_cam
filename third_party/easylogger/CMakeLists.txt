@@ -4,6 +4,7 @@
 # Source files
 set(ELOG_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/elog.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/elog_async.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/elog_utils.c
     ${CMAKE_CURRENT_SOURCE_DIR}/port/elog_port.c
 )
