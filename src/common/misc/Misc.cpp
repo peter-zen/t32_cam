@@ -6,6 +6,8 @@
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <sys/reboot.h>
+#include <sys/time.h>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -284,20 +286,28 @@ std::string Misc::getGatewayAddress(const std::string &interface_name)
     return "";
 }
 
+bool Misc::moduleLoaded(const char* name)
+{
+	/* Read /proc/modules directly — no fork-exec shell (OOM-safe). True iff a
+	 * line starts with <name> (equivalent to `grep -q '^<name>' /proc/modules`). */
+	if (!name || !*name) return false;
+	std::ifstream f("/proc/modules");
+	std::string line;
+	while (std::getline(f, line)) {
+		if (line.find(name) == 0) return true;
+	}
+	return false;
+}
+
 bool Misc::isWifiDriverLoaded()
 {
-	// Read-only POSIX probe: grep the kernel module list (/proc/modules) for the
-	// compiled-in WiFi module name. Same idiom as UsbDongle::loaded but inlined
-	// here to avoid a header dependency cycle. Returns true iff the module is
-	// currently loaded. Idempotent and side-effect free.
 #if defined(WIFI_TYPE_CYW43012)
-	std::string command = "grep -q '^cywdhd' /proc/modules";
+	return moduleLoaded("cywdhd");
 #elif defined(WIFI_TYPE_RTL8189FS)
-	std::string command = "grep -q '^8189fs' /proc/modules";
+	return moduleLoaded("8189fs");
 #else
 	#error "Unknown WiFi type"
 #endif
-	return syscall(command.c_str(), 1000) == 0;
 }
 
 bool Misc::isWifiConnected(const std::string &ifname)
@@ -548,15 +558,12 @@ bool Misc::ntpSyncAndWait(const std::string& ntp_server)
 
 bool Misc::getDateTime()
 {
-	int ret;
-	
-	std::string command = "date";
-	ret = syscall((char*)command.c_str(), 10000);
-	if(ret < 0) {
-			Logger::log(LogLevel::ERROR, "date error");
-			return false;
-	}
-	
+	time_t now = time(nullptr);
+	struct tm tmv;
+	localtime_r(&now, &tmv);
+	char buf[64];
+	strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv);
+	Logger::log(LogLevel::INFO, "date: %s", buf);
 	return true;
 }
 
@@ -602,16 +609,19 @@ int Misc::popencall(char *cmd, char *out, int max_size, int timeout_ms)
 
 bool Misc::setDateTime(const std::string &date)
 {
-	int ret;
-	
-	std::string command = "date -s " + date;
-	ret = syscall((char*)command.c_str(), 10000);
-	if(ret < 0) {
-			Logger::log(LogLevel::ERROR, "set date error");
-			return false;
+	/* settimeofday(2) — no fork-exec shell. Expects "%Y-%m-%d %H:%M:%S". */
+	struct tm tmv;
+	memset(&tmv, 0, sizeof(tmv));
+	if (!strptime(date.c_str(), "%Y-%m-%d %H:%M:%S", &tmv)) {
+		Logger::log(LogLevel::ERROR, "setDateTime: parse failed for '%s'", date.c_str());
+		return false;
 	}
-	
-	return true;
+	time_t t = mktime(&tmv);
+	if (t == (time_t)-1) return false;
+	struct timeval tv;
+	tv.tv_sec = t;
+	tv.tv_usec = 0;
+	return settimeofday(&tv, nullptr) == 0;
 }
 
 #include <limits.h>
@@ -644,9 +654,19 @@ bool Misc::mountSDCard(const std::string& target_path)
 		return false;
 	}
 
-	// Check if SD card is already mounted
-	ret = syscall((char*)"mount | grep -q /dev/mmcblk0p1", 5000);
-	if (ret == 0) {
+	// Check if SD card is already mounted (read /proc/mounts — no fork-exec, OOM-safe)
+	bool alreadyMounted = false;
+	{
+		std::ifstream mf("/proc/mounts");
+		std::string line;
+		while (std::getline(mf, line)) {
+			if (line.find("/dev/mmcblk0p1") != std::string::npos) {
+				alreadyMounted = true;
+				break;
+			}
+		}
+	}
+	if (alreadyMounted) {
 		Logger::log(LogLevel::INFO, "SD card already mounted, skip");
 		return true;
 	}
@@ -674,8 +694,9 @@ void Misc::poweroff()
 	// was never initialized (e.g. htc_daemon_app calling poweroff). SIM/devtest
 	// _exit(0) paths rely on the consumer's 100 ms periodic flush instead.
 	elog_deinit_all();
-	std::string command = "poweroff";
-	syscall((char*)command.c_str(), 10000);
+	sync();
+	::reboot(RB_POWER_OFF);   /* direct syscall — no fork-exec shell (OOM-safe) */
+	_exit(0);               /* reboot(2) returns only on failure */
 #endif
 }
 
@@ -685,7 +706,8 @@ void Misc::reboot()
 	Logger::log(LogLevel::INFO, "[SIM] reboot requested (not executed on PC)");
 	return;
 #else
-	std::string command = "reboot";
-	syscall((char*)command.c_str(), 10000);
+	sync();
+	::reboot(RB_AUTOBOOT);    /* direct syscall — no fork-exec shell (OOM-safe) */
+	_exit(0);
 #endif
 }

@@ -8,12 +8,17 @@ set(CIVETWEB_SOURCES
     src/civetweb.c
 )
 
-# 创建静态库
-add_library(civetweb STATIC ${CIVETWEB_SOURCES})
+# 创建动态库 (was STATIC — 103KB 被 app_workmode + app_lifecycle 各吸收一份；现在全局唯一)
+add_library(civetweb SHARED ${CIVETWEB_SOURCES})
 
 # 头文件路径
 target_include_directories(civetweb PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# 输出到公共 lib/ 目录 (设备 LD_LIBRARY_PATH=./lib)
+set_target_properties(civetweb PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )
 
 # 编译选项 - 嵌入式裁剪

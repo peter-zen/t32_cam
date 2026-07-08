@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <json/json.h>
 #include "../../../storage/MetadataDao.h"
+#include "../../../storage/StoragePaths.h"
 #include "../../../common/misc/Misc.h"
 #include "../../../common/Common.h"
 #include "../../../config/setting/Settings.h"
@@ -138,7 +139,8 @@ static bool isTestMode() {
 
 } // namespace
 
-CameraServiceT32::CameraServiceT32() {
+CameraServiceT32::CameraServiceT32(std::shared_ptr<storage::StoragePaths> storage)
+    : storage_(storage) {
     elog_i(TAG, "CameraServiceT32 created");
     initScheduler();
 }
@@ -187,12 +189,13 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
 
     elog_i(TAG, "Taking photo: ch=%d, save=%d, size=%dx%d, quality=%d", channel, save, width, height, jpegQuality);
 
-    // Generate filename
+    // Generate filename. 同秒序号（op_mutex_ 锁内，takePhoto 串行）：修 startBurstPhoto(100ms)/
+    // HTTP 快连拍/startTimerPhoto(<1s) 同秒多帧同名覆盖。原 IMG_<ts>.jpg 同秒撞名 → 现 _000/_001/...
     auto now = std::time(nullptr);
-    auto tm = *std::localtime(&now);
-    std::ostringstream oss;
-    oss << "/mnt/sdcard/DCIM/IMG_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".jpg";
-    std::string filename = oss.str();
+    if (now == last_photo_sec_) ++photo_seq_in_sec_;
+    else { last_photo_sec_ = now; photo_seq_in_sec_ = 0; }
+    std::string filename = storage_->mediaRoot() + "/" +
+        storage::StoragePaths::makeMediaName(storage::MediaKind::Image, now, photo_seq_in_sec_);
 
     /* ImageSnap handles all resolutions:
      * - ≤ 8M: CH0 hardware scaler + hardware JPEG (IVDC)
@@ -392,7 +395,7 @@ int CameraServiceT32::capturePreviewFrame(int channel, int width, int height, st
 
     std::lock_guard<std::mutex> lock(op_mutex_);
 
-    const std::string base_dir = "/mnt/sdcard/.preview/";
+    const std::string base_dir = storage_->previewDir() + "/";
     if (!Misc::createDirectory(base_dir)) {
         return -1;
     }
@@ -423,12 +426,10 @@ int CameraServiceT32::startRecord(int channel, int duration, bool audio, const s
         return -1;
     }
 
-    // Generate filename (HTTP path: /mnt/sdcard/DCIM/VID_<timestamp>.mp4)
+    // Generate filename (HTTP path: /mnt/sdcard/DCIM/VID_<ts>_000.mp4)
     auto now = std::time(nullptr);
-    auto tm = *std::localtime(&now);
-    std::ostringstream oss;
-    oss << "/mnt/sdcard/DCIM/VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
-    std::string filename = oss.str();
+    std::string filename = storage_->mediaRoot() + "/" +
+        storage::StoragePaths::makeMediaName(storage::MediaKind::Video, now, 0);
     current_record_file_ = filename;
 
     /* Audio enable: caller 决定 + env var 覆盖。
@@ -538,12 +539,16 @@ std::string CameraServiceT32::getAllPropertiesJson() {
     return Json::writeString(writer, CameraPropertyService::getInstance().getAllPropertiesJson());
 }
 
+std::string CameraServiceT32::getMediaRoot() {
+    return storage_->mediaRoot();
+}
+
 std::string CameraServiceT32::getMediaDatabasePath() {
-    return "/mnt/sdcard/data/db/media_file.db";
+    return storage_->mediaDb();
 }
 
 std::string CameraServiceT32::getThumbnailDatabasePath() {
-    return "/mnt/sdcard/data/db/media_thumb.db";
+    return storage_->thumbDb();
 }
 
 std::string CameraServiceT32::getMediaList(int offset, int limit) {

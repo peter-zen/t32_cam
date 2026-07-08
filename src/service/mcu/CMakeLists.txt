@@ -1,6 +1,11 @@
 file(GLOB SOURCES "*.cpp")
 
-add_library(mcu_service STATIC ${SOURCES})
+add_library(mcu_service SHARED ${SOURCES})
+
+# 输出到公共 lib/ 目录 (设备 LD_LIBRARY_PATH=./lib)
+set_target_properties(mcu_service PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+)
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}

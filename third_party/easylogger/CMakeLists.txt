@@ -14,8 +14,9 @@ set(ELOG_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
 )
 
-# Create static library
-add_library(easylogger STATIC ${ELOG_SOURCES})
+# Create shared library (was STATIC — absorbed into every SHARED lib that links
+# `storage`; now a single libeasylogger.so shared by all consumers)
+add_library(easylogger SHARED ${ELOG_SOURCES})
 
 # Enable position independent code for linking with shared libraries
 set_target_properties(easylogger PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -34,5 +35,6 @@ target_link_libraries(easylogger PRIVATE Threads::Threads)
 
 # Set output directory
 set_target_properties(easylogger PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )

@@ -11,11 +11,13 @@
 #include <string>
 #include <thread>
 
+namespace storage { class StoragePaths; }
+
 namespace service {
 
 class CameraServiceSim : public ICameraService {
 public:
-    CameraServiceSim();
+    CameraServiceSim(std::shared_ptr<storage::StoragePaths> storage);
     ~CameraServiceSim() override;
 
     // --- 拍照业务 ---
@@ -38,6 +40,7 @@ public:
     std::string getAllPropertiesJson() override;
 
     // --- 文件/数据库 ---
+    std::string getMediaRoot() override;
     std::string getMediaDatabasePath() override;
     std::string getThumbnailDatabasePath() override;
     std::string getMediaList(int offset, int limit) override;
@@ -59,6 +62,7 @@ private:
     std::thread timer_thread_;
     bool timer_stop_requested_ = false;
     TimerPhotoStatus timer_status_;
+    std::shared_ptr<storage::StoragePaths> storage_;  // S3 注入
 };
 
 } // namespace service

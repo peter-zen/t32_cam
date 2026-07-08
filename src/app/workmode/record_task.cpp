@@ -5,6 +5,7 @@
 
 #include "CameraRecorder.h"        // service::camera::CameraRecorder / RecordOptions / RecordResult / RecordError
 #include "MetadataDao.h"           // MetadataDao::saveThumbnail
+#include "StoragePaths.h"           // storage::StoragePaths::makeMediaName
 #include "RecordingPostProcess.h"  // RecordingPostProcess::writeWorkModeDescJson
 #include "Manifest.h"              // manifest::generateDescInfo
 #include "Common.h"
@@ -23,15 +24,6 @@
 namespace app_workmode {
 
 namespace {
-
-std::string formatNow() {
-    std::time_t t = std::time(nullptr);
-    std::tm tmv{};
-    localtime_r(&t, &tmv);
-    std::ostringstream ss;
-    ss << std::put_time(&tmv, "%Y%m%d_%H%M%S");
-    return ss.str();
-}
 
 // 取路径 basename 去扩展名（/a/b/ts.mp4 → ts），让 desc 名与对应媒体同名。
 std::string fileStem(const std::string& path) {
@@ -74,7 +66,7 @@ bool RecordTask::trigger() {
         return false;
     }
 
-    std::string record_path = mediaPath + formatNow() + ".mp4";
+    std::string record_path = mediaPath + storage::StoragePaths::makeMediaName(storage::MediaKind::Video, std::time(nullptr), 0);
 
     service::camera::RecordOptions opts;
     opts.audio = false;        // 默认关（当前设备无 audio 硬件）

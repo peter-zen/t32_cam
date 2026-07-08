@@ -49,8 +49,7 @@ uint64_t AudioRecorder::getCurrentTimestamp() const {
 
 bool AudioRecorder::loadDriver(AudioDeviceType type) {
 #if !BUILD_FOR_SIMULATION
-    std::string checkCommand = "lsmod | grep audio";
-    if (Misc::syscall(checkCommand.c_str()) == 0) {
+    if (Misc::moduleLoaded("audio")) {
         return true;
     }
     std::string command = "insmod /system/modules/audio/audio.ko";

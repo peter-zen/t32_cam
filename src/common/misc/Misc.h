@@ -50,6 +50,7 @@ public:
     static void reboot();
     static int syscall(const char *command, int timeout_ms=1000);
     static int popencall(char *cmd, char *out, int max_size, int timeout_ms=1000);
+    static bool moduleLoaded(const char *name);   /* read /proc/modules — no fork (OOM-safe) */
 private:
     static std::string netifname;
     static bool syscall_inited;

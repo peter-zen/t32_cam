@@ -1381,8 +1381,7 @@ bool VideoRecorder::initAudio()
     try {
         #ifndef BUILD_FOR_SIMULATION
         {
-            std::string checkCommand = "lsmod | grep audio";
-            if (Misc::syscall(checkCommand.c_str()) != 0) {
+            if (!Misc::moduleLoaded("audio")) {
                 std::string command = "insmod /system/modules/audio/audio.ko";
                 if (audParam->getDeviceType() == AudioDeviceType::DMIC_IN) {
                     command += " dmic_enable=1 dmic_gpio=1";

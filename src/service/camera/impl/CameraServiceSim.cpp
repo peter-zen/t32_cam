@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <json/json.h>
 #include "../../../storage/MetadataDao.h"
+#include "../../../storage/StoragePaths.h"
 #include "../../../common/misc/Misc.h"
 
 #define TAG "CamSim"
@@ -67,41 +68,6 @@ std::string normalizePath(const std::string& path) {
     return path;
 }
 
-std::string detectSimSdRoot() {
-    const char* envRoot = std::getenv("SIM_SD_ROOT");
-    if (envRoot && envRoot[0] != '\0' && directoryExists(envRoot)) {
-        return normalizePath(envRoot);
-    }
-
-    if (directoryWritable("./sim_sdcard_runtime")) {
-        return normalizePath("./sim_sdcard_runtime");
-    }
-
-    std::string current = Misc::getExecutablePath();
-    for (int depth = 0; depth < 8 && !current.empty(); ++depth) {
-        const std::string candidate = joinPath(current, "sim_sdcard_runtime");
-        if (directoryWritable(candidate)) {
-            return normalizePath(candidate);
-        }
-        current = parentPath(current);
-    }
-
-    return normalizePath("./sim_sdcard_runtime");
-}
-
-const std::string& simSdRoot() {
-    static const std::string root = detectSimSdRoot();
-    return root;
-}
-
-std::string simMediaDir() {
-    return joinPath(simSdRoot(), "DCIM");
-}
-
-std::string simDbDir() {
-    return joinPath(joinPath(simSdRoot(), "data"), "db");
-}
-
 std::string build_capture_path(const std::string& base_dir) {
     std::ostringstream oss;
     oss << "preview_"
@@ -143,7 +109,8 @@ void applyConfiguredVideoParams(const std::shared_ptr<media::VideoParams>& video
 
 } // namespace
 
-CameraServiceSim::CameraServiceSim() {
+CameraServiceSim::CameraServiceSim(std::shared_ptr<storage::StoragePaths> storage)
+    : storage_(storage) {
     elog_i(TAG, "CameraServiceSim created");
     image_snap_ = std::make_shared<media::ImageSnap>();
 }
@@ -166,11 +133,8 @@ int CameraServiceSim::takePhoto(int channel, bool save, const std::string& forma
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     auto now = std::time(nullptr);
-    auto tm = *std::localtime(&now);
-    std::ostringstream oss;
-    oss << "IMG_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".jpg";
-    std::string filename = oss.str();
-    const std::string base = simMediaDir();
+    std::string filename = storage::StoragePaths::makeMediaName(storage::MediaKind::Image, now, 0);
+    const std::string base = storage_->mediaRoot();
     const std::string path = joinPath(base, filename);
 
     if (save) {
@@ -315,7 +279,7 @@ int CameraServiceSim::capturePreviewFrame(int channel, int width, int height, st
 
     std::lock_guard<std::mutex> lock(op_mutex_);
 
-    const std::string base_dir = joinPath(simSdRoot(), ".preview");
+    const std::string base_dir = storage_->previewDir();
     if (!Misc::createDirectory(base_dir)) {
         return -1;
     }
@@ -347,11 +311,8 @@ int CameraServiceSim::startRecord(int channel, int duration, bool audio, const s
     }
     is_recording_ = true;
     auto now = std::time(nullptr);
-    auto tm = *std::localtime(&now);
-    std::ostringstream oss;
-    oss << "VID_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".mp4";
-    std::string filename = oss.str();
-    const std::string base = simMediaDir();
+    std::string filename = storage::StoragePaths::makeMediaName(storage::MediaKind::Video, now, 0);
+    const std::string base = storage_->mediaRoot();
     current_record_file_ = joinPath(base, filename);
     Misc::createDirectory(base);
 
@@ -436,12 +397,16 @@ std::string CameraServiceSim::getAllPropertiesJson() {
     return Json::writeString(writer, CameraPropertyService::getInstance().getAllPropertiesJson());
 }
 
+std::string CameraServiceSim::getMediaRoot() {
+    return storage_->mediaRoot();
+}
+
 std::string CameraServiceSim::getMediaDatabasePath() {
-    return joinPath(simDbDir(), "media_file.db");
+    return storage_->mediaDb();
 }
 
 std::string CameraServiceSim::getThumbnailDatabasePath() {
-    return joinPath(simDbDir(), "media_thumb.db");
+    return storage_->thumbDb();
 }
 
 std::string CameraServiceSim::getMediaList(int offset, int limit) {
@@ -465,7 +430,7 @@ std::string CameraServiceSim::getMediaList(int offset, int limit) {
         Json::Value item;
         item["id"] = 1;
         item["type"] = 1;
-        item["path"] = joinPath(simMediaDir(), "IMG_001.jpg");
+        item["path"] = joinPath(storage_->mediaRoot(), "IMG_001.jpg");
         item["size"] = 0;
         item["timestamp"] = static_cast<Json::UInt64>(std::time(nullptr));
         item["duration"] = 0;

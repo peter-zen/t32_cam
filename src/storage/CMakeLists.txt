@@ -2,6 +2,7 @@ add_library(storage
     DatabaseManager.cpp
     MetadataDao.cpp
     MediaScanner.cpp
+    StoragePaths.cpp
 )
 
 # Enable Position Independent Code for linking into shared libraries

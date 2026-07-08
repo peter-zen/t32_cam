@@ -21,12 +21,9 @@ bool UsbDongle::have(const std::string& cmd) {
     return Misc::syscall(command.c_str(), 1000) == 0;
 }
 
-// 检查模块是否已加载
+// 检查模块是否已加载 (读 /proc/modules，无 fork)
 bool UsbDongle::loaded(const std::string& module_name) {
-    // 使用grep匹配行首的模块名，后面可以跟任意字符（包括空格、数字等）
-    // 移除-x选项，因为我们不要求完全匹配整行
-    std::string command = "grep -q '^" + module_name + "' /proc/modules";
-    return Misc::syscall(command.c_str(), 1000) == 0;
+    return Misc::moduleLoaded(module_name.c_str());
 }
 
 // 加载单个模块

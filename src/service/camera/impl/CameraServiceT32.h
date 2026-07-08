@@ -7,16 +7,19 @@
 #include "../../../media/snap/LargeImageSnap.h"
 #include <atomic>
 #include <condition_variable>
+#include <ctime>
 #include <mutex>
 #include <memory>
 #include <string>
 #include <thread>
 
+namespace storage { class StoragePaths; }
+
 namespace service {
 
 class CameraServiceT32 : public ICameraService {
 public:
-    CameraServiceT32();
+    CameraServiceT32(std::shared_ptr<storage::StoragePaths> storage);
     ~CameraServiceT32() override;
 
     // --- 拍照业务 ---
@@ -39,6 +42,7 @@ public:
     std::string getAllPropertiesJson() override;
 
     // --- 文件/数据库 ---
+    std::string getMediaRoot() override;
     std::string getMediaDatabasePath() override;
     std::string getThumbnailDatabasePath() override;
     std::string getMediaList(int offset, int limit) override;
@@ -60,6 +64,9 @@ private:
     std::shared_ptr<media::LargeImageSnap> large_snap_;
     std::shared_ptr<service::camera::CameraRecorder> video_recorder_;
     std::string current_record_file_;
+    time_t last_photo_sec_ = 0;     // 同秒拍照序号（op_mutex_ 锁内，修同秒撞名）
+    int photo_seq_in_sec_ = 0;
+    std::shared_ptr<storage::StoragePaths> storage_;  // S3 注入：媒体/db 路径唯一来源
     std::mutex timer_mutex_;
     std::condition_variable timer_cv_;
     std::thread timer_thread_;

@@ -3,7 +3,12 @@ file(GLOB SOURCES
     "impl/*.cpp"
 )
 
-add_library(camera_service STATIC ${SOURCES})
+add_library(camera_service SHARED ${SOURCES})
+
+# 输出到公共 lib/ 目录 (设备 LD_LIBRARY_PATH=./lib)
+set_target_properties(camera_service PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+)
 
 target_include_directories(camera_service PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}

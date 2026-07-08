@@ -7,7 +7,13 @@ set(HTTP_SERVER_SOURCES
     ${CMAKE_SOURCE_DIR}/src/service/ServiceProvider.cpp
 )
 
-add_library(http_server STATIC ${HTTP_SERVER_SOURCES})
+add_library(http_server SHARED ${HTTP_SERVER_SOURCES})
+
+# 输出到公共 lib/ 目录 (设备 LD_LIBRARY_PATH=./lib)；device/sensor/storage/system_service
+# 为本库私有依赖 (仅 http_server 用)，保持 STATIC 吸收进本 .so
+set_target_properties(http_server PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+)
 
 target_include_directories(http_server PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}

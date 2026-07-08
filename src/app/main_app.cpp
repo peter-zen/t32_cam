@@ -41,6 +41,7 @@
 #include "WorkMode.h"
 #include "app.h"
 #include "ProcessLifecycle.h"
+#include "StoragePaths.h"     // storage::StoragePaths (S1 path layout)
 #include "Power.h"
 #include "DayNightSwitch.h"
 #include "utils/AutoRelease.h"
@@ -164,8 +165,9 @@ int main(int argc, char* argv[])
                                   ? normalizePath(envSimRoot)
                                   : defaultSimRootPath;
     const char* envLogDir = std::getenv("SIM_LOG_DIR");
-    cfg.dbPath   = cfg.simRootPath + "/data/db";
-    cfg.mediaRoot = cfg.simRootPath + "/DCIM";
+    storage::StoragePaths sp(cfg.simRootPath, "DCIM");
+    cfg.dbPath   = sp.dataDb();
+    cfg.mediaRoot = sp.mediaRoot();
     cfg.logRoot  = (envLogDir && envLogDir[0] != '\0')
                    ? std::string(envLogDir)
                    : (cfg.simRootPath + "/logs");
@@ -173,8 +175,9 @@ int main(int argc, char* argv[])
 #else
     cfg.isSimulation = false;
     EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
-    cfg.dbPath   = EnvManager::getInstance()->getEnv("DB_PATH", "/mnt/sdcard/data/db");
-    cfg.mediaRoot = "/mnt/sdcard/DCIM";
+    storage::StoragePaths sp("/mnt/sdcard", "DCIM");
+    cfg.dbPath   = EnvManager::getInstance()->getEnv("DB_PATH", sp.dataDb());
+    cfg.mediaRoot = sp.mediaRoot();
     cfg.logRoot  = "/mnt/sdcard/logs";
     cfg.logFile  = cfg.logRoot + "/app.log";
 #endif

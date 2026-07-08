@@ -3,6 +3,8 @@
 #include "Misc.h"
 #include "Logger.h"
 
+#include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -203,7 +205,7 @@ bool reconnectSSID(const std::string &ifname,
     //    consecutive checks 1s apart (debounce) before declaring success.
     //    Judge by L2 (NOT Misc::isWifiConnected / L3 IP): this function does NOT
     //    run DHCP; the caller (wifi_app main) runs DHCP after we return true.
-    Misc::syscall("sleep 2", 5000);  // settle window before the first judge
+    std::this_thread::sleep_for(std::chrono::seconds(2));  // settle window (no fork)
 
     int consecutive = 0;
     for (int waited = 0; waited < timeout_s; ++waited) {
@@ -224,7 +226,7 @@ bool reconnectSSID(const std::string &ifname,
         } else {
             consecutive = 0;
         }
-        Misc::syscall("sleep 1", 2000);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     // Final judge: L2 association to the target SSID (re-query once).

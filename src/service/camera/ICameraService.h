@@ -78,6 +78,7 @@ public:
     virtual std::string getAllPropertiesJson() = 0; // 或者返回对象结构
 
     // --- 文件/数据库 ---
+    virtual std::string getMediaRoot() = 0;
     virtual std::string getMediaDatabasePath() = 0;
     virtual std::string getThumbnailDatabasePath() = 0;
     virtual std::string getMediaList(int offset, int limit) = 0;

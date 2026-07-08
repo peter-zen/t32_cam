@@ -182,11 +182,11 @@ struct chn_conf chn[FS_CHN_NUM] = {
 			.crop.height = FIRST_SENSOR_HEIGHT,
 
 			.scaler.enable = 1,
-			.scaler.outwidth = 640,
-			.scaler.outheight = 360,
+			.scaler.outwidth = 320,
+			.scaler.outheight = 180,
 
-			.picWidth = 640,
-			.picHeight = 360,
+			.picWidth = 320,
+			.picHeight = 180,
 		},
 		.framesource_chn =	{ DEV_ID_FS, CHN2_INDEX, 0},
 		.imp_encoder = { DEV_ID_ENC, CHN2_INDEX, 0},
@@ -969,7 +969,7 @@ int sample_jpeg_init()
 		if (chn[i].enable) {
 			/* channel0 run v0+v1，channel1 and channel2 run v0 */
 			if (SENSOR_NUM == IMPISP_TOTAL_ONE) {
-				if (chn[i].index != 2)
+				if (chn[i].index != 0 && chn[i].index != 2)
 					continue;
 			} else if (SENSOR_NUM == IMPISP_TOTAL_TWO) {
 				if (chn[i].index != 0 && chn[i].index != 3)
@@ -994,7 +994,7 @@ int sample_jpeg_init()
 			enc_attr->picWidth = imp_chn_attr_tmp->picWidth;
 			enc_attr->picHeight = imp_chn_attr_tmp->picHeight;
 			IMP_LOG_INFO(TAG, "JPEG Channel %d: target=%dx%d (no scale, same as FrameSource)\n",
-				12+chn[i].index/3, enc_attr->picWidth, enc_attr->picHeight);
+				12+chn[i].index, enc_attr->picWidth, enc_attr->picHeight);
 			rc_attr = &channel_attr.rcAttr;
 			rc_attr->attrRcMode.rcMode = ENC_RC_MODE_FIXQP;
 			rc_attr->attrRcMode.attrJPEGFixQp.qp = 40;
@@ -1014,16 +1014,16 @@ int sample_jpeg_init()
 			}
 
 			/* Create Channel */
-			ret = IMP_Encoder_CreateChn(12+chn[i].index/3, &channel_attr);
+			ret = IMP_Encoder_CreateChn(12+chn[i].index, &channel_attr);
 			if (ret < 0) {
-				IMP_LOG_ERR(TAG, "IMP_Encoder_CreateChn(%d) failed\n", 12+chn[i].index/3);
+				IMP_LOG_ERR(TAG, "IMP_Encoder_CreateChn(%d) failed\n", 12+chn[i].index);
 				return -1;
 			}
 
 			/* Resigter Channel */
-			ret = IMP_Encoder_RegisterChn(chn[i].index, 12+chn[i].index/3);
+			ret = IMP_Encoder_RegisterChn(chn[i].index, 12+chn[i].index);
 			if (ret < 0) {
-				IMP_LOG_ERR(TAG, "IMP_Encoder_RegisterChn(group%d, chn%d) failed\n", chn[i].index, 12+chn[i].index/3);
+				IMP_LOG_ERR(TAG, "IMP_Encoder_RegisterChn(group%d, chn%d) failed\n", chn[i].index, 12+chn[i].index);
 				return -1;
 			}
 		}
@@ -1042,7 +1042,7 @@ int sample_jpeg_exit(void)
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
 			if (SENSOR_NUM == IMPISP_TOTAL_ONE) {
-				if (chn[i].index != 2)
+				if (chn[i].index != 0 && chn[i].index != 2)
 					continue;
 			} else if (SENSOR_NUM == IMPISP_TOTAL_TWO) {
 				if (chn[i].index != 0 && chn[i].index != 3)
@@ -1054,7 +1054,7 @@ int sample_jpeg_exit(void)
 				if (chn[i].index != 0 && chn[i].index != 3 && chn[i].index != 6 && chn[i].index != 9)
 					continue;
 			}
-			chnNum = 12+chn[i].index/3;
+			chnNum = 12+chn[i].index;
 
 			memset(&chn_stat, 0, sizeof(IMPEncoderCHNStat));
 			ret = IMP_Encoder_Query(chnNum, &chn_stat);
@@ -1802,20 +1802,20 @@ void *get_jpeg_stream(void *args)
 
 		memset(&i2d_attr, 0, sizeof(IMPFSI2DAttr));
 
-		ret = IMP_FrameSource_GetI2dAttr((chnNum-12)*3, &i2d_attr);
+		ret = IMP_FrameSource_GetI2dAttr(chnNum-12, &i2d_attr);
 		if(ret < 0){
-			IMP_LOG_ERR(TAG, "IMP_FrameSource_GetI2dAttr(%d) failed\n", (chnNum-12)*3);
+			IMP_LOG_ERR(TAG, "IMP_FrameSource_GetI2dAttr(%d) failed\n", chnNum-12);
 			return NULL;
 		}
 
 		if((1 == i2d_attr.i2d_enable) &&
 				((i2d_attr.rotate_enable) && (i2d_attr.rotate_angle == 90 || i2d_attr.rotate_angle == 270))){
 			/* this depend on your sensor or channels */
-			s32picWidth  = chn[(chnNum-12)*3].fs_chn_attr.picHeight;
-			s32picHeight = chn[(chnNum-12)*3].fs_chn_attr.picWidth;
+			s32picWidth  = chn[chnNum-12].fs_chn_attr.picHeight;
+			s32picHeight = chn[chnNum-12].fs_chn_attr.picWidth;
 		} else {
-			s32picWidth  = chn[(chnNum-12)*3].fs_chn_attr.picWidth;
-			s32picHeight = chn[(chnNum-12)*3].fs_chn_attr.picHeight;
+			s32picWidth  = chn[chnNum-12].fs_chn_attr.picWidth;
+			s32picHeight = chn[chnNum-12].fs_chn_attr.picHeight;
 		}
 		sprintf(snap_path, "%s/snap-%d-%dx%d-%d.jpg", SNAP_FILE_PATH_PREFIX,
 				chnNum, s32picWidth, s32picHeight, i);
@@ -1875,7 +1875,7 @@ int sample_start_get_jpeg_stream()
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
 			if (SENSOR_NUM == IMPISP_TOTAL_ONE) {
-				if (chn[i].index != 2)
+				if (chn[i].index != 0 && chn[i].index != 2)
 					continue;
 			} else if (SENSOR_NUM == IMPISP_TOTAL_TWO) {
 				if (chn[i].index != 0 && chn[i].index != 3)
@@ -1888,10 +1888,10 @@ int sample_start_get_jpeg_stream()
 					continue;
 			}
 
-			int arg = ((PT_JPEG << 16) | (12+chn[i].index/3));
-			ret = pthread_create(&tid[12+chn[i].index/3], NULL, get_jpeg_stream, (void *)arg);
+			int arg = ((PT_JPEG << 16) | (12+chn[i].index));
+			ret = pthread_create(&tid[12+chn[i].index], NULL, get_jpeg_stream, (void *)arg);
 			if (ret < 0) {
-				IMP_LOG_ERR(TAG, "Create ChnNum%d get_jpeg_stream failed\n", 12+chn[i].index/3);
+				IMP_LOG_ERR(TAG, "Create ChnNum%d get_jpeg_stream failed\n", 12+chn[i].index);
 			}
 		}
 	}
@@ -1906,7 +1906,7 @@ void sample_stop_get_jpeg_stream()
 	for (i = 0; i < FS_CHN_NUM; i++) {
 		if (chn[i].enable) {
 			if (SENSOR_NUM == IMPISP_TOTAL_ONE) {
-				if (chn[i].index != 2)
+				if (chn[i].index != 0 && chn[i].index != 2)
 					continue;
 			} else if (SENSOR_NUM == IMPISP_TOTAL_TWO) {
 				if (chn[i].index != 0 && chn[i].index != 3)
@@ -1919,7 +1919,7 @@ void sample_stop_get_jpeg_stream()
 					continue;
 			}
 
-			pthread_join(tid[12+chn[i].index/3], NULL);
+			pthread_join(tid[12+chn[i].index], NULL);
 		}
 	}
 	return;

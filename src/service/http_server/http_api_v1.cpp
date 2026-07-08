@@ -240,13 +240,6 @@ static bool is_path_under_root(const std::string& path, const std::string& root)
            path[normalizedRoot.size()] == '/';
 }
 
-static std::string get_media_root_from_database_path(const std::string& media_db_path) {
-    const std::string db_dir = get_parent_path(media_db_path);
-    const std::string data_dir = get_parent_path(db_dir);
-    const std::string sd_root = get_parent_path(data_dir);
-    return sd_root.empty() ? "" : join_path(sd_root, "DCIM");
-}
-
 static bool resolve_media_item(const struct mg_request_info* req_info, MediaItem& item, int& status_code, std::string& message) {
     std::string token;
     std::string idValue;
@@ -285,7 +278,7 @@ static bool validate_media_file_access(const std::shared_ptr<service::ICameraSer
                                        std::string& canonicalPath,
                                        int& status_code,
                                        std::string& message) {
-    const std::string mediaRoot = get_media_root_from_database_path(camera_service->getMediaDatabasePath());
+    const std::string mediaRoot = camera_service->getMediaRoot();
     std::string canonicalRoot;
     if (mediaRoot.empty() || !canonicalize_existing_path(mediaRoot, canonicalRoot)) {
         status_code = 500;
@@ -361,8 +354,7 @@ static void ensure_sim_media_storage_ready(const std::shared_ptr<service::ICamer
             return;
         }
 
-        const std::string sd_root = get_parent_path(get_parent_path(db_dir));
-        const std::string media_root = sd_root.empty() ? "" : (sd_root + "/DCIM");
+        const std::string media_root = camera_service->getMediaRoot();
         struct stat st;
         if (!media_root.empty() && stat(media_root.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
             const char* env_mode = std::getenv("MEDIA_SCANNER_MODE");

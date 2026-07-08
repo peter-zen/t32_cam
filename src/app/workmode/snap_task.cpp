@@ -9,6 +9,7 @@
 
 #include "ImageSnap.h"          // media::ImageSnap / ImageSnapParams
 #include "MetadataDao.h"        // MetadataDao::saveThumbnail
+#include "StoragePaths.h"        // storage::StoragePaths::makeMediaName
 #include "Manifest.h"           // manifest::createDescInfoFile
 #include "Settings.h"           // Settings::burstNumber / stillSize
 #include "Common.h"             // SnapImgSize[], SNAP_IMG_SIZE_*
@@ -28,15 +29,6 @@
 namespace app_workmode {
 
 namespace {
-std::string formatNow() {
-    std::time_t t = std::time(nullptr);
-    std::tm tmv{};
-    localtime_r(&t, &tmv);
-    std::ostringstream ss;
-    ss << std::put_time(&tmv, "%Y%m%d_%H%M%S");
-    return ss.str();
-}
-
 // 取路径 basename 去扩展名（/a/b/ts_1.jpg → ts_1），让 desc 名与对应媒体同名。
 std::string fileStem(const std::string& path) {
     size_t slash = path.find_last_of('/');
@@ -99,7 +91,7 @@ bool SnapTask::trigger() {
     const int W = SnapImgSize[idx].width;
     const int H = SnapImgSize[idx].height;
 
-    const std::string ts = formatNow();
+    const std::time_t now = std::time(nullptr);
     const std::string mediaPath = wmMediaPath();
     const std::string uploadPath = wmUploadPath();
     if (!Misc::createDirectory(mediaPath) || !Misc::createDirectory(uploadPath)) {
@@ -110,7 +102,7 @@ bool SnapTask::trigger() {
 
     std::vector<std::string> files;
     for (int i = 0; i < burst; ++i) {
-        files.push_back(mediaPath + ts + "_" + to_string_custom(i + 1) + ".jpg");
+        files.push_back(mediaPath + storage::StoragePaths::makeMediaName(storage::MediaKind::Image, now, i + 1));
     }
 
     Logger::log(LogLevel::INFO, "SnapTask: snap start %dx%d burst=%d first=%s",

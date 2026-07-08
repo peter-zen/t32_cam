@@ -30,6 +30,7 @@
 #include "wm_time.h"          // app_workmode::acquireTimeChain / writebackMcuTime
 #include "WorkModeRunner.h"   // CMD_MOBILE (仅为 commonStartupPostDispatch 的 netif 选择)
 #include "ProcessLifecycle.h" // app_lifecycle::ProcessLifecycle + Startup/ShutdownContext
+#include "StoragePaths.h"     // storage::StoragePaths (S1 path layout)
 #include "DeviceConfig.h"
 #include "Common.h"
 #include "Logger.h"
@@ -111,6 +112,7 @@ int main(int argc, char* argv[])
 
     // --- S1 path inputs → StartupConfig (sim vs HW) ---
     app_lifecycle::StartupConfig cfg;
+    std::shared_ptr<storage::StoragePaths> storagePaths;  // S3: 注入 CameraService
 #ifdef BUILD_FOR_SIMULATION
     cfg.isSimulation = true;
     std::string exePath = Misc::getExecutablePath();
@@ -119,15 +121,17 @@ int main(int argc, char* argv[])
     const char* envSimRoot = std::getenv("SIM_SD_ROOT");
     cfg.simRootPath = (envSimRoot && envSimRoot[0] != '\0') ? normalizePath(envSimRoot) : defaultSimRootPath;
     const char* envLogDir = std::getenv("SIM_LOG_DIR");
-    cfg.dbPath    = cfg.simRootPath + "/data/db";
-    cfg.mediaRoot = cfg.simRootPath + "/DCIM";
+    storagePaths = std::make_shared<storage::StoragePaths>(cfg.simRootPath, "DCIM");
+    cfg.dbPath    = storagePaths->dataDb();
+    cfg.mediaRoot = storagePaths->mediaRoot();
     cfg.logRoot   = (envLogDir && envLogDir[0] != '\0') ? std::string(envLogDir) : (cfg.simRootPath + "/logs");
     cfg.logFile   = cfg.logRoot + "/app.log";
 #else
     cfg.isSimulation = false;
     EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);  // 必须在最开始
-    cfg.dbPath    = EnvManager::getInstance()->getEnv("DB_PATH", "/mnt/sdcard/data/db");
-    cfg.mediaRoot = "/mnt/sdcard/DCIM";
+    storagePaths = std::make_shared<storage::StoragePaths>("/mnt/sdcard", "DCIM");
+    cfg.dbPath    = EnvManager::getInstance()->getEnv("DB_PATH", storagePaths->dataDb());
+    cfg.mediaRoot = storagePaths->mediaRoot();
     cfg.logRoot   = "/mnt/huntcam/logs";   // NFS-shared，devtest 可读（同 wm）
     cfg.logFile   = cfg.logRoot + "/app.log";
 #endif
@@ -311,7 +315,7 @@ int main(int argc, char* argv[])
         // 预热拍照 channel：在 RTSP EnableChn(group1) 前建 group0 encoder 链（官方 Bind-before-enable），
         // 否则拍照时 Bind 落在 FrameSource 使能后 → JPEG polling 超时（um 拍照 bug 根因）。
         if (!flags.noHttp) {
-            service::CameraServiceFactory::getInstance()->prewarm();
+            service::CameraServiceFactory::getInstance(storagePaths)->prewarm();
         }
         media::RtspServer::getInstance()->registerOnsessionPlayCallback([&idleCore]() {
             idleCore.onRtspConnect(steadyNowMs());   // libevent 线程 → 续命

@@ -48,14 +48,17 @@ bool DatabaseManager::init(const std::string& storageDir) {
 
     m_storageDir = storageDir;
 
-    // Ensure directory exists
+    // Ensure directory exists — recursive mkdir(2), no fork-exec shell (OOM-safe)
     if (access(m_storageDir.c_str(), F_OK) != 0) {
-        // Simple mkdir -p implementation or use std::filesystem if available (C++17)
-        // Since we are on embedded linux, system() is a quick hack, but filesystem is better if supported.
-        // The project seems to use CMake, check C++ standard. 
-        // Assuming C++17 or fallback to mkdir command.
-        std::string cmd = "mkdir -p " + m_storageDir;
-        system(cmd.c_str());
+        std::string p = m_storageDir;
+        for (size_t i = 1; i < p.size(); ++i) {
+            if (p[i] == '/') {
+                p[i] = '\0';
+                mkdir(p.c_str(), 0755);   // ignore EEXIST
+                p[i] = '/';
+            }
+        }
+        mkdir(p.c_str(), 0755);
     }
 
     std::string mediaDbPath = m_storageDir + "/media_file.db";

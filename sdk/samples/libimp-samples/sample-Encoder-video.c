@@ -53,8 +53,18 @@ int main(int argc, char *argv[])
 	if (argc >= 4) {
 		sleep_sec = atoi(argv[3]);
 	}
+	if (argc >= 5) {
+		int codec = atoi(argv[4]);
+		if (codec == 264) {
+			chn[0].payloadType = PT_H264;
+			IMP_LOG_INFO(TAG, "Command line override CHN0 codec -> H264\n");
+		} else if (codec == 265) {
+			chn[0].payloadType = PT_H265;
+			IMP_LOG_INFO(TAG, "Command line override CHN0 codec -> H265\n");
+		}
+	}
 
-	IMP_LOG_INFO(TAG, "Usage: %s [byGetFd=0] [nvbufs=0] [sleep_sec=%d]\n", argv[0], SLEEP_TIME);
+	IMP_LOG_INFO(TAG, "Usage: %s [byGetFd=0] [nvbufs=0] [sleep_sec=%d] [codec=265|264]\n", argv[0], SLEEP_TIME);
 
 	/* Step.1 System init */
 	ret = sample_system_init();
