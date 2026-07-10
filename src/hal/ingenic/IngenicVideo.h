@@ -106,7 +106,7 @@ private:
 };
 class IngenicVideo : public IVideo {
 public:
-    IngenicVideo();
+    explicit IngenicVideo(const HalVideoConfig& cfg = {});
     ~IngenicVideo() override;
     bool init() override;
     bool exit() override;
@@ -118,6 +118,7 @@ private:
     int direct_switch_;
     int gosd_enable_;
     bool exitCalled_;
+    HalVideoConfig videoCfg_;   // 常驻通道配置（residentMode/withThumb），buildResidentChannels 读它
     std::unique_ptr<IspOsdManager> ispOsdMgr_;
     bool preBindAllChannels();   // Slice 1a 步骤 3a：init 时一次性 Create+Register+Bind 常驻 channel + Enable FrameSource
 };

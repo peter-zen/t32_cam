@@ -232,6 +232,18 @@ int runWifi(const CliArgs &args)
     state.connected = Misc::isWifiConnected(args.ifname);
     state.currentSsid = wifi_reconnect::currentSSID(args.ifname);
 
+    // 无 target 凭据（无 --ssid 且 MCU 空）但当前已连接：复用现有连接的 SSID 作为
+    // target，让 decide 走 REUSE（probe + DHCP）。避免测试环境（WiFi 已连、MCU 无凭据）
+    // 因 target 空而 ABORT (exit 6)。仅此场景生效；有凭据 / 未连接路径完全不变。
+    if (!target.hasCredentials && state.connected && !state.currentSsid.empty()) {
+        target.ssid = state.currentSsid;
+        target.hasCredentials = true;
+        Logger::log(LogLevel::INFO,
+                    "No target SSID (no --ssid, MCU empty) but already connected to '%s'; "
+                    "reusing existing link as target.",
+                    target.ssid.c_str());
+    }
+
     Logger::log(LogLevel::INFO,
                 "link: connected=%d currentSSID='%s' targetSSID='%s'",
                 (int)state.connected, state.currentSsid.c_str(),

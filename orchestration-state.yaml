@@ -106,6 +106,18 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T20
+  title: 'quickSpin spawn wm 前同步4G准备: spawnAndWait htc_net_app(--usb-bringup), 退出码非0则中止不spawn
+    wm'
+  status: todo
+  assignee: implementer
+  deliverables: []
+- id: T21
+  title: 'quickSnap 配置驱动上行: quicksnap.json network 字段(4g/wifi), prepareNetwork 按 config
+    选 htc_net_app --type(测试期 wifi 替 4g)'
+  status: todo
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -201,4 +213,4 @@ risks:
   no-SD（HW mountSDCard non-fatal 分支）、真后端 upload/heartbeat 成功、IMP-not-init 在真机、tmpfs
   占用——sim 测不全（sim mountSDCard 递归 mkdir 总成功）。需 T32 硬件回归 （planner 已标，留用户）。sim 验收 + 双平台编译
   + 本审查 code-level 核实已足够放行合入。''}'
-active_task: T19
+active_task: T21

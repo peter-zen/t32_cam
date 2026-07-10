@@ -190,7 +190,10 @@ std::vector<std::string> Misc::listFilenames(const std::string& dirname)
     std::vector<std::string> fileNames;
     DIR* dir = opendir(dirname.c_str());
     if (dir == nullptr) {
-        Logger::log(LogLevel::ERROR, "Failed to open directory %s", dirname.c_str());
+        // 目录不存在(ENOENT) = 无文件可列，非错误（如 m2 上传完成后工作目录被自身清理、
+        // runLoop 立即重扫时目录已没）；其余失败（权限等）才告警。同 removeDirectory 的处理。
+        if (errno != ENOENT)
+            Logger::log(LogLevel::ERROR, "Failed to open directory %s", dirname.c_str());
         return fileNames;
     }
 
@@ -203,6 +206,74 @@ std::vector<std::string> Misc::listFilenames(const std::string& dirname)
 
     closedir(dir);
     return fileNames;
+}
+
+std::vector<std::string> Misc::listSubdirectories(const std::string& dirname)
+{
+    std::vector<std::string> dirNames;
+    DIR* dir = opendir(dirname.c_str());
+    if (dir == nullptr) {
+        if (errno != ENOENT)   // 目录不存在非错误；其余失败才告警（同 listFilenames）
+            Logger::log(LogLevel::ERROR, "Failed to open directory %s", dirname.c_str());
+        return dirNames;
+    }
+
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (entry->d_type == DT_DIR) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                continue;
+            }
+            dirNames.push_back(entry->d_name);
+        }
+    }
+
+    closedir(dir);
+    return dirNames;
+}
+
+bool Misc::removeDirectory(const std::string& path)
+{
+    // 递归删除（深度优先：先删子项，最后 rmdir 自身）。path 不存在视为成功。
+    DIR* dir = opendir(path.c_str());
+    if (dir == nullptr) {
+        // 非目录（或已不存在）：当普通文件 unlink。
+        if (errno == ENOENT) return true;
+        return unlink(path.c_str()) == 0;
+    }
+
+    struct dirent* entry;
+    bool ok = true;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        std::string child = path;
+        if (child.empty() || child.back() != '/') child += "/";
+        child += entry->d_name;
+
+        bool isDir = (entry->d_type == DT_DIR);
+        if (entry->d_type == DT_UNKNOWN) {   // 某些 fs 不填 d_type，stat 兜底
+            struct stat st;
+            if (stat(child.c_str(), &st) == 0) isDir = S_ISDIR(st.st_mode);
+        }
+
+        if (isDir) {
+            ok = removeDirectory(child) && ok;
+        } else if (unlink(child.c_str()) != 0 && errno != ENOENT) {
+            Logger::log(LogLevel::ERROR, "removeDirectory: unlink %s failed: %s",
+                        child.c_str(), strerror(errno));
+            ok = false;
+        }
+    }
+    closedir(dir);
+
+    if (rmdir(path.c_str()) != 0 && errno != ENOENT) {
+        Logger::log(LogLevel::ERROR, "removeDirectory: rmdir %s failed: %s",
+                    path.c_str(), strerror(errno));
+        ok = false;
+    }
+    return ok;
 }
 
 bool Misc::createDirectory(const std::string& path, mode_t mode)

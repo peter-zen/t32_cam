@@ -21,6 +21,7 @@
 #include "../../../hal/ingenic/sensor-config.h"
 #include "../../../storage/MetadataDao.h"
 #include <sys/statvfs.h>
+#include <sys/stat.h>
 
 #define TAG "CamT32"
 
@@ -215,6 +216,23 @@ int CameraServiceT32::takePhoto(int channel, bool save, const std::string& forma
         if (dao.saveThumbnail(filename, image_snap_->getThumbnailData())) {
             elog_i(TAG, "Thumbnail saved for %s (%zu bytes)",
                    filename.c_str(), image_snap_->getThumbnailData().size());
+        }
+    }
+
+    /* Index photo into media_file.db (addMedia moved out of ImageSnap — caller owns it). */
+    if (ok) {
+        struct stat st;
+        long sz = (::stat(filename.c_str(), &st) == 0) ? (long)st.st_size : 0;
+        MetadataDao dao;
+        MediaItem item;
+        item.filePath = filename;
+        item.type = 1;  /* Photo */
+        item.timestamp = now;
+        item.fileSize = sz;
+        item.width = width;
+        item.height = height;
+        if (!dao.addMedia(item)) {
+            elog_w(TAG, "addMedia failed for %s", filename.c_str());
         }
     }
 

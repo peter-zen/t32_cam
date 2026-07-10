@@ -89,6 +89,10 @@ void IspOsdManager::stop() {
 }
 
 void IspOsdManager::exit() {
+    if (exited_) {
+        return;   // 已 exit 过：~IspOsdManager 析构时的二次调用静默返回（IngenicVideo::exit 已显式调过一次）
+    }
+    exited_ = true;
     if (s_instance == this) {
         s_instance = nullptr;
     }

@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "slot_output_port.h"
 #include "wm_task_scheduler.h"
@@ -28,11 +29,14 @@ class IPirTrigger;
 class WmScheduler {
 public:
     // capture/trigger 可为 null（m2 无捕获）。mgmtAddr/mgmtPort 仅 m1/m2 用（m0 传空）。
+    // workDirs：m2 待扫的工作目录列表（quickSnap 目录 + 兜底滞留目录）；m1/m0/m3 传空
+    //   （m1 仍走 wmUploadPath() 单目录扫描，不受影响）。
     WmScheduler(app_lifecycle::ProcessLifecycle& lc, WmMode mode,
                 std::shared_ptr<CaptureLane> capture,
                 std::shared_ptr<IPirTrigger> trigger,
                 std::string mgmtAddr, int mgmtPort,
-                int64_t idleGraceMs, int64_t uploadTimeoutMs);
+                int64_t idleGraceMs, int64_t uploadTimeoutMs,
+                std::vector<std::string> workDirs = {});
     ~WmScheduler();
 
     // 长驻直到关机（idle-grace/upload-timeout/信号）。run() 末尾 stop capture lane
@@ -50,6 +54,7 @@ private:
     int mgmtPort_ = 0;
     int64_t idleGraceMs_;
     int64_t uploadTimeoutMs_;
+    std::vector<std::string> workDirs_;  // m2 工作目录列表（m1/m0/m3 空）
     SlotOutputPort wakePort_;  // slot1→slot2 唤醒信号（capture-Done 时 push）
 };
 

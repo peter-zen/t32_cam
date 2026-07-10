@@ -1095,7 +1095,7 @@ struct ResidentChannelDef {
     VideoStreamConfig cfg;
 };
 
-static std::vector<ResidentChannelDef> buildResidentChannels() {
+static std::vector<ResidentChannelDef> buildResidentChannels(const HalVideoConfig& cfg) {
     auto mk = [](int group, int channel, VideoPayloadType payload, int streamIdx,
                  int w, int h, int fpsNum, int quality, int bitrate, int gop,
                  VideoRcMode rc, bool ivdc) {
@@ -1119,21 +1119,21 @@ static std::vector<ResidentChannelDef> buildResidentChannels() {
     };
     std::vector<ResidentChannelDef> v;
 
-    // Selective preBind：HTC_HAL_RESIDENT_MODE 由 wm_app 算好传入（值=cameraMode）。
-    // wm 一次只跑一个 cameraMode → 只建该模式需要的通道，省 VPU/连续内存（cm==0 拍照不再建
+    // Selective preBind：常驻通道配置由 boot 入口经 HalProvider::start(HalVideoConfig) 显式
+    // 传入（值存 IngenicVideo::videoCfg_，取代旧 HTC_HAL_RESIDENT_MODE env——env 已退役）。
+    // 一次只跑一个 cameraMode → 只建该模式需要的通道，省 VPU/连续内存（cm==0 拍照不再建
     // H264 CH0 的 ~1.84MB buf_base，根除低内存 crash）。wm 永不用 preview → 不建 group1/CH1。
     // cm==1(拍+录) 仍建 CH0+CH12(concurrent)，避免 JPEG→H264 异 payload Destroy/Create 触发
-    // VPU wedge（reviews/2026-06-25-wm-cm1-reproducer-investigation.md）。未设 env（um/legacy）
-    // → 全建 4 通道，保持现状。
-    int residentMode = -1;
-    if (const char* e = getenv("HTC_HAL_RESIDENT_MODE")) residentMode = atoi(e);
+    // VPU wedge（reviews/2026-06-25-wm-cm1-reproducer-investigation.md）。residentMode<0（um/legacy
+    // 默认）→ 全建 4 通道。
+    int residentMode = cfg.residentMode;
 
     if (residentMode < 0) {
         // um / legacy：全建（preview CH1 + record CH0 + photo CH12 + thumb CH14）
         v.push_back(mk(0, 0,  VideoPayloadType::H264, 0, 2560, 1440, 30, 0, 4096, 60, VideoRcMode::CBR,   true));
         v.push_back(mk(0, 12, VideoPayloadType::JPEG, 0, 2560, 1440, 15, 40, 0,    0,  VideoRcMode::FIXQP, true));
         v.push_back(mk(1, 1,  VideoPayloadType::H264, 1, 1280, 720,  30, 0, 2048, 60, VideoRcMode::CBR,   true));
-        v.push_back(mk(2, 14, VideoPayloadType::JPEG, 2, 320,  180,  15, 80, 0,    0,  VideoRcMode::FIXQP, true));
+        if (cfg.withThumb) v.push_back(mk(2, 14, VideoPayloadType::JPEG, 2, 320,  180,  15, 80, 0, 0,  VideoRcMode::FIXQP, true));
         return v;
     }
 
@@ -1145,8 +1145,9 @@ static std::vector<ResidentChannelDef> buildResidentChannels() {
     bool needPhoto  = (residentMode == 0 || residentMode == 1);  // JPEG CH12
     if (needRecord) v.push_back(mk(0, 0,  VideoPayloadType::H264, 0, 2560, 1440, 30, 0, 4096, 60, VideoRcMode::CBR,   true));
     if (needPhoto)  v.push_back(mk(0, 12, VideoPayloadType::JPEG, 0, 2560, 1440, 15, 40, 0,    0,  VideoRcMode::FIXQP, true));
-    // group2(CH14 320×180)：thumbnail（photo thumb + record 缩略图共用），总建
-    v.push_back(mk(2, 14, VideoPayloadType::JPEG, 2, 320,  180,  15, 80, 0,    0,  VideoRcMode::FIXQP, true));
+    // group2(CH14 320×180)：thumbnail（photo thumb + record 缩略图共用）。withThumb=false 时
+    // 不建——quickSnap 只要主图、不要缩略图，省下 group2 编码器通道的 CMA（idle 也占内存）。
+    if (cfg.withThumb) v.push_back(mk(2, 14, VideoPayloadType::JPEG, 2, 320,  180,  15, 80, 0,    0,  VideoRcMode::FIXQP, true));
     return v;
 }
 
@@ -1400,7 +1401,8 @@ bool IngenicVideoStream::requestIDR() {
     std::lock_guard<std::mutex> lock(mtx_);
     return IMP_Encoder_RequestIDR(channel_id_) == 0;
 }
-IngenicVideo::IngenicVideo() : direct_switch_(0), gosd_enable_(2), exitCalled_(false) {
+IngenicVideo::IngenicVideo(const HalVideoConfig& cfg)
+    : direct_switch_(0), gosd_enable_(2), exitCalled_(false), videoCfg_(cfg) {
 
 }
 IngenicVideo::~IngenicVideo() {
@@ -1415,7 +1417,7 @@ IngenicVideo::~IngenicVideo() {
 // EnableChn → group0 OSD。EnableChn 后运行期不再 SetChnAttr（违反约束）；基础 ref=1 保证
 // 运行时 stop 不 DisableChn（消除 FrameSource Enable/Disable 往返 = 录影→拍照超时根因）。
 bool IngenicVideo::preBindAllChannels() {
-    auto defs = buildResidentChannels();
+    auto defs = buildResidentChannels(videoCfg_);
     // 按 group 聚合（同 group 多 channel 共享 FS attr + Bind）
     std::map<int, std::vector<ResidentChannelDef>> byGroup;
     for (auto& d : defs) byGroup[d.group].push_back(std::move(d));

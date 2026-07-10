@@ -41,7 +41,8 @@ quickSnap **只读 `quicksnap.json`，不读 `setting.json`**。下列 5 个字�
   "force_upload": 0,
   "burstNumber": 1,
   "stillSize": 1,
-  "timezone": "UTC-8"
+  "timezone": "UTC-8",
+  "network": "4g"
 }
 ```
 
@@ -52,6 +53,7 @@ quickSnap **只读 `quicksnap.json`，不读 `setting.json`**。下列 5 个字�
 | `burstNumber` | uint8 | 连拍张数 | um |
 | `stillSize` | uint8（`SnapImgSize[]` 下标） | 出图分辨率；quickSnap **内存里钳到 ≤8M**（下标 ≤ `SNAP_IMG_SIZE_8M`=4） | um |
 | `timezone` | string | setenv 用（拍照文件名走本地时区） | provisioning / um |
+| `network` | string `"4g"`/`"wifi"` | 上行类型：4G=`htc_net_app --type usb --usb-bringup`，WiFi=`--type wifi`（MCU 读凭据）；缺省/未知 → `"4g"` | provisioning / um |
 
 ### 2.2 读写契约（实现要点，必守）
 
@@ -124,6 +126,9 @@ GPIO **暂沿用旧 `workingMode` 枚举**（2 根 pin `PC(9)/PC(8)` = 4 组合�
 - 产出落 `/tmp/media/`（`QUICK_SNAP_DIR` 常量改名 `/tmp/quick_snap/`→`/tmp/media/`，`app.h`）。
 - `info.json` manifest（`{files:[..], dir:"<ts>"}`）写给 **wm `-m 2` 直接读取并造 desc 上传**——**不搬移到 SD**（wm lean 模式无卡可跑；见 [`wm-app-spec.md`](wm-app-spec.md) §2.1）。旧 `processCmdSnap` 的 /tmp→SD 搬移路径**作废**。
 - **成片即终片**：SNAP_ONLY/SNAP_UPLOAD 模式下 quickSnap 出的片就是最终成片（wm `-m 2` 直接从 /tmp 上传、不补拍），故 ≤8M 封顶是产品取舍（高清留给后续）。
+- **不入库（no DB）**：quickSnap 出片即终片、wm 直传，**不入 `media_file.db`**（无 playback/相册索引需求）。`ImageSnap` 是**纯拍照类**——只写 JPEG，不调 `addMedia`（2026-07-10 把 addMedia 从 `ImageSnap` 移出，归还调用方；wm `snap_task` / 主 app `CameraServiceT32::takePhoto` 各自入库）。quickSnap 全程**不 init `DatabaseManager`**，`addMedia` 路径在 quickSnap 不存在。
+- **CH2 缩略图全关（两层都关，省内存）**：quickSnap 不要缩略图。两层——① HAL preBind 的 group2/CH14（320×180 JPEG 通道，`IngenicVideo::buildResidentChannels`）由 `HalVideoConfig.withThumb=false` 门控不建；② `ImageSnap` 的 `thumbStream_`（`setThumbnailEnabled(false)`）不创建。只关一层（②）省不下主体内存——group2 编码器通道仍 idle 占着，故两层都必须关。
+- **HAL channel 配置走显式 API（env 退役）**：quickSnap 在决定拍照后（`if(willSnap)` 内、`doSnap` 前）调 `hal::HalProvider::start(HalVideoConfig{residentMode:0, withThumb:false})` 声明本进程的常驻通道配置。旧的 `HTC_HAL_RESIDENT_MODE` env **全面退役**（`buildResidentChannels` 改读 `HalVideoConfig` 成员，不再 `getenv`）。`sharedVideo()` 仍 lazy 构造，但用 `start()` 设的 config（未调则默认 `{-1, true}` = um/legacy 全建）——这让 cm==1 的 `resetSharedVideo`→re-init 自动用同 config，且 um/main_app/test 零改动继承默认。
 
 ---
 
@@ -153,6 +158,10 @@ GPIO **暂沿用旧 `workingMode` 枚举**（2 根 pin `PC(9)/PC(8)` = 4 组合�
 8. 拍照门控通过 → ImageSnap snap(≤8M) → /tmp/media/ + info.json
 9. ~ImageSnap + HalProvider::resetSharedVideo()（IMP_System_Exit，仅 work 模式走过 IMP 时）
 10. 若 force_upload 消费过 → read-modify-write 回 force_upload=0
+10.7. **同步上行准备**（仅 SNAP_UPLOAD / UPLOAD_ONLY 模式）：按 quicksnap.json `network` 字段
+      spawn `htc_net_app`——`"4g"`(默认) → `--type usb --usb-bringup`；`"wifi"` → `--type wifi`
+      （不带凭据，MCU 读 UPID/UPWD）。退出码 !=0 → 中止不 spawn wm；sim 下 `#ifdef BUILD_FOR_SIMULATION`
+      bypass（无 HW）。未知 network 值降级 "4g" + 警告。
 11. fork+execv 目标（释放之后）：SNAP_ONLY→不spawn / SNAP_UPLOAD→wm -m 2 / UPLOAD_ONLY→wm -m 3 / TEST_ONLY→um / force_upload→wm -m 2
 12. exit
 ```
@@ -190,6 +199,39 @@ GPIO **暂沿用旧 `workingMode` 枚举**（2 根 pin `PC(9)/PC(8)` = 4 组合�
 
 quickSnap 只读 quicksnap.json 的正确性依赖 §2.3 的 wm/um 迁移完成。迁移未完成前，cameraMode 存在 quickSnap(读 quicksnap.json) 与 wm(读 setting.json) 双源 divergence 风险。
 
+### 9.5 T20 4G 同步准备（spawnAndWait htc_net_app）
+
+**T20-RV-sim-bypass-masks-regression (medium)**：sim 下 `#ifdef BUILD_FOR_SIMULATION` bypass 4G 步骤，若真机 4G 逻辑有 bug，sim 测不出（sim 根本不跑 htc_net_app）。缓解：真机回归必跑（拔/插 dongle 两场景）；sim bypass 仅编译期生效，真机 `#else` 完整 gate。
+
+**T20-RV-usb-model-default-EC20 (medium)**：`--usb-model` 不传，走默认 EC20（`net_app.cpp:93`）。真机若 EC200A/EG800K/RG255AA，`setModel` 用错型号（`net_app.cpp:434`）→ AT 指令分支错 → 退出码 3 → quickSnap 中止。表象：4G 总是失败。缓解：真机回归时确认 dongle 型号；若非 EC20，在 `prepareNetwork4g` argv 加 `--usb-model`。
+
+**T20-RV-binary-missing (medium)**：`htc_net_app` binary 不存在或路径错（NFS 未挂、build 未产出）→ execv 失败 → 退出码 127 → 中止。缓解：`Misc::getExecutablePath()` 定位（同 wm/um 已验证）；退出码 127 + 日志 "execv failed" 可定位。
+
+**T20-RV-waitpid-mem-footprint (low-medium)**：waitpid 期间 quickSnap 阻塞，两进程并存。缓解：Step 9 已 `resetSharedVideo`（IMP_System_Exit）→ fork 时 quickSnap 已 lean，且 htc_net_app 是 fork+execv 不经 sh，比 system() 省进程。留真机 MemFree 验证。
+
+**T20-RV-4g-blocks-heartbeat (low)**：UPLOAD_ONLY（heartbeat）也前置 4G，若 dongle 未插 → heartbeat 发不出 → 中止。符合当前"4G 失败=中止"决策；若产品需"尽力而为"，另开任务。
+
+**T20-RV-no-timeout (low)**：`spawnAndWait` 无超时，若 htc_net_app 卡死（驱动 hang），quickSnap 永久阻塞。缓解：htc_net_app 是 connect-once-then-exit 前台工具，有内部重试上限；若真机观测到 hang，后续加 `alarm()`/`SIGALRM`。
+
+### 9.6 T21 配置驱动上行选择（network 字段）
+
+**T21-RV-wifi-needs-mcu-creds (medium)**：WiFi 模式依赖 MCU UPID/UPWD 已配。
+htc_net_app wifi 在 --ssid 空 + MCU 读空 → ABORT exit 6（net_app.cpp:247-254）。表象：
+"WiFi prepare failed (exit=6)"。缓解：测试设备先配 WiFi 凭据到 MCU（经 um 或 htc_mcu_api_test
+writeUPID/writeUPWD）；或临时改 htc_net_app 传 --ssid/--pwd（仅测试）。
+
+**T21-RV-unknown-fallback-masks-misconfig (medium)**：未知 network 值降级 "4g" + 警告。
+若用户意图写 "wifi" 但误拼（如 "Wifi"/"WIFI"/"wi-fi"），静默降级 4G → 测试期 4G 仍失败
+（无 dongle）→ quickSnap 仍中止。缓解：日志 WARNING 含原值；测试期查日志确认 network 值。
+
+**T21-RV-wifi-dhcp-slow (low-medium)**：WiFi DHCP 可能比 4G 慢或不稳定（取决于 AP）。
+spawnAndWait 无超时（T20 决策），DHCP 卡住 → quickSnap 阻塞。缓解：同 T20-RV-no-timeout；
+真机观测到 hang 再加 alarm()。
+
+**T21-RV-save-drops-network-on-force-upload (low)**：force_upload 写回时（save() 重建 root），
+若 save 不补塞 network，json 里 network 字段会丢。缓解：save() 加 `root["network"] = network`
+（见 planner A.4 方案 1）。已纳入实现。
+
 ---
 
 ## 10. 外部依赖
@@ -219,6 +261,39 @@ quickSnap 只读 quicksnap.json 的正确性依赖 §2.3 的 wm/um 迁移完成�
 | 12 | user 模式 IMP | quickSnap **不 init IMP**（um 自行 init 作首进程） |
 | 13 | handoff 契约 | 不再 `-wm -rtc`；`wm -m <2\|3>` 无 -rtc，`um` 无 flag；RTC 结果不传下游 |
 | 14 | m2 上传契约（续） | wm `-m 2` **直读 `/tmp/media/` 造 desc 上传、不搬移 SD**（lean 无卡/无 DB/无重传）；`processCmdSnap` 搬移路径作废。详见 [`wm-app-spec.md`](wm-app-spec.md) §2.1 / §12.2 |
+
+### 11.1 决策日志（grill 2026-07-10 续：addMedia 归属 + CH2 全关 + HAL 配置架构）
+
+| # | 决策点 | 结论 |
+|---|--------|------|
+| 15 | addMedia 归属 | **方案 C**：`ImageSnap` 改为纯拍照类（只写 JPEG），`addMedia` 从 `ImageSnap` 的 3 个 internal 站点移除，归还调用方。wm `snap_task` + 主 app `CameraServiceT32::takePhoto` 各自 `addMedia`；`CameraServiceT32:411` capture-to-memory 顺带修了"索引后立即 remove 的孤儿 DB 行"latent bug；`media_app`（退役）/ `WorkModeRunner:159`（test fallback）/ `CameraServiceSim` 不动。 |
+| 16 | quickSnap 入库 | **不入库**——quickSnap 全程不 init `DatabaseManager`；§5 的 no-DB 契约靠 addMedia 移出 `ImageSnap` 落实（不再是"调了注定失败"的假 WARNING）。 |
+| 17 | CH2 缩略图 | **两层全关**：① HAL `buildResidentChannels` 的 group2/CH14 由 `withThumb=false` 门控；② `ImageSnap::setThumbnailEnabled(false)`。只关②省不下主体内存（group2 编码器通道仍 idle 占内存），故两层都必须关。 |
+| 18 | HAL 配置架构 | **env 全面退役**：新 `struct HalVideoConfig{residentMode, withThumb}`，boot 入口调 `HalProvider::start(cfg)` 显式声明；`buildResidentChannels` 读成员不再 `getenv("HTC_HAL_RESIDENT_MODE")`。`sharedVideo()` 保留 lazy 构造但用 start 设的 config（未调默认 `{-1,true}`）——cm==1 reset→re-init 自动复用 config，um/main_app/test 零改动。**未走 pure-accessor**：main_app 是 per-command lazy init IMP（非相机命令不能 init IMP），pure-accessor 要么逐命令埋 start（易漏）要么 early-init（行为变化），代价不值。 |
+| 19 | 本次迁移面 | quickSnap + wm 调 `start(cfg)`（仅非默认 config 的入口）；um/main_app/snap_test/singleton_harness 继承默认，零改动；capture_lane cm==1 无需改（reset 后 sharedVideo 自动 re-init）。`src/hal/**` 改动经 maintainer 批准（hal 已转 maintainer）。 |
+
+### 11.2 决策日志（2026-07-10 续：T20 4G 同步准备）
+
+| # | 决策点 | 结论 |
+|---|--------|------|
+| 20 | 4G 同步时机 | SNAP_UPLOAD/UPLOAD_ONLY 在 spawn wm 之前，同步 `spawnAndWait htc_net_app --type usb --usb-bringup`；SNAP_ONLY/TEST_ONLY 不加 4G。 |
+| 21 | 4G 失败语义 | 退出码 !=0 → **中止不 spawn wm**，记日志含退出码含义 `[2=driver 3=connect 4=dhcp 6=arg]`；quickSnap return 1。 |
+| 22 | sim bypass | **`#ifdef BUILD_FOR_SIMULATION`** 包整个 `prepareNetwork4g` 函数体的 sim 分支（直接 return true），不 spawn htc_net_app。真机 `#else` 完整 gate，编译期隔离。 |
+| 23 | --usb-model | **不传**，走 EC20 默认（`net_app.cpp:93`）。型号是硬件事实，不应硬编码在 boot 程序；真机若非 EC20，由 provisioning 配置。 |
+| 24 | spawnAndWait vs 复用 spawn | **新增独立函数**（不合并）——语义不同（wait vs fire-and-forget），wm/um 需要不等待的语义。 |
+| 25 | CMake link 依赖 | **不加** network/system_call（4G 全在 htc_net_app 子进程，quickSnap 只用 fork/waitpid/libc）。 |
+| 26 | UPLOAD_ONLY heartbeat 4G | **也加 4G 前置**（heartbeat 要网络发心跳包），失败同样中止。符合用户决策。 |
+
+### 11.3 决策日志（2026-07-10 续：T21 配置驱动上行选择）
+
+| # | 决策点 | 结论 |
+|---|--------|------|
+| 27 | 上行字段名 | `network`，取值 `"4g"`/`"wifi"`。 |
+| 28 | 默认值 | 缺省/未知 → `"4g"`（保持产品现状/向后兼容）。 |
+| 29 | WiFi 凭据 | quickSnap **不传** `--ssid/--pwd`；htc_net_app wifi 从 MCU 读（net_app.cpp:212-217）。 |
+| 30 | 失败语义 | 任意上行模式 exit !=0 → quickSnap 中止（同 T20 决策 21）。 |
+| 31 | network 写回 | save() 补塞 network 字段（防 force_upload 写回丢字段）；normalize 直接改 cfg.network（接受 force_upload 写回时大写/误拼值被降级，频次极低）。 |
+| 32 | sim bypass | 同 T20：`#ifdef BUILD_FOR_SIMULATION` bypass，network 值不影响 sim 行为。 |
 
 ---
 

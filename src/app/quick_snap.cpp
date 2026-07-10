@@ -22,6 +22,7 @@
 
 #include <json/json.h>
 #include <unistd.h>
+#include <sys/wait.h>
 #include <sys/time.h>
 #include <fstream>
 #include <sstream>
@@ -41,6 +42,7 @@ struct QuickSnapConfig {
     uint8_t burstNumber  = 1;
     uint8_t stillSize    = SNAP_IMG_SIZE_4M;
     std::string timezone;
+    std::string network  = "4g";   // T21: "4g" | "wifi"，默认 4G（产品现状）
 
     static QuickSnapConfig loadOrDefault(const std::string& path);
     bool save(const std::string& path) const;
@@ -71,6 +73,14 @@ QuickSnapConfig QuickSnapConfig::loadOrDefault(const std::string& path)
     if (root.isMember("burstNumber")  && root["burstNumber"].isUInt())  cfg.burstNumber  = root["burstNumber"].asUInt();
     if (root.isMember("stillSize")    && root["stillSize"].isUInt())    cfg.stillSize    = root["stillSize"].asUInt();
     if (root.isMember("timezone")     && root["timezone"].isString())   cfg.timezone     = root["timezone"].asString();
+    if (root.isMember("network")     && root["network"].isString())    cfg.network      = root["network"].asString();
+    // normalize：未知值降级 "4g" + 警告（只认小写 4g/wifi）
+    if (cfg.network != "4g" && cfg.network != "wifi") {
+        Logger::log(LogLevel::WARNING,
+                    "quicksnap.json network='%s' unknown (expected 4g|wifi), "
+                    "falling back to 4g", cfg.network.c_str());
+        cfg.network = "4g";
+    }
 
     // --- safety: burst 0 means no photos ---
     if (cfg.burstNumber == 0) {
@@ -78,8 +88,10 @@ QuickSnapConfig QuickSnapConfig::loadOrDefault(const std::string& path)
     }
 
     Logger::log(LogLevel::INFO,
-                "Loaded quicksnap.json: cameraMode=%d force_upload=%d burstNumber=%d stillSize=%d timezone=%s",
-                cfg.cameraMode, cfg.force_upload, cfg.burstNumber, cfg.stillSize, cfg.timezone.c_str());
+                "Loaded quicksnap.json: cameraMode=%d force_upload=%d burstNumber=%d "
+                "stillSize=%d timezone=%s network=%s",
+                cfg.cameraMode, cfg.force_upload, cfg.burstNumber, cfg.stillSize,
+                cfg.timezone.c_str(), cfg.network.c_str());
     return cfg;
 }
 
@@ -91,6 +103,9 @@ bool QuickSnapConfig::save(const std::string& path) const
     root["burstNumber"]  = burstNumber;
     root["stillSize"]    = stillSize;
     root["timezone"]     = timezone;
+    // T21: save 全量重建 root → 不补塞 network 会在 force_upload 写回时丢字段。
+    // normalize 直接改了 cfg.network（误拼值被降级后写回也降级——force_upload 写回频次极低）。
+    root["network"]      = network;
 
     std::ofstream file(path);
     if (!file.is_open()) {
@@ -132,6 +147,115 @@ static int spawn(const char* path, char* const argv[])
     return 0;
 }
 
+#ifndef BUILD_FOR_SIMULATION
+// ============================================================================
+// spawnAndWait — fork+execv + waitpid (synchronous). Returns child exit code on
+// normal exit, or -1 on fork/exec/wait failure or signal death.
+// ============================================================================
+static int spawnAndWait(const char* path, char* const argv[])
+{
+    pid_t pid = fork();
+    if (pid < 0) {
+        Logger::log(LogLevel::ERROR, "spawnAndWait: fork() failed: %s", strerror(errno));
+        return -1;
+    }
+    if (pid == 0) {
+        // Child: same FD cleanup as spawn() (avoid leaking parent FDs to child)
+        long maxfd = sysconf(_SC_OPEN_MAX);
+        for (int fd = 3; fd < maxfd; fd++) {
+            close(fd);
+        }
+        execv(path, argv);
+        Logger::log(LogLevel::ERROR, "spawnAndWait: execv(%s) failed: %s", path, strerror(errno));
+        _exit(127);
+    }
+    // Parent: wait synchronously
+    int status = 0;
+    pid_t w = waitpid(pid, &status, 0);
+    if (w < 0) {
+        Logger::log(LogLevel::ERROR, "spawnAndWait: waitpid(pid=%d) failed: %s",
+                    (int)pid, strerror(errno));
+        return -1;
+    }
+    if (WIFSIGNALED(status)) {
+        Logger::log(LogLevel::ERROR, "spawnAndWait: %s (pid=%d) killed by signal %d",
+                    path, (int)pid, WTERMSIG(status));
+        return -1;  // signal death = failure (do not spawn wm)
+    }
+    int code = WEXITSTATUS(status);
+    Logger::log(LogLevel::INFO, "spawnAndWait: %s (pid=%d) exited code=%d",
+                path, (int)pid, code);
+    return code;
+}
+#endif  // BUILD_FOR_SIMULATION
+
+// ============================================================================
+// prepareNetwork — synchronous uplink bring-up via htc_net_app.
+// network: "4g" -> --type usb --usb-bringup; "wifi" -> --type wifi (MCU creds).
+// Returns true if uplink is up (or bypassed on sim); false -> abort (no spawn wm).
+// ============================================================================
+static bool prepareNetwork(const std::string& network, const std::string& execDir)
+{
+#ifdef BUILD_FOR_SIMULATION
+    // SIM: no real 4G dongle / WiFi HW; htc_net_app exits non-zero on sim.
+    // Bypass to let sim smoke reach spawn wm. network 值不影响 sim 行为。
+    Logger::log(LogLevel::INFO,
+                "SIM: bypass network prepare (network=%s, no HW in sim)",
+                network.c_str());
+    return true;
+#else
+    std::string netBin = execDir.empty() ? "htc_net_app" : (execDir + "/htc_net_app");
+    const char* netPath = netBin.c_str();
+
+    if (network == "wifi") {
+        // WiFi: 不带凭据，htc_net_app 从 MCU 寄存器读 UPID/UPWD
+        // (net_app.cpp:212-217: --ssid 空 -> readUPID/readUPWD)。
+        Logger::log(LogLevel::INFO,
+                    "preparing WiFi: spawnAndWait %s --type wifi (creds from MCU)",
+                    netBin.c_str());
+        char* const netArgv[] = {
+            const_cast<char*>("htc_net_app"),
+            const_cast<char*>("--type"),
+            const_cast<char*>("wifi"),
+            nullptr
+        };
+        int rc = spawnAndWait(netPath, netArgv);
+        if (rc != 0) {
+            // Exit code meaning (net_app_logic.h:26-33):
+            //   3 connect (含 No SSID — MCU 无凭据) / 4 DHCP / 5 MCU gated / 6 arg
+            Logger::log(LogLevel::ERROR,
+                        "WiFi prepare failed (exit=%d) — abort spawn wm. "
+                        "[3=connect/NoSSID 4=dhcp 5=mcu-gated 6=arg]", rc);
+            return false;
+        }
+        Logger::log(LogLevel::INFO, "WiFi prepare ok (exit=0), proceeding to spawn wm");
+        return true;
+    } else {
+        // 4G (默认): --type usb --usb-bringup（沿用 T20）
+        Logger::log(LogLevel::INFO,
+                    "preparing 4G: spawnAndWait %s --type usb --usb-bringup",
+                    netBin.c_str());
+        char* const netArgv[] = {
+            const_cast<char*>("htc_net_app"),
+            const_cast<char*>("--type"),
+            const_cast<char*>("usb"),
+            const_cast<char*>("--usb-bringup"),
+            nullptr
+        };
+        int rc = spawnAndWait(netPath, netArgv);
+        if (rc != 0) {
+            // 2 driver / 3 connect / 4 DHCP / 6 arg（5 = MCU gated 是 wifi-only，usb 路径不出现）
+            Logger::log(LogLevel::ERROR,
+                        "4G prepare failed (exit=%d) — abort spawn wm. "
+                        "[2=driver 3=connect 4=dhcp 6=arg]", rc);
+            return false;
+        }
+        Logger::log(LogLevel::INFO, "4G prepare ok (exit=0), proceeding to spawn wm");
+        return true;
+    }
+#endif
+}
+
 // ============================================================================
 // getCurrentTimeFormatted — "YYYYMMDD_HHMMSS" for directory / filename
 // ============================================================================
@@ -146,9 +270,11 @@ static std::string getCurrentTimeFormatted()
 }
 
 // ============================================================================
-// doSnap — ImageSnap (<=8M HW scaler) + info.json manifest
+// doSnap — ImageSnap (<=8M HW scaler)。媒体落 <workDir>/；工作目录经 outDirPath 透出
+// 给 main → spawn `wm -m 2 -d <workDir>`。不再写 info.json（wm 自扫目录建 desc）。
 // ============================================================================
-static int doSnap(const QuickSnapConfig& config, bool rtcOk, bool& impInitialized)
+static int doSnap(const QuickSnapConfig& config, bool rtcOk, bool& impInitialized,
+                  std::string& outDirPath)
 {
     impInitialized = false;
     // --- create /tmp/media/ ---
@@ -171,6 +297,7 @@ static int doSnap(const QuickSnapConfig& config, bool rtcOk, bool& impInitialize
         Logger::log(LogLevel::ERROR, "Failed to create directory: %s", dirPath.c_str());
         return -1;
     }
+    outDirPath = dirPath;   // 透出工作目录给 main → spawn wm -d
 
     // --- generate filenames ---
     std::vector<std::string> fileNames;
@@ -202,6 +329,7 @@ static int doSnap(const QuickSnapConfig& config, bool rtcOk, bool& impInitialize
         auto snapParam = ImageSnapParams();
         snapParam.setImageSize(SnapImgSize[snapSizeIndex].width, SnapImgSize[snapSizeIndex].height);
         snapParam.setAEReadyWait(true);
+        snapParam.setThumbnailEnabled(false);  // CH2 缩略图 Layer 2 关（配合 HAL withThumb=false，两层都不建 CH2）
         auto imageSnap = std::make_shared<ImageSnap>(snapParam);
         impInitialized = true;  // ImageSnap constructor already initialized IMP
         if (!imageSnap->snap(fileNames)) {
@@ -216,33 +344,7 @@ static int doSnap(const QuickSnapConfig& config, bool rtcOk, bool& impInitialize
         Logger::log(LogLevel::INFO, "capture done at %ld ms", ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
     }
 
-    // --- write info.json manifest ---
-    Json::Value root;
-    Json::Value imageArray(Json::arrayValue);
-    for (const auto& fileName : fileNames) {
-        imageArray.append(std::string(fileName.substr(fileName.find_last_of("/") + 1)));
-    }
-    if (rtcOk) {
-        root["files"] = imageArray;
-        root["dir"] = timeStr;
-    } else {
-        root["files"] = imageArray;
-        root["dir"] = "pic";
-    }
-
-    std::string jsonFilePath = std::string(QUICK_SNAP_DIR) + "info.json";
-    std::ofstream jsonFile(jsonFilePath);
-    if (!jsonFile.is_open()) {
-        Logger::log(LogLevel::ERROR, "Failed to open file: %s", jsonFilePath.c_str());
-        return -1;
-    }
-
-    Json::StreamWriterBuilder writerBuilder;
-    std::unique_ptr<Json::StreamWriter> jsonWriter(writerBuilder.newStreamWriter());
-    jsonWriter->write(root, &jsonFile);
-    jsonFile.close();
-
-    Logger::log(LogLevel::INFO, "info.json written: %s (%zu files)", jsonFilePath.c_str(), fileNames.size());
+    // 媒体已落 outDirPath(<workDir>/)；wm 自扫该目录建 desc，无需 info.json manifest。
     return 0;
 }
 
@@ -276,9 +378,7 @@ int main(int /*argc*/, char* /*argv*/[])
         Logger::log(LogLevel::INFO, "POWER_HOLD_PIN set HIGH");
     }
 
-    // photo-only: selective preBind, skip H.264 encoder channels to avoid CMA
-    // exhaustion crash (see IngenicVideo.cpp:1122-1127).
-    setenv("HTC_HAL_RESIDENT_MODE", "0", 1);
+    // HAL 常驻通道配置在 Step 8（willSnap）里经 HalProvider::start() 声明，不再用 env。
 
     // Step 3: read GPIO mode
 #ifdef BUILD_FOR_SIMULATION
@@ -357,8 +457,13 @@ int main(int /*argc*/, char* /*argv*/[])
 
     // Step 8: snap (work modes only, with cameraMode != 2 gate)
     bool impInitialized = false;
+    std::string snapDir;   // doSnap 透出的工作目录（→ spawn wm -d；force_upload/willSnap=false 时为空）
     if (willSnap) {
-        if (doSnap(config, rtcOk, impInitialized) < 0) {
+        // 声明 HAL 常驻通道：photo-only(residentMode=0 → 只建 JPEG CH12，不建 H264 CH0)，
+        // 无缩略图(withThumb=false → 不建 group2/CH14，省内存)。取代旧 HTC_HAL_RESIDENT_MODE env。
+        // 须在 doSnap（其内 ImageSnap 构造 → 首次 sharedVideo lazy init）之前。
+        hal::HalProvider::start(hal::HalVideoConfig{/*residentMode=*/0, /*withThumb=*/false});
+        if (doSnap(config, rtcOk, impInitialized, snapDir) < 0) {
             Logger::log(LogLevel::ERROR, "doSnap failed");
             // Continue to spawn downstream anyway (best effort).
             // impInitialized may still be true if ImageSnap was constructed
@@ -396,19 +501,39 @@ int main(int /*argc*/, char* /*argv*/[])
         return 0;
 
     case workingMode::WORKING_MODE_SNAP_UPLOAD: {
-        Logger::log(LogLevel::INFO, "spawning wm -m 2");
+        // Synchronous network prepare before spawn wm (uplink needed for upload).
+        if (!prepareNetwork(config.network, execDir)) {
+            Logger::log(LogLevel::ERROR,
+                        "SNAP_UPLOAD: network prepare failed (network=%s) -> abort, no spawn wm",
+                        config.network.c_str());
+            return 1;
+        }
+        // -d 仅在拍了照（snapDir 非空，含 rtc-fail 的 "pic" 目录）时带上；force_upload
+        // （willSnap=false → snapDir 空）不带，wm 靠兜底扫描补传滞留。
+        Logger::log(LogLevel::INFO, "spawning wm -m 2%s%s",
+                    snapDir.empty() ? "" : " -d ", snapDir.empty() ? "" : snapDir.c_str());
         const char* wmPath = wmBin.c_str();
-        char* const wmArgv[] = {
-            const_cast<char*>("wm"),
-            const_cast<char*>("-m"),
-            const_cast<char*>("2"),
-            nullptr
-        };
-        spawn(wmPath, wmArgv);
+        std::vector<char*> wmArgv;
+        wmArgv.push_back(const_cast<char*>("wm"));
+        wmArgv.push_back(const_cast<char*>("-m"));
+        wmArgv.push_back(const_cast<char*>("2"));
+        if (!snapDir.empty()) {
+            wmArgv.push_back(const_cast<char*>("-d"));
+            wmArgv.push_back(const_cast<char*>(snapDir.c_str()));
+        }
+        wmArgv.push_back(nullptr);
+        spawn(wmPath, wmArgv.data());
         return 0;
     }
 
     case workingMode::WORKING_MODE_UPLOAD_ONLY: {
+        // Synchronous network prepare before spawn wm (heartbeat also needs uplink).
+        if (!prepareNetwork(config.network, execDir)) {
+            Logger::log(LogLevel::ERROR,
+                        "UPLOAD_ONLY: network prepare failed (network=%s) -> abort, no spawn wm",
+                        config.network.c_str());
+            return 1;
+        }
         Logger::log(LogLevel::INFO, "spawning wm -m 3 (heartbeat)");
         const char* wmPath = wmBin.c_str();
         char* const wmArgv[] = {

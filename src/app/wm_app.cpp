@@ -23,13 +23,17 @@
 #include <csignal>
 #include <memory>
 #include <fstream>
+#include <algorithm>
+#include <vector>
 
 #include "wm_scheduler.h"     // app_workmode::WmScheduler + WmMode
 #include "wm_time.h"          // app_workmode::acquireTimeChain / writebackMcuTime
 #include "capture_lane.h"     // app_workmode::CaptureLane (m0/m1)
 #include "pir_trigger.h"      // app_workmode::SimPirTrigger / IPirTrigger (m0/m1)
 #include "wm_paths.h"         // wm-local storage roots under /mnt/huntcam
-#include "wm_ingest.h"        // ingestQuickSnapManifest (m2 /tmp media → desc)
+#include "wm_ingest.h"        // ensureWorkDirDesc (m2 工作目录 → desc)
+#include "wm_sweep.h"         // sweepEnabled / collectStrandedWorkDirs (m2 兜底)
+#include "app.h"              // QUICK_SNAP_DIR (/tmp/media/)
 #include "WorkModeRunner.h"   // CMD_* (仅为 commonStartupPostDispatch 的 netif 选择)
 #include "ProcessLifecycle.h" // app_lifecycle::ProcessLifecycle + Startup/ShutdownContext
 #include "StoragePaths.h"     // storage::StoragePaths (S1 path layout)
@@ -45,6 +49,7 @@
 #include "Power.h"
 #include "DayNightSwitch.h"
 #include "GPIO.h"             // GPIO, GPIO_VALUE, GPIO_DIRECTION, POWER_HOLD_PIN
+#include "HalProvider.h"      // hal::HalProvider::start (常驻通道配置，取代 HTC_HAL_RESIDENT_MODE env)
 
 namespace {
 
@@ -130,6 +135,7 @@ int main(int argc, char* argv[])
     bool ntpSynced = false;
     std::string ntpServer = "www.aidetcloud.com:123";  // 默认；config 加载后覆盖
     std::string configSelectionNote;
+    std::string quicksnapDir;   // -d/--dir：m2 quickSnap 传入的工作目录（可选）
 
     // --- S1 path inputs → StartupConfig (sim vs HW) ---
     app_lifecycle::StartupConfig cfg;
@@ -208,6 +214,15 @@ int main(int argc, char* argv[])
             }
     #endif
         }
+
+        // --- -d <dir> 解析（m2：quickSnap 传入的工作目录，可选；force_upload 时缺省，
+        //     靠兜底扫描补传滞留）。支持 -d <dir> / --dir <dir>，位置不限）---
+        for (int i = 1; i + 1 < argc; ++i) {
+            if (std::string(argv[i]) == "-d" || std::string(argv[i]) == "--dir") {
+                quicksnapDir = argv[i + 1];
+                break;
+            }
+        }
     }
 
     // --- S1-S8 + signal install ---
@@ -215,15 +230,13 @@ int main(int argc, char* argv[])
     if (!lc.commonStartup(cfg)) return -1;
     if (!lc.installSignalHandlers()) return -1;
 #ifndef BUILD_FOR_SIMULATION
-    // Default off: keep app.log authoritative. Async elog (commit 5da4c1a)
-    // already moved fwrite off the hot threads (caller only does vsnprintf +
-    // ring push; a consumer thread does fwrite + 100ms flush), so the original
-    // "synchronously flush every log line" concern is gone. But the serial UART
-    // is a slow device — flooding it slows the single consumer thread and raises
-    // drop-oldest on app.log. Set HTC_SERIAL_LOG=1 to also emit to the serial
-    // console for live bring-up debugging (parallel to app.log).
+    // Default ON (debug-friendly): elog also emits to the serial console, live
+    // alongside app.log. Async elog already moved fwrite off the hot threads.
+    // Cost: the serial UART is slow — heavy logging can slow the single consumer
+    // thread and raise drop-oldest on app.log. Set HTC_SERIAL_LOG=0 to silence
+    // the serial console (keep app.log authoritative) for normal/production runs.
     const char* serialEnv = std::getenv("HTC_SERIAL_LOG");
-    if (!(serialEnv && serialEnv[0] == '1')) {
+    if (serialEnv && serialEnv[0] == '0') {
         elog_set_terminal_output(false);
     }
 #endif
@@ -329,14 +342,15 @@ int main(int argc, char* argv[])
     if (wm_mode != app_workmode::WmMode::UploadOnly
         && wm_mode != app_workmode::WmMode::Heartbeat) {
         // 算有效 cameraMode（同 capture_lane 逻辑：Settings + HTC_WM_CAMERA_MODE env 覆盖），
-        // 暴露给 hal 的 buildResidentChannels 做 selective preBind：wm 只建本模式需要的通道
-        // （cm==0 拍照不建 H264 CH0 → 省 ~1.84MB 连续 buf_base，根除低内存 crash；wm 永不建 preview CH1）。
-        // 必须在 scheduler.run()（首次 capture 触发 sharedVideo→init→preBind）之前设。
+        // 经 HalProvider::start 显式声明给 HAL 的 buildResidentChannels 做 selective preBind：wm 只建
+        // 本模式需要的通道（cm==0 拍照不建 H264 CH0 → 省 ~1.84MB 连续 buf_base，根除低内存 crash；
+        // wm 永不建 preview CH1）。取代旧 HTC_HAL_RESIDENT_MODE env（已退役）。必须在 scheduler.run()
+        // （首次 capture 触发 sharedVideo→init→preBind）之前调。
         {
             uint8_t cm = Settings::getInstance()->cameraMode;
             if (const char* e = std::getenv("HTC_WM_CAMERA_MODE")) cm = static_cast<uint8_t>(stoi_custom(e));
-            setenv("HTC_HAL_RESIDENT_MODE", to_string_custom(static_cast<int>(cm)).c_str(), 1);
-            Logger::log(LogLevel::INFO, "[wm] HAL resident mode=%d (selective preBind)", (int)cm);
+            hal::HalProvider::start(hal::HalVideoConfig{static_cast<int>(cm), /*withThumb=*/true});
+            Logger::log(LogLevel::INFO, "[wm] HAL resident config: mode=%d withThumb=1 (selective preBind)", (int)cm);
         }
         captureLane = std::make_shared<app_workmode::CaptureLane>();
         int pirIntervalMs = 10000;  // SimPirTrigger 默认 10s（HTC_SIM_PIR_INTERVAL_MS 可调）
@@ -347,14 +361,30 @@ int main(int argc, char* argv[])
         pirTrigger = std::make_shared<app_workmode::SimPirTrigger>(pirIntervalMs, pirCount);
     }
 
-    // --- m2 ingest：读 /tmp/media/info.json → 造 desc 到 /tmp 扫描目录 ---
+    // --- m2：构建工作目录列表（-d 目录 + 兜底滞留）并为每个建/复用 desc ---
+    std::vector<std::string> workDirs;
     if (wm_mode == app_workmode::WmMode::UploadOnly) {
-        app_workmode::ingestQuickSnapManifest("/tmp");
+        if (!quicksnapDir.empty()) {
+            std::string d = quicksnapDir;
+            if (!d.empty() && d.back() != '/') d += '/';   // 尾斜杠归一（UploadTask 做 dir+文件名 拼接）
+            workDirs.push_back(d);
+        }
+        if (app_workmode::sweepEnabled()) {
+            auto stranded = app_workmode::collectStrandedWorkDirs(QUICK_SNAP_DIR, quicksnapDir);
+            workDirs.insert(workDirs.end(), stranded.begin(), stranded.end());
+        }
+        std::sort(workDirs.begin(), workDirs.end());   // 升序：老先传
+        workDirs.erase(std::unique(workDirs.begin(), workDirs.end()), workDirs.end());
+        for (const std::string& wd : workDirs) {
+            app_workmode::ensureWorkDirDesc(wd);   // desc 不在才建；已在则复用（续传保 F_UploadedTag）
+        }
+        Logger::log(LogLevel::INFO, "[wm] m2 work dirs: %zu (sweep=%d)",
+                    workDirs.size(), app_workmode::sweepEnabled() ? 1 : 0);
     }
 
     // --- 主循环（长驻直到关机）---
     app_workmode::WmScheduler scheduler(lc, wm_mode, captureLane, pirTrigger,
-                                        ms_ip, ms_port, idleGraceMs, uploadTimeoutMs);
+                                        ms_ip, ms_port, idleGraceMs, uploadTimeoutMs, workDirs);
     scheduler.run();
     }  // end main work scope
 

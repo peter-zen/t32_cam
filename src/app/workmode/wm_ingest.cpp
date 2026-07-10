@@ -1,65 +1,84 @@
-// wm_ingest — m2 lean upload manifest ingest (wm-app-spec §2.1).
-// Reads /tmp/media/info.json → builds desc via manifest::createDescInfoFile
-// → writes to scan directory picked up by UploadTask.
+// wm_ingest — m2 lean upload：为 quickSnap 工作目录构建/复用上传 desc。
+// 见 wm_ingest.h 与 doc/design/workmode-m2-workunit-handoff.md。
 
 #include "wm_ingest.h"
 
 #include "Manifest.h"        // manifest::createDescInfoFile
-#include "app.h"             // QUICK_SNAP_INFO_FILE, QUICK_SNAP_DIR
-#include "misc/Misc.h"       // createDirectory
+#include "misc/Misc.h"       // listFilenames / getFilename
 #include "Logger.h"
 
-#include <json/json.h>
-#include <fstream>
-#include <vector>
+#include <algorithm>
+#include <cctype>
 #include <string>
+#include <vector>
+#include <unistd.h>          // access（desc 存在探测）
 
 namespace app_workmode {
 
-int ingestQuickSnapManifest(const std::string& scanDir) {
-    std::ifstream ifs(QUICK_SNAP_INFO_FILE);  // "/tmp/media/info.json"
-    if (!ifs.is_open()) {
-        Logger::log(LogLevel::INFO, "[wm] no quickSnap manifest %s (m2 nothing to upload)",
-                    QUICK_SNAP_INFO_FILE);
+namespace {
+
+// 媒体扩展名白名单（大小写不敏感）。quickSnap 写大写 .JPG；视频 .mp4。
+bool isAllowedMedia(const std::string& filename) {
+    auto dot = filename.find_last_of('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = filename.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext == "jpg" || ext == "jpeg" || ext == "mp4";
+}
+
+// workDir 可能带尾 '/'，basename 取最后一段（去尾斜杠后）。
+std::string dirBasename(const std::string& workDir) {
+    std::string d = workDir;
+    while (!d.empty() && d.back() == '/') d.pop_back();
+    return Misc::getFilename(d);
+}
+
+}  // namespace
+
+int ensureWorkDirDesc(const std::string& workDir, std::string* descPathOut) {
+    const std::string name = dirBasename(workDir);
+    if (name.empty()) {
+        Logger::log(LogLevel::WARNING, "[wm] ensureWorkDirDesc: empty dir name (%s)", workDir.c_str());
         return 0;
     }
 
-    Json::Value root;
-    Json::CharReaderBuilder rb;
-    std::string errs;
-    if (!Json::parseFromStream(rb, ifs, &root, &errs)) {
-        Logger::log(LogLevel::WARNING, "[wm] manifest parse failed: %s", errs.c_str());
-        return -1;
-    }
+    // 扫描目录（保证尾斜杠：listFilenames + scanDir + 文件名 拼接用）
+    std::string scanDir = workDir;
+    if (!scanDir.empty() && scanDir.back() != '/') scanDir += '/';
 
-    const std::string dir = root["dir"].asString();          // e.g. "20260709_120000"
-    const Json::Value& files = root["files"];                // ["20260709_120000_1.jpg", ...]
-    if (dir.empty() || !files.isArray() || files.empty()) {
-        Logger::log(LogLevel::INFO, "[wm] manifest empty, skip");
-        return 0;
-    }
+    // desc 路径 = <workDir 去尾斜杠>/<basename>.json
+    std::string dir = scanDir;
+    if (!dir.empty() && dir.back() == '/') dir.pop_back();
+    const std::string descPath = dir + "/" + name + ".json";
 
-    Misc::createDirectory(scanDir);
-
-    std::vector<std::string> media_paths;   // createDescInfoFile takes non-const ref
-    media_paths.reserve(files.size());
-    for (const auto& f : files) {
-        // Full path = /tmp/media/<dir>/<file>. createDescInfoFile internally
-        // uses Misc::getFilepath / getFilename to split into F_FilePath and
-        // F_FileName, so we just feed the complete path.
-        media_paths.push_back(std::string(QUICK_SNAP_DIR) + dir + "/" + f.asString());
-    }
-
-    const std::string descPath = scanDir + "/" + dir + ".json";
-    if (manifest::createDescInfoFile(media_paths, descPath) == 0) {
-        Logger::log(LogLevel::INFO, "[wm] ingest %d files -> %s",
-                    static_cast<int>(media_paths.size()), descPath.c_str());
+    // desc 已存在 → 复用（断点续传，保 F_UploadedTag，不重建、不读传感器）
+    if (access(descPath.c_str(), F_OK) == 0) {
+        Logger::log(LogLevel::INFO, "[wm] desc reuse (resume): %s", descPath.c_str());
+        if (descPathOut) *descPathOut = descPath;
         return 1;
     }
 
-    Logger::log(LogLevel::ERROR, "[wm] ingest createDescInfoFile failed for %s",
-                descPath.c_str());
-    return -2;
+    // desc 不存在 → 扫白名单媒体建 desc
+    std::vector<std::string> media_paths;   // createDescInfoFile 取非 const 引用
+    std::vector<std::string> files = Misc::listFilenames(scanDir);
+    for (const std::string& f : files) {
+        if (isAllowedMedia(f)) {
+            media_paths.push_back(scanDir + f);
+        }
+    }
+    if (media_paths.empty()) {
+        Logger::log(LogLevel::INFO, "[wm] no media in %s, skip desc", workDir.c_str());
+        return 0;
+    }
+
+    if (manifest::createDescInfoFile(media_paths, descPath) != 0) {
+        Logger::log(LogLevel::ERROR, "[wm] createDescInfoFile failed for %s", descPath.c_str());
+        return -1;
+    }
+    Logger::log(LogLevel::INFO, "[wm] ingest %zu media -> %s", media_paths.size(), descPath.c_str());
+    if (descPathOut) *descPathOut = descPath;
+    return 1;
 }
 
 }  // namespace app_workmode

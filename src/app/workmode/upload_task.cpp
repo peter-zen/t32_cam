@@ -43,9 +43,9 @@ int64_t connectGraceMs() {
 }  // namespace
 
 UploadTask::UploadTask(SlotOutputPort& wakePort, std::string mgmtAddr, int mgmtPort,
-                       std::string uploadDir, int taskId)
+                       std::vector<std::string> uploadDirs, bool exclusiveWorkDirs, int taskId)
     : wakePort_(wakePort), mgmtAddr_(std::move(mgmtAddr)), mgmtPort_(mgmtPort),
-      uploadDir_(std::move(uploadDir)), taskId_(taskId) {}
+      uploadDirs_(std::move(uploadDirs)), exclusiveWorkDirs_(exclusiveWorkDirs), taskId_(taskId) {}
 
 UploadTask::~UploadTask() {
     stop();
@@ -183,6 +183,10 @@ bool UploadTask::hasPendingWork(const std::string& descPath) const {
     Json::Value root;
     Json::Reader reader;
     if (!reader.parse(ifs, root)) return false;
+    // 非对象 JSON（数组/标量，如 /tmp 残留的 [] / 数字）不当 desc：否则下面非 const
+    // operator[] 会在 resolveReference 抛 Json::LogicError("requires objectValue")，
+    // 而 hasPendingWork 在 scanAndUploadOnePass 的 try 之外曾直接 std::terminate 打死 wm。
+    if (!root.isObject()) return false;
     if (root["F_UploadedTag"].asInt() == 0) return true;
     const Json::Value& file_inf = root["file_inf"];
     if (file_inf.isArray()) {
@@ -196,15 +200,26 @@ bool UploadTask::hasPendingWork(const std::string& descPath) const {
 bool UploadTask::scanAndUploadOnePass() {
     const bool diag = (std::getenv("HTC_UPLOAD_DIAG") != nullptr);
     const int64_t t0 = steadyNowMs();   // 始终计时（cheap）；仅异常时用
-    std::vector<std::string> files = Misc::listFilenames(uploadDir_);
     bool didWork = false;
-    for (const std::string& f : files) {
+    int totalFiles = 0;   // 跨目录累计，仅 diag 用
+    for (const std::string& dir : uploadDirs_) {
         if (stopRequested_.load()) break;
-        std::string p = uploadDir_ + f;
-        if (!Misc::isJsonFile(p)) continue;
-        if (!hasPendingWork(p)) continue;   // 已传完的跳过
-        uploadOneDesc(p);
-        didWork = true;
+        std::vector<std::string> files = Misc::listFilenames(dir);
+        totalFiles += static_cast<int>(files.size());
+        for (const std::string& f : files) {
+            if (stopRequested_.load()) break;
+            std::string p = dir + f;   // dir 须以 '/' 结尾（无分隔符拼接）
+            if (!Misc::isJsonFile(p)) continue;
+            try {
+                // hasPendingWork 纳入 try：畸形 json（非对象等）抛异常时打日志而非 terminate。
+                if (!hasPendingWork(p)) continue;   // 已传完的跳过
+                uploadOneDesc(p);
+            } catch (const std::exception &e) {
+                Logger::log(LogLevel::ERROR, "UploadTask: scan threw on %s: %s",
+                            p.c_str(), e.what());
+            }
+            didWork = true;
+        }
     }
     // 异常才打：无活（didWork=0）却耗时 > 1s → 纯扫盘反常慢（原 scan-gap 症状）。
     // didWork=1 的大 dt 是 mp4 上传 I/O，属正常，不打。
@@ -212,7 +227,7 @@ bool UploadTask::scanAndUploadOnePass() {
         int64_t dt = steadyNowMs() - t0;
         if (dt > 1000) {
             Logger::log(LogLevel::WARNING, "[udiag] slow idle scan: n=%d dt=%lldms",
-                        (int)files.size(), (long long)dt);
+                        totalFiles, (long long)dt);
         }
     }
     return didWork;
@@ -338,13 +353,23 @@ void UploadTask::uploadOneDesc(const std::string& desc_filename) {
         if (allFileUploaded) {
             Logger::log(LogLevel::INFO, "upload all files finished in %s", desc_filename.c_str());
         }
-        // grill 2026-06-28: 整体上传成功（desc 自身 + 全部媒体）→ 删除 desc。wm 是
-        // capture-upload-forget：不在 SD 留存已传 desc，也止 upload 目录无界增长拖慢扫描。
+        // grill 2026-06-28: 整体上传成功（desc 自身 + 全部媒体）→ 清理。wm 是
+        // capture-upload-forget：不在 SD/工作目录留存已传内容，也止扫描目录无界增长拖慢扫描。
         // 部分成功（有媒体未传）保留 desc，下次扫描按 file_inf 的 F_UploadedTag 重传。
         if (descfile_uploaded && allFileUploaded) {
-            Misc::deleteFile(desc_filename);
-            Logger::log(LogLevel::INFO, "UploadTask: desc removed (upload complete): %s",
-                        desc_filename.c_str());
+            if (exclusiveWorkDirs_) {
+                // m2 工作单元：desc 父目录是本 desc 独占的工作目录 → 整目录清理
+                //（desc + 残留 + 空目录一次清掉；逐文件媒体已在上面即时删除）。
+                std::string workDir = Misc::getFilepath(desc_filename);
+                Misc::removeDirectory(workDir);
+                Logger::log(LogLevel::INFO, "UploadTask: work dir removed (upload complete): %s",
+                            workDir.c_str());
+            } else {
+                // m1：desc 在共享上传扫描目录 → 仅删 desc 文件，绝不 removeDirectory 共享目录。
+                Misc::deleteFile(desc_filename);
+                Logger::log(LogLevel::INFO, "UploadTask: desc removed (upload complete): %s",
+                            desc_filename.c_str());
+            }
         }
     }
 }

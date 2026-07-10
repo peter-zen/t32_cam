@@ -180,10 +180,12 @@ WmScheduler::WmScheduler(app_lifecycle::ProcessLifecycle& lc, WmMode mode,
                          std::shared_ptr<CaptureLane> capture,
                          std::shared_ptr<IPirTrigger> trigger,
                          std::string mgmtAddr, int mgmtPort,
-                         int64_t idleGraceMs, int64_t uploadTimeoutMs)
+                         int64_t idleGraceMs, int64_t uploadTimeoutMs,
+                         std::vector<std::string> workDirs)
     : lc_(lc), mode_(mode), capture_(std::move(capture)),
       trigger_(std::move(trigger)), mgmtAddr_(std::move(mgmtAddr)), mgmtPort_(mgmtPort),
-      idleGraceMs_(idleGraceMs), uploadTimeoutMs_(uploadTimeoutMs) {}
+      idleGraceMs_(idleGraceMs), uploadTimeoutMs_(uploadTimeoutMs),
+      workDirs_(std::move(workDirs)) {}
 
 WmScheduler::~WmScheduler() {
     if (capture_) capture_->stop();
@@ -212,13 +214,19 @@ void WmScheduler::run() {
         });
     }
     if (mode_ != WmMode::CaptureOnly) {
-        // m2 lean: 扫 /tmp（quickSnap 产物 + ingest 写的 desc）；m1: 扫 SD wmUploadPath()
-        const std::string uploadDir = (mode_ == WmMode::UploadOnly) ? std::string("/tmp")
-                                                                     : wmUploadPath();
-        scheduler.setUploadFactory([this, uploadDir]() {
-            // UploadTask 自扫 SD 取 desc；wakePort_ 在 capture-Done 时被 push 唤醒重扫。
+        // m2：扫工作目录列表（wm_app 已构建：quickSnap 目录 + 兜底滞留目录，并 ensureWorkDirDesc
+        //   建好 desc）。m1：扫 SD wmUploadPath() 单目录（行为不变）。
+        // ⚠️ 每个目录串必须以 '/' 结尾：UploadTask::scanAndUploadOnePass 做 dir + f 无分隔符拼接
+        //    （wmUploadPath() 自带 "/"，m2 的工作目录由 wm_app/wm_sweep 归一化补尾斜杠）。
+        const bool m2 = (mode_ == WmMode::UploadOnly);
+        const std::vector<std::string> uploadDirs = m2 ? workDirs_
+                                                       : std::vector<std::string>{wmUploadPath()};
+        scheduler.setUploadFactory([this, uploadDirs, m2]() {
+            // UploadTask 自扫目录取 desc；wakePort_ 在 capture-Done 时被 push 唤醒重扫。
+            // m2 独占工作目录 → exclusiveWorkDirs=true（全部成功后整目录清理）；
+            // m1 desc 在共享上传扫描目录 → false（仅删 desc 文件，不动共享目录）。
             return std::unique_ptr<WmTask>(
-                new UploadTask(wakePort_, mgmtAddr_, mgmtPort_, uploadDir, nextTaskId()));
+                new UploadTask(wakePort_, mgmtAddr_, mgmtPort_, uploadDirs, m2, nextTaskId()));
         });
     }
 

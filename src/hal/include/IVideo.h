@@ -90,6 +90,14 @@ struct VideoEncodedFrame {
      bool enable_ivdc;
  };
 
+ // 进程级 HAL 常驻通道配置：决定 IngenicVideo init 时 preBind 哪些 encoder/FrameSource
+ // 通道（= 占多少 CMA）。由 boot 入口经 HalProvider::start() 显式声明，取代旧的
+ // HTC_HAL_RESIDENT_MODE env（env 已退役）。sharedVideo() 首次 lazy 构造时消费。
+ struct HalVideoConfig {
+     int  residentMode = -1;   // -1=legacy 全建(preview+record+photo+thumb) / 0=photo / 1=photo+record / 2=record
+     bool withThumb     = true; // false→不建 group2/CH14 缩略图通道（quickSnap 省内存）
+ };
+
  enum class ISPDaynightMode {
     DAY,
     NIGHT

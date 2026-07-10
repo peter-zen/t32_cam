@@ -31,6 +31,7 @@ private:
     int timeHandle_;
     int reservedHandle_;
     bool useLegacyBlock_;
+    bool exited_ = false;   // 幂等守卫：exit() 只生效一次（IngenicVideo::exit 显式调 + ~dtor 再调 = 双调）
     std::vector<uint32_t> buffer_;
     std::atomic<bool> running_;
     std::atomic<bool> started_;

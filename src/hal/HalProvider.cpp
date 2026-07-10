@@ -8,11 +8,12 @@
 #include "Logger.h"
 #include <mutex>
 namespace hal {
-std::shared_ptr<IVideo> HalProvider::createVideo() {
+std::shared_ptr<IVideo> HalProvider::createVideo(const HalVideoConfig& cfg) {
     #ifdef BUILD_FOR_SIMULATION
+        (void)cfg;
         return std::make_shared<SimVideo>();
     #else
-        return std::make_shared<IngenicVideo>();
+        return std::make_shared<IngenicVideo>(cfg);
     #endif
 }
 std::shared_ptr<IAudio> HalProvider::createAudio() {
@@ -49,13 +50,32 @@ std::mutex& sharedVideoMtx() {
     static std::mutex m;
     return m;
 }
+// 进程级常驻通道配置：start() 写、sharedVideo() lazy 构造时读。默认 {-1,true}（um/legacy 全建）。
+HalVideoConfig& residentCfgRef() {
+    static HalVideoConfig c;
+    return c;
+}
 }  // namespace
+
+void HalProvider::start(const HalVideoConfig& cfg) {
+    std::lock_guard<std::mutex> lock(sharedVideoMtx());
+    if (sharedVideoRef()) {
+        // 单例已构造（已有 consumer 触发了 lazy init）——config 改不动了，警告。
+        Logger::log(LogLevel::WARNING,
+                    "HalProvider::start: singleton already initialized (config change ignored)");
+        return;
+    }
+    residentCfgRef() = cfg;
+    Logger::log(LogLevel::INFO,
+                "HalProvider::start: resident config set (residentMode=%d withThumb=%d)",
+                cfg.residentMode, cfg.withThumb ? 1 : 0);
+}
 
 std::shared_ptr<IVideo> HalProvider::sharedVideo() {
     std::lock_guard<std::mutex> lock(sharedVideoMtx());
     auto& v = sharedVideoRef();
     if (!v) {
-        auto vid = createVideo();
+        auto vid = createVideo(residentCfgRef());
         if (vid && vid->init()) {
             v = std::move(vid);
         } else {

@@ -5,6 +5,7 @@
 #include <json/json.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <cstdlib>
 #include <cstring>
 #include "utils/crc/CRC.h"
 #include <iomanip>
@@ -90,10 +91,21 @@ void StorageServClient::uploadThread()
 
 		Logger::log(LogLevel::DEBUG, "StorageServClient: upload begin: %s", file_path.c_str());
 
-		int error_code = upload(file_path);
+		int error_code = EC_FAILED;
+		try {
+			error_code = upload(file_path);
+		} catch (const std::exception &e) {
+			Logger::log(LogLevel::ERROR, "StorageServClient: upload() threw on %s: %s",
+			            file_path.c_str(), e.what());
+		}
 
 		if (upload_callback) {
-			upload_callback(file_path, error_code);
+			try {
+				upload_callback(file_path, error_code);
+			} catch (const std::exception &e) {
+				Logger::log(LogLevel::ERROR, "StorageServClient: upload callback threw on %s: %s",
+				            file_path.c_str(), e.what());
+			}
 		}
 
 		{
@@ -164,6 +176,15 @@ int StorageServClient::upload(const std::string &file_pathname)
 	auto file_type = Misc::getFileType(file_pathname);
 	auto file_name = Misc::getFilename(file_pathname);
 
+	// Per-send timeout (seconds). Default 30s — the devtest mgmt server drains
+	// large uploads via kernel TCP retransmit taking 13-30s; the old hardcoded 5s
+	// falsely failed ~170KB JPGs at the first 64KB chunk. Override: HTC_UPLOAD_SEND_TIMEOUT_MS.
+	int sendTimeoutSec = 30;
+	if (const char *e = std::getenv("HTC_UPLOAD_SEND_TIMEOUT_MS")) {
+		int v = std::atoi(e);
+		if (v > 0) sendTimeoutSec = v / 1000;
+	}
+
 	std::string pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
 	auto comm_code = Settings::getInstance()->comm_code;
 	// Package message
@@ -218,18 +239,18 @@ int StorageServClient::upload(const std::string &file_pathname)
 	// 的 O_NONBLOCK + select(5s) 守护,统一所有 TCP send 路径的阻塞上界。
 	if (total_length <= send_buffer_size) {
 		file_stream.read(&send_buffer[fixed_length + message_length], file_size);
-		ret = sendWithTimeout(socket_fd, send_buffer.get(), total_length, 5);
+		ret = sendWithTimeout(socket_fd, send_buffer.get(), total_length, sendTimeoutSec);
 	} else {
 		int file_idx = send_buffer_size - fixed_length - message_length;
 		file_stream.read(&send_buffer[fixed_length + message_length], file_idx);
-		ret = sendWithTimeout(socket_fd, send_buffer.get(), send_buffer_size, 5);
+		ret = sendWithTimeout(socket_fd, send_buffer.get(), send_buffer_size, sendTimeoutSec);
 
 		while (ret >= 0 && file_idx < file_size) {
 			file_stream.read(&send_buffer[0], send_buffer_size);
 			int n_read = file_stream.gcount();
 			if (n_read == 0)
 				break;
-			ret = sendWithTimeout(socket_fd, send_buffer.get(), n_read, 5);
+			ret = sendWithTimeout(socket_fd, send_buffer.get(), n_read, sendTimeoutSec);
 			file_idx += n_read;
 		}
 	}
@@ -246,12 +267,20 @@ int StorageServClient::upload(const std::string &file_pathname)
 	Logger::log(LogLevel::INFO, "Upload file speed: %d kb/s, time: %d ms",
 		    duration > 0 ? total_length / duration : 0, duration);
 
-	//wait for response
+	// Wait for the server's upload ack (Status_ID response). Default 15s — a slow
+	// uplink can need >5s for the server to ack a ~170KB JPG (observed 5.1s), which
+	// the old hardcoded 5s falsely turned into EC_FAILED. Override with
+	// HTC_UPLOAD_ACK_TIMEOUT_MS (milliseconds).
+	int ackTimeoutMs = 15000;
+	if (const char *e = std::getenv("HTC_UPLOAD_ACK_TIMEOUT_MS")) {
+		int v = std::atoi(e);
+		if (v > 0) ackTimeoutMs = v;
+	}
 	{
 		std::unique_lock<std::mutex> lock(upload_mutex);
 		upload_cv.wait_for(
 			lock
-			, std::chrono::seconds(5)
+			, std::chrono::milliseconds(ackTimeoutMs)
 			, [this] { return upload_result_received;}
 		);
 	}

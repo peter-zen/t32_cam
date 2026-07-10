@@ -18,7 +18,6 @@
 #include <thread>
 #include <chrono>
 #include "DayNightSwitch.h"
-#include "MetadataDao.h"
 #include "HalProvider.h"
 #include "IVideo.h"
 
@@ -196,9 +195,9 @@ bool ImageSnap::initialize()
         } else {
             Logger::log(LogLevel::WARNING, "initialize: createVideoStream for thumb failed (thumbnail disabled)");
         }
-    } else {
-        Logger::log(LogLevel::INFO, "initialize: thumbnail disabled by config (CH2 not opened)");
     }
+    // thumbnail 关闭时（params.isThumbnailEnabled()==false）什么都不建、也不打日志——
+    // 主动选择无缩略图的调用方（quickSnap）要的是一条没有 thumbnail 痕迹的干净流程。
 
     return true;
 }
@@ -447,22 +446,8 @@ bool ImageSnap::snap_internal(const std::vector<std::string> &filenames)
         fclose(fp);
         Logger::log(LogLevel::INFO, "snap(int): saved %s (%ld bytes)", filename.c_str(), fileSize);
 
-        /* Save photo metadata to media_file.db */
-        {
-            MetadataDao dao;
-            MediaItem item;
-            item.filePath = filename;
-            item.type = 1; /* Photo */
-            item.timestamp = time(NULL);
-            item.fileSize = fileSize;
-            item.width = info.width;
-            item.height = info.height;
-            if (dao.addMedia(item)) {
-                Logger::log(LogLevel::INFO, "snap(int): saved to DB: %s", filename.c_str());
-            } else {
-                Logger::log(LogLevel::WARNING, "snap(int): addMedia failed for %s", filename.c_str());
-            }
-        }
+        // 注：DB 入库（addMedia）已从 ImageSnap 移出——ImageSnap 是纯拍照类，只写 JPEG；
+        // 入库由调用方负责（wm snap_task / 主 app CameraServiceT32::takePhoto）。quickSnap 不入库。
 
         /* Capture thumbnail from CH2 (same sensor frame, hardware scaled) */
         capture_thumbnail();
@@ -504,23 +489,7 @@ bool ImageSnap::snap_large_internal(const std::vector<std::string> &filenames)
         Logger::log(LogLevel::INFO, "snap_large_internal: saved %s (%ld bytes)",
                     filename.c_str(), fileSize);
 
-        /* Save photo metadata to media_file.db */
-        {
-            MetadataDao dao;
-            MediaItem item;
-            item.filePath = filename;
-            item.type = 1; /* Photo */
-            item.timestamp = time(NULL);
-            item.fileSize = fileSize;
-            item.width = dstW;
-            item.height = dstH;
-            if (dao.addMedia(item)) {
-                Logger::log(LogLevel::INFO, "snap_large_internal: saved to DB: %s", filename.c_str());
-            } else {
-                Logger::log(LogLevel::WARNING, "snap_large_internal: addMedia failed for %s",
-                            filename.c_str());
-            }
-        }
+        // DB 入库由调用方负责（addMedia 已从 ImageSnap 移出——纯拍照类）。
 
         /* Capture thumbnail from CH2 (when enabled — thumbStream_ is null otherwise) */
         capture_thumbnail();
@@ -636,18 +605,7 @@ bool ImageSnap::snap_large_burst_internal(const std::vector<std::string> &filena
         Logger::log(LogLevel::INFO, "snap_large_burst: saved %s (%ld bytes)",
                     filenames[i].c_str(), fileSize);
 
-        MetadataDao dao;
-        MediaItem item;
-        item.filePath = filenames[i];
-        item.type = 1; /* Photo */
-        item.timestamp = time(NULL);
-        item.fileSize = fileSize;
-        item.width = dstW;
-        item.height = dstH;
-        if (!dao.addMedia(item)) {
-            Logger::log(LogLevel::WARNING, "snap_large_burst: addMedia failed for %s",
-                        filenames[i].c_str());
-        }
+        // DB 入库由调用方负责（addMedia 已从 ImageSnap 移出——纯拍照类）。
     }
     ::rmdir(tmpDir);  /* succeeds only if empty (all temps unlinked) */
     Logger::log(LogLevel::INFO, "snap_large_burst: done, allOk=%d", allOk ? 1 : 0);

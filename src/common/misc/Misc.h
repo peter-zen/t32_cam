@@ -20,6 +20,10 @@ public:
     static bool createDirectory(const std::string& path, mode_t mode=0777);
     static bool isJsonFile(const std::string& filePath);
     static std::vector<std::string> listFilenames(const std::string& dirname);
+    // 仅直接子目录名（DT_DIR，排除 "."/".."）。与 listFilenames(DT_REG) 互补。
+    static std::vector<std::string> listSubdirectories(const std::string& dirname);
+    // 递归删除目录树（native opendir/unlink/rmdir，禁 system/popen；OOM-safe）。
+    static bool removeDirectory(const std::string& path);
 
     //network
     static std::string getIPAddress(const std::string &interface_name);

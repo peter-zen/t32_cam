@@ -17,6 +17,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "wm_task_scheduler.h"  // WmTask
 
@@ -28,10 +29,15 @@ class SlotOutputPort;
 
 class UploadTask : public WmTask {
 public:
-    // wakePort 由调用方（WmScheduler wrapper）拥有并注入；uploadDir = wmUploadPath()。
+    // wakePort 由调用方（WmScheduler wrapper）拥有并注入。
+    // uploadDirs = 待扫的工作目录列表（m2: quickSnap 目录 + 兜底滞留目录；m1: {wmUploadPath()}）。
+    //   每个目录串必须以 '/' 结尾（scanAndUploadOnePass 做 dir + 文件名 无分隔符拼接）。
+    // exclusiveWorkDirs=true（m2）时，某个 desc 全部上传成功后整目录清理（rm -rf desc 父目录，
+    //   该目录是本 desc 独占的工作单元）；false（m1，desc 在共享上传扫描目录）时仅删 desc 文件，
+    //   绝不 removeDirectory 共享目录。
     // taskId 由调用方从共享 id 池传入，保证与 CaptureTask 的 id 全局唯一（日志可读）。
     UploadTask(SlotOutputPort& wakePort, std::string mgmtAddr, int mgmtPort,
-               std::string uploadDir, int taskId);
+               std::vector<std::string> uploadDirs, bool exclusiveWorkDirs, int taskId);
     ~UploadTask() override;
 
     UploadTask(const UploadTask&) = delete;
@@ -50,7 +56,7 @@ public:
 private:
     void runLoop();
     bool ensureConnected();              // 移植自 UploadWorker::ensureConnected
-    bool scanAndUploadOnePass();         // 扫 uploadDir 下 desc，上传所有 pending；返回是否做了真实工作
+    bool scanAndUploadOnePass();         // 遍历 uploadDirs_ 每个目录扫 desc，上传所有 pending；返回是否做了真实工作
     bool hasPendingWork(const std::string& descPath) const;  // 解析 desc，判断是否有 F_UploadedTag==0
     void uploadOneDesc(const std::string& descPath);         // 移植自 UploadWorker::uploadOneDesc
     void abortBlockingIO();              // 断 mgmt/storage socket（SIGTERM 风格，移植自 UploadWorker::stop）
@@ -58,7 +64,8 @@ private:
     SlotOutputPort& wakePort_;
     std::string mgmtAddr_;
     int mgmtPort_;
-    std::string uploadDir_;
+    std::vector<std::string> uploadDirs_;
+    bool exclusiveWorkDirs_ = false;
 
     std::thread worker_;
     std::atomic<TaskState> state_{TaskState::Ready};

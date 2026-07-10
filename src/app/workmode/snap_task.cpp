@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <sys/stat.h>
 
 namespace app_workmode {
 
@@ -117,7 +118,7 @@ bool SnapTask::trigger() {
         params.setThumbnailEnabled(true);          // CH2 缩略图
         media::ImageSnap snap(params);
 
-        // snap() 写 JPG 文件 + 内部 addMedia(type=1 Photo)；缩略图捕获进 thumbData_ 但不落盘。
+        // snap() 写 JPG 文件（addMedia 已从 ImageSnap 移出，归还调用方）；缩略图捕获进 thumbData_ 但不落盘。
         ok = snap.snap(files);
         logMemInfo("photo-captured");
 
@@ -128,6 +129,25 @@ bool SnapTask::trigger() {
                             files[0].c_str(), snap.getThumbnailData().size());
             } else {
                 Logger::log(LogLevel::ERROR, "SnapTask: saveThumbnail failed for %s", files[0].c_str());
+            }
+        }
+
+        // 入库：per-file 写 media_file.db（addMedia 从 ImageSnap 移出后由调用方负责）。
+        if (ok) {
+            MetadataDao dao;
+            for (const auto& f : files) {
+                struct stat st;
+                long sz = (::stat(f.c_str(), &st) == 0) ? (long)st.st_size : 0;
+                MediaItem item;
+                item.filePath = f;
+                item.type = 1;  /* Photo */
+                item.timestamp = std::time(nullptr);
+                item.fileSize = sz;
+                item.width = W;
+                item.height = H;
+                if (!dao.addMedia(item)) {
+                    Logger::log(LogLevel::WARNING, "SnapTask: addMedia failed for %s", f.c_str());
+                }
             }
         }
     }  // Ensure JPEG/thumbnail streams are stopped and destroyed before upload starts.
