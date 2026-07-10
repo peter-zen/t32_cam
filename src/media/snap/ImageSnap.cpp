@@ -16,6 +16,7 @@
 #include "Jpeg.h"
 #include <vector>
 #include <thread>
+#include <chrono>
 #include "DayNightSwitch.h"
 #include "MetadataDao.h"
 #include "HalProvider.h"
@@ -340,6 +341,68 @@ bool ImageSnap::snap_internal(const std::vector<std::string> &filenames)
             Logger::log(LogLevel::WARNING, "stream info: query failed");
         }
     }
+
+    // AE ready wait (opt-in): wait for auto-exposure convergence before
+    // capturing the first frame. Uses ae_converged fast-path and ae_mean-vs-target
+    // settling (6 consecutive in-tolerance frames, 3s timeout).
+    // Default off — only quickSnap enables this; snap_test/wm are unaffected.
+    if (params.isAEReadyWait()) {
+        const int AE_TIMEOUT_MS  = 3000;
+        const int AE_POLL_MS     = 50;
+        const int AE_SETTLE_NEED = 6;
+        const int AE_MEAN_TOL    = 20;
+
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(AE_TIMEOUT_MS);
+        int settle = 0;
+        int waited = 0;
+        bool aeReady = false;
+
+        Logger::log(LogLevel::INFO, "AE wait: starting (timeout=%dms settle=%d tol=%d)",
+                    AE_TIMEOUT_MS, AE_SETTLE_NEED, AE_MEAN_TOL);
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            // Drain one frame to advance the ISP pipeline
+            hal::VideoEncodedFrame drainFrame{};
+            if (stream_->polling(AE_POLL_MS) && stream_->getFrame(drainFrame)) {
+                stream_->releaseFrame(drainFrame);
+            }
+
+            if (!stream_->getInfo(info)) {
+                Logger::log(LogLevel::WARNING, "AE wait: getInfo failed @%dms", waited);
+                waited += AE_POLL_MS;
+                continue;
+            }
+
+            // Fast-path: ISP reports AE stable
+            if (info.ae_converged) {
+                aeReady = true;
+                Logger::log(LogLevel::INFO, "AE wait: stable fast-path @%dms", waited);
+                break;
+            }
+
+            int diff = (info.ae_target == 0) ? 0 : abs((int)info.ae_mean - (int)info.ae_target);
+            if (diff < AE_MEAN_TOL) {
+                settle++;
+            } else {
+                settle = 0;
+            }
+
+            Logger::log(LogLevel::INFO, "AE: stable=%d mean=%u target=%u diff=%d settled=%d/%d @%dms",
+                        info.ae_converged ? 1 : 0, info.ae_mean, info.ae_target, diff, settle, AE_SETTLE_NEED, waited);
+
+            if (settle >= AE_SETTLE_NEED) {
+                aeReady = true;
+                break;
+            }
+
+            waited += AE_POLL_MS;
+        }
+
+        if (!aeReady) {
+            Logger::log(LogLevel::WARNING, "AE not converged after %dms, capture anyway", waited);
+        }
+    }
+
     for (auto& filename : filenames) {
         FILE* fp = fopen(filename.c_str(), "wb");
         if (fp == nullptr) {

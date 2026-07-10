@@ -290,8 +290,10 @@ bool ProcessLifecycle::commonStartup(const StartupConfig& cfg) {
 #endif
 
     // S2 — Initialize Database
-    if (!DatabaseManager::getInstance().init(db_path)) {
-        fprintf(stderr, "Failed to initialize Database\n");
+    if (!cfg.skipDatabase) {
+        if (!DatabaseManager::getInstance().init(db_path)) {
+            fprintf(stderr, "Failed to initialize Database\n");
+        }
     }
 
     // S3 — Start Media Scanner (async). Default mode uses the small
@@ -473,8 +475,13 @@ bool ProcessLifecycle::commonStartupPostDispatch(const StartupConfig& cfg, int c
     }
 #else
     if (!Misc::mountSDCard(SD_CARD_PATH)) {
-        Logger::log(LogLevel::ERROR, "mount sdcard error");
-        return false;
+        if (cfg.skipDatabase) {   // lean m2/m3: SD optional (log warning, keep going)
+            Logger::log(LogLevel::WARNING,
+                        "mount sdcard failed (lean mode, continuing without SD)");
+        } else {
+            Logger::log(LogLevel::ERROR, "mount sdcard error");
+            return false;
+        }
     }
 
     if (program_type == PTYPE_WIFI || command == CMD_MOBILE) {

@@ -6,7 +6,7 @@
 
 namespace app_workmode {
 
-enum class WmMode { CaptureOnly = 0, CaptureUpload = 1, UploadOnly = 2 };
+enum class WmMode { CaptureOnly = 0, CaptureUpload = 1, UploadOnly = 2, Heartbeat = 3 };
 
 enum class TaskType {
     Capture = 1,

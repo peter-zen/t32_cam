@@ -29,6 +29,7 @@
 #include "capture_lane.h"     // app_workmode::CaptureLane (m0/m1)
 #include "pir_trigger.h"      // app_workmode::SimPirTrigger / IPirTrigger (m0/m1)
 #include "wm_paths.h"         // wm-local storage roots under /mnt/huntcam
+#include "wm_ingest.h"        // ingestQuickSnapManifest (m2 /tmp media → desc)
 #include "WorkModeRunner.h"   // CMD_* (仅为 commonStartupPostDispatch 的 netif 选择)
 #include "ProcessLifecycle.h" // app_lifecycle::ProcessLifecycle + Startup/ShutdownContext
 #include "StoragePaths.h"     // storage::StoragePaths (S1 path layout)
@@ -150,11 +151,11 @@ int main(int argc, char* argv[])
     cfg.isSimulation = false;
     EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);  // 必须在最开始
     selectWmHardwareConfig(configSelectionNote);
-    auto storagePaths = std::make_shared<storage::StoragePaths>("/mnt/huntcam", "media");
+    auto storagePaths = std::make_shared<storage::StoragePaths>("/mnt/sdcard", "media");
     app_workmode::setStorage(storagePaths);
     cfg.dbPath    = EnvManager::getInstance()->getEnv("DB_PATH", storagePaths->dataDb());
     cfg.mediaRoot = storagePaths->mediaRoot();
-    cfg.logRoot   = "/mnt/huntcam/logs";
+    cfg.logRoot   = "/mnt/sdcard/logs";
     cfg.logFile   = cfg.logRoot + "/app.log";
 #endif
 
@@ -171,15 +172,60 @@ int main(int argc, char* argv[])
         Logger::log(LogLevel::INFO, "[wm] MCU disabled (HTC_NO_MCU)");
     }
 
+    // --- -m <0|1|2|3> 解析（前移到 commonStartup 之前，使 lean flag 在 S2/S3/S4 生效）---
+    {
+        const bool is_mode_cmd =
+            (argc >= 3) && (std::string(argv[1]) == "-m" || std::string(argv[1]) == "--mode");
+        if (is_mode_cmd) {
+            int m = stoi_custom(argv[2]);
+            if (m < 0 || m > 3) {
+                Logger::log(LogLevel::ERROR, "%s invalid -m %d (expect 0|1|2|3), power off", __func__, m);
+                Power::getInstance()->requestShutdown();
+                sleep(10);
+                return -1;
+            }
+            wm_mode = static_cast<app_workmode::WmMode>(m);
+        } else {
+            Logger::log(LogLevel::ERROR, "%s invalid command (expect -m <0|1|2|3>), power off", __func__);
+            Power::getInstance()->requestShutdown();
+            sleep(10);
+            return -1;
+        }
+
+        // lean 启动（m2/m3）：无卡 / 无 DB / 无重传（wm-app-spec §2.1）
+        const bool lean = (wm_mode == app_workmode::WmMode::UploadOnly
+                        || wm_mode == app_workmode::WmMode::Heartbeat);
+        if (lean) {
+            cfg.skipDatabase = true;
+            cfg.skipMediaScanner = true;
+            cfg.skipFactoryConfig = true;
+            cfg.skipUpdateConfig = true;
+    #ifndef BUILD_FOR_SIMULATION
+            // lean: SD 可选，缺则 log 回退 /tmp/wm.log
+            if (access("/mnt/sdcard", W_OK) != 0) {
+                cfg.logRoot = "/tmp";
+                cfg.logFile = "/tmp/wm.log";
+            }
+    #endif
+        }
+    }
+
     // --- S1-S8 + signal install ---
     app_lifecycle::ProcessLifecycle lc;
     if (!lc.commonStartup(cfg)) return -1;
     if (!lc.installSignalHandlers()) return -1;
 #ifndef BUILD_FOR_SIMULATION
-    // wm is a single-shot worker. Keep the authoritative app.log file, but do
-    // not synchronously flush every log line to the serial console while HAL
-    // teardown and upload auth run in parallel.
-    elog_set_terminal_output(false);
+    // Default off: keep app.log authoritative. Async elog (commit 5da4c1a)
+    // already moved fwrite off the hot threads (caller only does vsnprintf +
+    // ring push; a consumer thread does fwrite + 100ms flush), so the original
+    // "synchronously flush every log line" concern is gone. But the serial UART
+    // is a slow device — flooding it slows the single consumer thread and raises
+    // drop-oldest on app.log. Set HTC_SERIAL_LOG=1 to also emit to the serial
+    // console for live bring-up debugging (parallel to app.log).
+    const char* serialEnv = std::getenv("HTC_SERIAL_LOG");
+    if (!(serialEnv && serialEnv[0] == '1')) {
+        elog_set_terminal_output(false);
+    }
 #endif
     if (!configSelectionNote.empty()) {
         Logger::log(LogLevel::INFO, "[wm] %s", configSelectionNote.c_str());
@@ -198,33 +244,17 @@ int main(int argc, char* argv[])
         if (dbg[0] == '1') Logger::setLogLevel(LogLevel::DEBUG);
     }
 
-    // --- -m <0|1|2> 解析 ---
-    const bool is_mode_cmd =
-        (argc >= 3) && (std::string(argv[1]) == "-m" || std::string(argv[1]) == "--mode");
-    if (is_mode_cmd) {
-        int m = stoi_custom(argv[2]);
-        if (m < 0 || m > 2) {
-            Logger::log(LogLevel::ERROR, "%s invalid -m %d (expect 0|1|2), power off", __func__, m);
-            Power::getInstance()->requestShutdown();
-            sleep(10);
-            return -1;
-        }
-        wm_mode = static_cast<app_workmode::WmMode>(m);
-        Logger::log(LogLevel::INFO, "[wm] op=boot mode=%d", m);
-    } else {
-        Logger::log(LogLevel::ERROR, "%s invalid command (expect -m <0|1|2>), power off", __func__);
-        Power::getInstance()->requestShutdown();
-        sleep(10);
-        return -1;
-    }
+    // --- 日志当前模式（-m 解析已在 commonStartup 前完成） ---
+    Logger::log(LogLevel::INFO, "[wm] op=boot mode=%d", static_cast<int>(wm_mode));
 
     // command 只为 commonStartupPostDispatch 的 S11 netif 选择（wm 不跑 cascade）：
-    // m0 离线；m1/m2 需网络。镜像 workModeToCommand 的 netif 位。
+    // m0 离线；m1/m2/m3 需网络。镜像 workModeToCommand 的 netif 位。
     if (wm_mode == app_workmode::WmMode::CaptureOnly) {
         command = CMD_SNAP;
     } else if (wm_mode == app_workmode::WmMode::CaptureUpload) {
         command = CMD_SNAP | CMD_CONN_NET | CMD_DHCP | CMD_NTP;
-    } else {  // UploadOnly
+    } else if (wm_mode == app_workmode::WmMode::UploadOnly
+            || wm_mode == app_workmode::WmMode::Heartbeat) {
         command = CMD_CONN_NET | CMD_DHCP | CMD_NTP;
     }
 
@@ -293,10 +323,21 @@ int main(int argc, char* argv[])
     int64_t uploadTimeoutMs = 60000;
     if (const char* e = std::getenv("HTC_UPLOAD_TIMEOUT_MS")) { int v = std::atoi(e); if (v > 0) uploadTimeoutMs = v; }
 
-    // --- Capture lane + trigger（m0/m1 才有；m2 无捕获）---
+    // --- Capture lane + trigger（m0/m1 才有；m2/m3 无捕获）---
     std::shared_ptr<app_workmode::CaptureLane>  captureLane;
     std::shared_ptr<app_workmode::IPirTrigger>  pirTrigger;
-    if (wm_mode != app_workmode::WmMode::UploadOnly) {
+    if (wm_mode != app_workmode::WmMode::UploadOnly
+        && wm_mode != app_workmode::WmMode::Heartbeat) {
+        // 算有效 cameraMode（同 capture_lane 逻辑：Settings + HTC_WM_CAMERA_MODE env 覆盖），
+        // 暴露给 hal 的 buildResidentChannels 做 selective preBind：wm 只建本模式需要的通道
+        // （cm==0 拍照不建 H264 CH0 → 省 ~1.84MB 连续 buf_base，根除低内存 crash；wm 永不建 preview CH1）。
+        // 必须在 scheduler.run()（首次 capture 触发 sharedVideo→init→preBind）之前设。
+        {
+            uint8_t cm = Settings::getInstance()->cameraMode;
+            if (const char* e = std::getenv("HTC_WM_CAMERA_MODE")) cm = static_cast<uint8_t>(stoi_custom(e));
+            setenv("HTC_HAL_RESIDENT_MODE", to_string_custom(static_cast<int>(cm)).c_str(), 1);
+            Logger::log(LogLevel::INFO, "[wm] HAL resident mode=%d (selective preBind)", (int)cm);
+        }
         captureLane = std::make_shared<app_workmode::CaptureLane>();
         int pirIntervalMs = 10000;  // SimPirTrigger 默认 10s（HTC_SIM_PIR_INTERVAL_MS 可调）
         if (const char* e = std::getenv("HTC_SIM_PIR_INTERVAL_MS")) { int v = std::atoi(e); if (v > 0) pirIntervalMs = v; }
@@ -304,6 +345,11 @@ int main(int argc, char* argv[])
         int pirCount = 0;
         if (const char* e = std::getenv("HTC_SIM_PIR_COUNT")) { int v = std::atoi(e); if (v >= 0) pirCount = v; }
         pirTrigger = std::make_shared<app_workmode::SimPirTrigger>(pirIntervalMs, pirCount);
+    }
+
+    // --- m2 ingest：读 /tmp/media/info.json → 造 desc 到 /tmp 扫描目录 ---
+    if (wm_mode == app_workmode::WmMode::UploadOnly) {
+        app_workmode::ingestQuickSnapManifest("/tmp");
     }
 
     // --- 主循环（长驻直到关机）---

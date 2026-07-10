@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "ProcessLifecycle.h"   // app_lifecycle::ProcessLifecycle
+#include "Common.h"             // EC_SUCCESS
+#include "MgmtServClient.h"     // network::MgmtServClient (m3 heartbeat)
 #include "upload_task.h"        // UploadTask (new wm-private type=2 task)
 #include "capture_lane.h"       // CaptureLane
 #include "pir_trigger.h"        // IPirTrigger
@@ -188,6 +190,11 @@ WmScheduler::~WmScheduler() {
 }
 
 void WmScheduler::run() {
+    if (mode_ == WmMode::Heartbeat) {
+        runHeartbeat();
+        return;
+    }
+
     const int kPollMs = 200;
     const bool oneShot = (std::getenv("HTC_WM_ONE_SHOT") != nullptr);
 
@@ -205,7 +212,9 @@ void WmScheduler::run() {
         });
     }
     if (mode_ != WmMode::CaptureOnly) {
-        const std::string uploadDir = wmUploadPath();
+        // m2 lean: 扫 /tmp（quickSnap 产物 + ingest 写的 desc）；m1: 扫 SD wmUploadPath()
+        const std::string uploadDir = (mode_ == WmMode::UploadOnly) ? std::string("/tmp")
+                                                                     : wmUploadPath();
         scheduler.setUploadFactory([this, uploadDir]() {
             // UploadTask 自扫 SD 取 desc；wakePort_ 在 capture-Done 时被 push 唤醒重扫。
             return std::unique_ptr<WmTask>(
@@ -271,6 +280,29 @@ void WmScheduler::run() {
         capture_->stop();
         capture_.reset();
     }
+}
+
+void WmScheduler::runHeartbeat() {
+    Logger::log(LogLevel::INFO, "[wm] op=start mode=3 (heartbeat)");
+    // spec §2.1 m3：connect + auth + 单次 sendHeartbeat
+    if (mgmtAddr_.empty() || mgmtPort_ <= 0) {
+        Logger::log(LogLevel::WARNING, "[wm] heartbeat: mgmt server not configured, skip");
+        return;   // 进 wm_app 尾序 → MCU 回写 + poweroff
+    }
+    network::MgmtServClient mgmt(mgmtAddr_, mgmtPort_);
+    if (EC_SUCCESS != mgmt.connect(3000)) {
+        Logger::log(LogLevel::ERROR, "[wm] heartbeat: connect [%s:%d] failed",
+                    mgmtAddr_.c_str(), mgmtPort_);
+        return;
+    }
+    if (EC_SUCCESS != mgmt.authenticate()) {
+        Logger::log(LogLevel::ERROR, "[wm] heartbeat: auth failed");
+        return;
+    }
+    int rc = mgmt.sendHeartbeat();   // 恰好一次（spec §12.2 #19）
+    Logger::log(LogLevel::INFO, "[wm] op=heartbeat_sent rc=%d", rc);
+    // 不等 server resp、不 loop、不碰 /tmp、不上传
+    // 返回后 wm_app 尾序走 shutdown → writebackMcu → poweroff
 }
 
 }  // namespace app_workmode

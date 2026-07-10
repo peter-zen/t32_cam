@@ -7,7 +7,8 @@
 // → Shutdown；Upload 超时→requestShutdown(SIGTERM)；外部信号→Shutdown。Shutdown
 // 屏蔽触发、不可中断。
 //
-// m0(CaptureOnly)=仅 Capture；m1(CaptureUpload)=Capture+Upload；m2(UploadOnly)=仅 Upload。
+// m0(CaptureOnly)=仅 Capture；m1(CaptureUpload)=Capture+Upload；m2(UploadOnly)=仅 Upload；
+// m3(Heartbeat)=单次心跳+poweroff（lean，不走 slot 模型）。
 //
 // 注：不再持有 legacy 共享的 UploadWorker——type 2 由新 UploadTask 自扫 SD 上传。
 #include <cstdint>
@@ -39,6 +40,8 @@ public:
     void run();
 
 private:
+    void runHeartbeat();  // m3: connect+auth+sendHeartbeat 一次 → return（不走 slot 模型）
+
     app_lifecycle::ProcessLifecycle& lc_;
     WmMode  mode_;
     std::shared_ptr<CaptureLane>  capture_;

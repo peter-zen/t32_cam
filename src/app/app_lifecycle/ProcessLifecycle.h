@@ -29,6 +29,7 @@ struct StartupConfig {
     bool isSimulation = false;        // mirrors BUILD_FOR_SIMULATION
 
     // Skip flags (default false = run the step; htc_main_app leaves all false):
+    bool skipDatabase       = false;  // S2 (lean m2/m3: upload/heartbeat are DB-free)
     bool skipMediaScanner   = false;  // S3
     bool skipFactoryConfig  = false;  // HW-only sub-step of S11
     bool skipUpdateConfig   = false;  // HW-only sub-step of S11

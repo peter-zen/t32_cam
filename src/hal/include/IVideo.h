@@ -36,6 +36,8 @@
      int fps_den;
      VideoPayloadType payload;
      bool ae_converged;
+     unsigned int ae_mean;
+     unsigned int ae_target;
  };
  
 // 编码后的视频帧数据，data 为完整一帧码流（如 JPEG 图片）

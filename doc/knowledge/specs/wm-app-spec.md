@@ -13,6 +13,7 @@
 - 单功能验证（record/snap/upload 真机绿、ntp/mcu/http 仿真绿）完成后，**新建独立 binary `wm`** 重新组合这些稳定模块，**不复用、不修改** `htc_workmode_app`。
 - `wm` 只承接**一次性任务**模式（`-m 0/1/2`）；长驻模式（旧 `-wm 3` TEST_ONLY / `-wm 4` UVC）拆到**另一个 usermode app**（见 [`../decisions/workmode-usermode-process-split.md`](../decisions/workmode-usermode-process-split.md)）。
 - **硬约束继承**：1-wm-per-boot（IMP 驱动不支持一 boot 内 ≥2 个 IMP 进程）；进程内永不 `IMP_System_Exit`（单例 + channel 级释放）。
+- **上游 quickSnap（2026-07-09 起）**：ZL 型号上，wm 由上电首进程 `quickSnap`（[`quicksnap-app-spec.md`](quicksnap-app-spec.md)）`fork+execv` 拉起，handoff = `wm -m <2|3>`（**无 `-rtc`**）。quickSnap 拍所有片（落 `/tmp/media/`），wm 只跑 `-m 2`(上传)/`-m 3`(心跳)，**都不拍照、不 init IMP**。m2/m3 走 **lean 启动**（§2.1：无卡 / 无 DB / 无重传）。
 
 ---
 
@@ -21,7 +22,7 @@
 | 项 | 值 |
 |----|----|
 | binary 名 | `wm`（新建，源码 `src/app/wm/`） |
-| CLI | `wm -m <0\|1\|2>`（**无 `-rtc` 入参**——wm 自跑时间链，见 §6） |
+| CLI | `wm -m <0\|1\|2\|3>`（**无 `-rtc` 入参**——wm 自跑时间链，见 §6） |
 | 与旧 app 关系 | **并存**：`htc_workmode_app` / `htc_main_app -wm` 暂留，不破坏现有 spawn 契约；是否让 `media_app` 改 spawn `wm` 留后续 |
 | 平台 | **双平台必须编译**：真机（`toolchain.cmake`，进 `build/bin/wm`）+ 仿真（`-DBUILD_FOR_SIMULATION=ON`，进 `build_sim/bin/wm`） |
 | devtest 钩子 | 保留 `HTC_TEST_NO_POWEROFF`：置 1 则关机走 `_exit(0)` 而非 `Misc::poweroff()`，供 devctl 同 boot 重跑（与旧 app 一致） |
@@ -30,15 +31,48 @@
 
 ## 2. 模式（`-m`）
 
-三个模式，全部**循环架构**（非 one-shot；见 §3）。`-m 2` 不涉及拍照。
+四个模式。`-m 0/1`（capture）是**循环架构**（见 §3）；**`-m 2/3`（lean）是 one-shot**（quickSnap handoff，见 §2.1）。`-m 2/3` 都不拍照、不 init IMP。
 
 | `-m` | 名 | Capture lane | Upload lane | WiFi | 典型用途 |
 |------|----|-------------|------------|------|---------|
 | **0** | CAPTURE_ONLY | 有 | **无** | **关**（离线） | 省电拍照/录影，文件留 SD，下次 boot 传 |
 | **1** | CAPTURE+UPLOAD | 有 | 有（首个 Capture 完成后才调度，之后并发） | 开 | 拍完即传 |
-| **2** | UPLOAD_ONLY | **无** | 有（立即 drain SD 遗留 desc） | 开 | 补传上次没传完的文件 |
+| **2** | UPLOAD_ONLY（**lean**） | **无** | 有（扫 `/tmp/media/` quickSnap 产物） | 开 | 上传 quickSnap 本次拍的片；**无卡可跑、无重传**（§2.1） |
+| **3** | HEARTBEAT（**lean**） | **无** | **无** | 开 | 单次心跳上报在线；**不碰 /tmp、不上传**（§2.1） |
 
 > 说明：`-m 0` 离线 → 无 NTP，时间只靠 RTC/MCU（见 §6.3）。
+
+### 2.1 lean 启动模式（`-m 2` / `-m 3`，无卡 / 无 DB）
+
+> 来源：grill 2026-07-09（决策见 §12.2）。ZL 上 wm 由 quickSnap 拉起只跑 `-m 2`/`-m 3`，二者均**不拍照、不 init IMP**（IMP 懒初始化经 `sharedVideo()`，仅 capture 触发；m2/m3 跳过 `CaptureLane` → 不触发）。
+
+**为何 lean**：quickSnap 不用 DB、不依赖 SD（片落 `/tmp/media/` RAM）。下游 m2/m3 同理——**无卡可工作 = 必要功能**；SD 仅用于「想长期保留照片」的场景（本次不做保留，follow-up）。DB（SQLite）只服务 capture（m0/m1 写元数据/缩略图）及其他产品形态；m2/m3 不 capture → 不需要 DB。lean 触发**按模式**（m2/m3），非配置开关——因 DB 需求 = capture 需求，是架构属性。
+
+**lean 启动差异表**（`commonStartup`，vs m0/m1）：
+
+| 步骤 | m0/m1（保持现状） | **m2/m3（lean）** |
+|---|---|---|
+| S2 `DatabaseManager::init` | 执行（capture 写元数据/缩略图） | **跳过**（上传链路 DB-free） |
+| S3 `MediaScanner` | 执行 | **跳过**（`cfg.skipMediaScanner=true`） |
+| S11 `mountSDCard` | fatal（DB 在 SD 上） | **non-fatal**：尝试挂、失败记 warning 继续；挂上则 SD 可用于日志 |
+| factory/update config | 执行 | **跳过**（`skipFactoryConfig`/`skipUpdateConfig`——lean 避免访问 SD） |
+| log file | `/mnt/sdcard/logs/app.log` | SD 在→同左；**SD 缺→回退 `/tmp/wm.log`**（m2/m3 短命，/tmp 够） |
+
+> config（`MS_IP`/`MS_PORT`/`PID`/NTP）在 flash `/config/htc/config.ini`（与 quicksnap.json 同目录），**无卡也能读** → lean 可连服务器。
+
+**`-m 2`（UPLOAD_ONLY，lean）行为**：
+1. lean 启动（上表）。
+2. **ingest**：读 `/tmp/media/info.json`（quickSnap manifest：`{files:[..], dir:"<ts>"}`）→ 造 desc（`device.PID` 来自 flash config；`file_inf[].F_FilePath`=`/tmp/media/<dir>`、`F_FileName`=manifest 文件名；转换调 `manifest::createDescInfoFile`——不复用 processCmdSnap，/tmp→SD 搬移作废）→ 写到 UploadTask 扫描目录（`/tmp`）。
+3. `WmScheduler.run()` → UploadTask（slot 2）扫 `/tmp` → `uploadOneDesc` 传 desc + 媒体（协议同 §8）→ 成功后删文件 → idle-grace → poweroff。
+4. **不 init IMP、不扫 SD、不写 DB、无跨 boot 重传**（无卡→无持久层→失败即丢，产品取舍，可接受）。
+
+**`-m 3`（HEARTBEAT，lean）行为**：
+1. lean 启动（上表）。
+2. connect + auth mgmt（`MS_IP`/`MS_PORT`，flash config）。
+3. **单次** `sendHeartbeat()` → poweroff。
+4. **不碰 `/tmp`、不上传、不 init IMP**。「周期性心跳」= **MCU 周期唤醒**设备（每次唤醒 = 1 boot = quickSnap → `wm -m 3` → 单次心跳），非单 boot 内 loop。m3 **不走 capture/upload slot 模型**，heartbeat 作为 scheduler 的一个新「动作」，套薄 scheduler 外壳以统一 signal/poweroff/§7 MCU 回写尾序。
+
+**协议约束**：server **强制要求 desc 元数据**（[`upload-protocol-spec.md`](upload-protocol-spec.md) §5：先传 desc JSON 再传 file）——故 m2 必须从 manifest 造 desc 再传，不能只传裸媒体。
 
 ---
 
@@ -214,7 +248,8 @@ Shutdown task（或 MCU override）的 teardown 序：
 
 **新建 wm 私有 `UploadTask`**（`src/app/workmode/upload_task.cpp`）作为 type=2 task；lazy connect/auth + per-desc 上传逻辑移植自已验证的 `UploadWorker`（`src/app/workmode/upload_worker.cpp`），但**不复用、不修改** `UploadWorker`——后者是 legacy `htc_workmode_app` 也用的共享服务，保持原状。capture task 不再 enqueue 任何 upload 对象。
 
-- `UploadTask` 自扫 `MEDIA_UPLOAD_PATH`（`app.h:27`，`SD_CARD_PATH/media/upload/`）下 `F_UploadedTag==0` 的 desc.json（m1 新鲜产物 + m2/跨 boot resume 积压同源）。
+- **m1**：`UploadTask` 自扫 `MEDIA_UPLOAD_PATH`（`app.h:27`，`SD_CARD_PATH/media/upload/`）下 `F_UploadedTag==0` 的 desc.json（capture 新鲜产物 + 跨 boot resume 积压）。
+- **m2（lean）**：扫描目录指向 `/tmp`（ingest 把 desc 写到 `/tmp`）；启动时 ingest `/tmp/media/info.json` → 经 `manifest::createDescInfoFile` 造 desc（`F_FilePath` 指 `/tmp/media/<dir>`），复用 `uploadOneDesc` 上传 desc + 媒体。**不扫 SD、无跨 boot 重传**（§2.1）。⚠️ 当前扫 `/tmp` 根偏宽（follow-up `T19-RV-m2-tmp-scan-broad`：收窄到专用子目录）。
 - 空闲时 `wait()` 在 `SlotOutputPort`（signal）上，被 capture-Done 的 wake token 唤醒后重扫。
 - 上传 desc 本身 + `file_inf` 里的媒体文件，走 **TCP mgmt/storage server**（`MS_IP`/`MS_PORT`，**非 HTTP**，自定义二进制帧协议，`StorageServClient.cpp:121-218`）。
 - **「未处理」= `F_UploadedTag==0`**（desc JSON 标志，desc 级 + 文件级，**非 DB 字段**）；传成功回写 tag=1，可选按 `FILE_MANAGE` 删源文件。
@@ -294,12 +329,29 @@ Shutdown task（或 MCU override）的 teardown 序：
 | 11 | binary 定位 | 新建 `wm`，`-m 0/1/2`，双平台，保留 `HTC_TEST_NO_POWEROFF` |
 | 12 | 配置旋钮 | 产品走 setting.json，旋钮走 HTC_\* env（G=30s / upload=60s / one-shot 默认关） |
 
+### 12.2 决策日志（grill 2026-07-09，quickSnap handoff + lean 模式）
+
+| # | 决策点 | 结论 |
+|---|--------|------|
+| 13 | quickSnap handoff | wm 由 quickSnap `fork+execv` 拉起为 `wm -m <2\|3>`（无 `-rtc`）；quickSnap 拍所有片落 `/tmp/media/` |
+| 14 | m2/m3 不 init IMP | 现状已符合（跳 `CaptureLane`→不触发 `sharedVideo`），仅验证不改 |
+| 15 | 无卡可工作 | **必要功能**；`mountSDCard` 对 m2/m3 降级 non-fatal；SD 仅用于日志/保留（保留 follow-up） |
+| 16 | 无 DB 支援 | m2/m3 跳 DB init + MediaScanner（上传链路 DB-free）；DB 只给 capture/其他产品形态 |
+| 17 | lean gating | **按模式**（m2/m3），非配置开关（DB 需求 = capture 需求） |
+| 18 | m2 上传源 | `/tmp/media/info.json`→desc，UploadTask 扫 `/tmp`；**不扫 SD、无重传**（失败可接受丢失） |
+| 19 | m3 语义 | connect+auth+**单次** sendHeartbeat+poweroff；周期性 = MCU 唤醒；薄 scheduler 外壳 |
+| 20 | m2 不发心跳 | （暂）保持模式职责单一 |
+| 21 | `QUICK_SNAP_DIR` 改名 | `/tmp/quick_snap/`→`/tmp/media/`（`app.h` + quickSnap 新码；不碰死引用） |
+| 22 | 验收 | 扩 `test_wm_modes_matrix.py`（m3/no-SD//tmp-seed/no-DB）+ sim stub/HW 日志验 IMP-not-init |
+
 ---
 
 ## 13. 不在范围 / 后续
 
 - 长驻模式（TEST_ONLY / UVC / PIR EventLoop）→ 另一个 usermode app。
 - `cameraMode 3`（并发拍录）→ 后续，受 CH2 8M 约束。
+- **cameraMode 读点迁 quicksnap.json + Settings 序列化摘 4 字段影子**（quicksnap-app-spec §2.3 γ 闭环）→ **defer**：m2/m3 不读 cameraMode、本 quickSnap 链路无影响；m0/m1 迁移作 follow-up。
+- **SD 在场时把照片落一份到 SD 做长期保留**（§2.1「保留」语义）→ follow-up（本次 m2 只走 /tmp）。
 - `media_app` 是否改 spawn `wm`、旧 `htc_workmode_app` 退役时点 → 待 wm 稳定后定。
 - MCU override 关机的触发协议细节 → 单独 spec。
 - upload 真后端 mock（devtest 用）→ 后续。
@@ -314,4 +366,6 @@ Shutdown task（或 MCU override）的 teardown 序：
 - [`../decisions/workmode-usermode-process-split.md`](../decisions/workmode-usermode-process-split.md) — wm/um 拆分 ADR（3/4 去 usermode app 的依据）
 - [`workmode-selection-and-switching.md`](workmode-selection-and-switching.md) §14 — 旧 `-wm` 目标态（与本文 `-m` 不同体系，勿混）
 - [`main-app-mode-behavior.md`](main-app-mode-behavior.md) — 旧 app 模式行为（对照）
+- [`quicksnap-app-spec.md`](quicksnap-app-spec.md) — 上电首进程 quickSnap（m2/m3 上游 handoff、lean 模式依据）
+- [`upload-protocol-spec.md`](upload-protocol-spec.md) — 上传协议（desc 元数据强制；m2 造 desc 的协议依据）
 - [`photo-video-concurrent-implementation-plan.md`](photo-video-concurrent-implementation-plan.md) — 并发拍录（cameraMode 3，暂不在范围）

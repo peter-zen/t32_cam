@@ -1118,12 +1118,34 @@ static std::vector<ResidentChannelDef> buildResidentChannels() {
         return d;
     };
     std::vector<ResidentChannelDef> v;
-    // group0(CH0 2560×1440): record H264 enc0 + photo JPEG enc12
-    v.push_back(mk(0, 0,  VideoPayloadType::H264, 0, 2560, 1440, 30, 0, 4096, 60, VideoRcMode::CBR,   true));
-    v.push_back(mk(0, 12, VideoPayloadType::JPEG, 0, 2560, 1440, 15, 40, 0,    0,  VideoRcMode::FIXQP, true));
-    // group1(CH1 1280×720): preview(RTSP) H264 enc1
-    v.push_back(mk(1, 1,  VideoPayloadType::H264, 1, 1280, 720,  30, 0, 2048, 60, VideoRcMode::CBR,   true));
-    // group2(CH2 320×180): thumbnail JPEG enc14
+
+    // Selective preBind：HTC_HAL_RESIDENT_MODE 由 wm_app 算好传入（值=cameraMode）。
+    // wm 一次只跑一个 cameraMode → 只建该模式需要的通道，省 VPU/连续内存（cm==0 拍照不再建
+    // H264 CH0 的 ~1.84MB buf_base，根除低内存 crash）。wm 永不用 preview → 不建 group1/CH1。
+    // cm==1(拍+录) 仍建 CH0+CH12(concurrent)，避免 JPEG→H264 异 payload Destroy/Create 触发
+    // VPU wedge（reviews/2026-06-25-wm-cm1-reproducer-investigation.md）。未设 env（um/legacy）
+    // → 全建 4 通道，保持现状。
+    int residentMode = -1;
+    if (const char* e = getenv("HTC_HAL_RESIDENT_MODE")) residentMode = atoi(e);
+
+    if (residentMode < 0) {
+        // um / legacy：全建（preview CH1 + record CH0 + photo CH12 + thumb CH14）
+        v.push_back(mk(0, 0,  VideoPayloadType::H264, 0, 2560, 1440, 30, 0, 4096, 60, VideoRcMode::CBR,   true));
+        v.push_back(mk(0, 12, VideoPayloadType::JPEG, 0, 2560, 1440, 15, 40, 0,    0,  VideoRcMode::FIXQP, true));
+        v.push_back(mk(1, 1,  VideoPayloadType::H264, 1, 1280, 720,  30, 0, 2048, 60, VideoRcMode::CBR,   true));
+        v.push_back(mk(2, 14, VideoPayloadType::JPEG, 2, 320,  180,  15, 80, 0,    0,  VideoRcMode::FIXQP, true));
+        return v;
+    }
+
+    // wm selective：永不建 preview(group1/CH1)。
+    //   cm==0(拍照) → CH12 + CH14
+    //   cm==2(录影) → CH0  + CH14   （concurrentSnap 默认开 → 录影缩略图 CH14）
+    //   cm==1(拍+录)→ CH0  + CH12 + CH14 （concurrent，避 VPU wedge）
+    bool needRecord = (residentMode == 2 || residentMode == 1);  // H264 CH0
+    bool needPhoto  = (residentMode == 0 || residentMode == 1);  // JPEG CH12
+    if (needRecord) v.push_back(mk(0, 0,  VideoPayloadType::H264, 0, 2560, 1440, 30, 0, 4096, 60, VideoRcMode::CBR,   true));
+    if (needPhoto)  v.push_back(mk(0, 12, VideoPayloadType::JPEG, 0, 2560, 1440, 15, 40, 0,    0,  VideoRcMode::FIXQP, true));
+    // group2(CH14 320×180)：thumbnail（photo thumb + record 缩略图共用），总建
     v.push_back(mk(2, 14, VideoPayloadType::JPEG, 2, 320,  180,  15, 80, 0,    0,  VideoRcMode::FIXQP, true));
     return v;
 }
@@ -1365,8 +1387,12 @@ bool IngenicVideoStream::getInfo(VideoStreamInfo& info) {
     IMPVI_NUM vi = (IMPVI_NUM)(info.sensor_index);
     if (IMP_ISP_Tuning_GetAeOnlyReadAttr(vi, &ae_attr) == 0) {
         info.ae_converged = ae_attr.stable ? true : false;
+        info.ae_mean   = ae_attr.ae_mean;
+        info.ae_target = ae_attr.target;
     } else {
         info.ae_converged = false;
+        info.ae_mean   = 0;
+        info.ae_target = 0;
     }
     return true;
 }

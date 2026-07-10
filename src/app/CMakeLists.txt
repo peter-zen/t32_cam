@@ -6,6 +6,7 @@ file (GLOB NET_APP_SOURCES "${SOURCES}/app/net_app.cpp")
 file(GLOB WORKMODE_APP_SOURCES "${SOURCES}/app/workmode_app.cpp")
 file(GLOB WM_APP_SOURCES "${SOURCES}/app/wm_app.cpp")
 file(GLOB UM_APP_SOURCES "${SOURCES}/app/um_app.cpp")
+file(GLOB QUICK_SNAP_SOURCES "${SOURCES}/app/quick_snap.cpp")
 set(NET_APP_HELPER_SOURCES
     "${SOURCES}/app/net_app_logic.cpp"
     "${SOURCES}/app/wifi_reconnect.cpp"
@@ -69,6 +70,7 @@ add_executable(htc_net_app ${NET_APP_SOURCES} ${NET_APP_HELPER_SOURCES})
 add_executable(htc_workmode_app ${WORKMODE_APP_SOURCES})
 add_executable(wm ${WM_APP_SOURCES})
 add_executable(um ${UM_APP_SOURCES})
+add_executable(quickSnap ${QUICK_SNAP_SOURCES})
 add_executable(snap_test ${CMAKE_CURRENT_SOURCE_DIR}/snap_test.cpp)
 add_executable(time_test ${CMAKE_CURRENT_SOURCE_DIR}/time_test.cpp)
 
@@ -321,9 +323,39 @@ if(BUILD_FOR_SIMULATION)
         gcc
         stdc++
     )
+
+    # quickSnap (SIM) — boot-phase snap + spawn downstream without shell.
+    # Mirrors htc_media_app SIM closure minus system_call, plus app_lifecycle/
+    # common_misc/gpio. No system_call/popen link — quickSnap uses fork+execv.
+    target_link_libraries(quickSnap
+        PRIVATE
+        #media libs
+        media_snap
+        hal_video
+        hal_audio
+        #logging
+        logger
+        #common libs
+        setting
+        env
+        jsoncpp
+        daynight
+        app_workmode
+        gpio
+        common_misc
+        common_time_rtc
+        common_time_timezone
+        app_lifecycle
+        #sdk libs
+        sdk_stub
+        #std libs
+        rt
+        gcc
+        stdc++
+    )
 else()
 # Link libraries
-target_link_libraries(htc_daemon_app 
+target_link_libraries(htc_daemon_app
     PRIVATE
 
     #common libs
@@ -585,6 +617,37 @@ target_link_libraries(um
     gcc
     stdc++
 )
+
+# quickSnap (T32) — boot-phase snap + spawn downstream without shell.
+# Mirrors htc_media_app T32 closure minus system_call (quickSnap uses fork+execv).
+# Link app_lifecycle (for syncSystemTime); does NOT link system_call.
+target_link_libraries(quickSnap
+    PRIVATE
+    #media libs
+    media_snap
+    hal_video
+    hal_audio
+    #logging
+    logger
+    #common libs
+    setting
+    env
+    jsoncpp
+    daynight
+    app_workmode
+    gpio
+    common_misc
+    common_time_rtc
+    common_time_timezone
+    app_lifecycle
+    #sdk libs
+    imp
+    alog
+    #std libs
+    rt
+    gcc
+    stdc++
+)
 endif()
 
 # Set output directory
@@ -641,6 +704,10 @@ set_target_properties(wm PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 set_target_properties(um PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+set_target_properties(quickSnap PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

@@ -344,6 +344,8 @@ bool SimVideoStream::getInfo(VideoStreamInfo& info) {
     info.fps_den = cfg_.fps_den > 0 ? cfg_.fps_den : 1;
     info.payload = cfg_.payload;
     info.ae_converged = true;
+    info.ae_mean   = 0;
+    info.ae_target = 0;
     return true;
 }
 bool SimVideoStream::requestIDR() {

@@ -6,9 +6,10 @@
 
 ## 2. 当前关注点
 
-四条 active track 并行：
+五条 active track 并行：
 - **wm-app（最新）**：Phase-1 单功能验证（record/snap/upload 真机绿）完成后，**新建独立 binary `wm`**（`-m 0/1/2`：CAPTURE_ONLY / CAPTURE+UPLOAD / UPLOAD_ONLY）重组这些稳定模块，丢弃 crash 不收敛的 `htc_workmode_app`。架构=任务调度器（pending + Capture/Upload lane + Shutdown task，自管关机）。**时间链（RTC→MCU→NTP + ntpSynced + 关机回写）已用 `time_test` 真机验证通过（7/7 GREEN）**，链代码可 lift 进 wm。规格见 [`specs/wm-app-spec.md`](specs/wm-app-spec.md)，验证见 [`reviews/2026-06-23-time-chain-hw-verification.md`](../reviews/2026-06-23-time-chain-hw-verification.md)。
 - **um-app（规划中）**：wm 基本就绪后启动。**关键发现**：um 侧单元（rtsp/http/mdns/daynight）早已是独立 linkable 库，legacy 只在 `runCommands` 做 wiring——故 um=新写编排器组合现成库 + lifecycle，风险 << wm。架构=**server-lifecycle**（非 wm task-scheduler）+ **idle-timeout 自关机**（无客户端 T min→poweroff）。done=binary+L2/sim绿+并存（repoint 延后）。规格见 [`specs/um-app-spec.md`](specs/um-app-spec.md)。
+- **quickSnap（最新）**：`htc_media_app` 原地重构 + 改名 → 上电首程序 `quickSnap`，ZL（64MB）唯一拍照者。配置 **γ**（`/config/htc/quicksnap.json` 为 5 字段唯一真相源，**不读 setting.json**）；mode router（SNAP_ONLY→不spawn / SNAP_UPLOAD→`wm -m 2` / UPLOAD_ONLY=heartbeat→`wm -m 3` / TEST_ONLY=user→`um`）；**ZL 1-IMP-per-boot**（wm -m 2/-m 3 不 init IMP）→ wedge 前提不成立；调度走 **fork+execv（无 shell）**。规格见 [`specs/quicksnap-app-spec.md`](specs/quicksnap-app-spec.md)。
 - **devtest-automation-loop**：把"串口手敲→人眼读日志→存 log→对照代码"全人工链路自动化成 WSL 上 Claude 驱动的可审计闭环。架构已 grill 定型，正执行 **Phase-0（tracer bullet）**。见 [`decisions/devtest-automation-loop.md`](decisions/devtest-automation-loop.md) + [`todo.md`](todo.md) "DevTest 自动化闭环" track。
 - **phase1-module-stabilization**（wm/um 稳定化）：devtest Phase-0 的 tracer bullet 直接服务它（"单进程可重复"判据）。场景测试清单（已有/待实现 + file:line 指针）见 [`specs/scenario-test-manifest.md`](specs/scenario-test-manifest.md)。wm-app 的模块复用依据即来自此。
 
@@ -170,6 +171,15 @@ wm/um/共享三分(REPLACE，`runCommands` 瀑布退役)→稳定判据=退役 k
 **硬约束**：1-IMP-per-boot → um 与 wm 不能同 boot 共存 → um 是 whole-boot 进程。
 **下一步**：~~L1 + Slice 2a/2b/2c~~ ✅（um binary 功能完整：server-lifecycle + idle-timeout + RTSP/HTTP 续命双信号）→ **L2 真机联调**（默认 RTSP IMP 起落 + RTSP 客户端预览续命 + HTTP 请求续命 + idle-poweroff 干净 teardown；re-point B3/B4 idle-timeout case）。可选后续：`--no-audio`/`--record-stream1` flag、HTTP port env 覆盖（sim 80 bind 限制）、`media_app` repoint spawn `um`（联合 wm C4）。
 **参考文档**：[`specs/um-app-spec.md`](specs/um-app-spec.md)（权威 spec + 决策日志 + 治理规则）、[`scenario-test-manifest.md`](specs/scenario-test-manifest.md)（B3/B4 验证状态）
+
+---
+
+### quickSnap-app（重构 media_app 为 boot 首程序）
+
+**状态**：规格已 grill 定型（2026-07-09），**待实现**（代码未落地）
+**关键决策**：B 原地重构 `htc_media_app`→`quickSnap`（不新建并行二进制）；配置架构 **γ**（`/config/htc/quicksnap.json` 5 字段唯一真相源，quickSnap 只读它不读 setting.json；force_upload 消费后 read-modify-write 回 0、stillSize 内存钳 ≤8M 不写回）；拍照 ≤8M HW scaler（不走 strip）；IMP 释放 = ImageSnap + 末尾 `HalProvider::resetSharedVideo()`（强制 IMP_System_Exit）；调度 **fork+execv 禁 system_call**（释放后才 fork）；handoff 改 `wm -m <2|3>`/`um`（**无 -wm/-rtc**，wm 自跑时间链）。**ZL 1-IMP-per-boot**（wm -m 2/-m 3 不 init IMP）→ cm==1 wedge 定性存疑、非 quickSnap 风险。
+**外部依赖/待办**：① wm 新增 `-m 3`（heartbeat 档）；② γ 闭环迁移（wm cameraMode 读点迁 quicksnap.json + Settings 序列化摘 4 字段影子 + um 承担 quicksnap.json 写入）；③ `PC(8)` 一脚两用澄清（POWER_HOLD_PIN 与 mode-check-pin_1 同 pin）；④ `/tmp` tmpfs 上限 + burst 上限实测；⑤ `QUICK_SNAP_DIR` 改名 `/tmp/media/`（wm 同步）；⑥ `htc_media_app` 退役时点。
+**参考文档**：[`specs/quicksnap-app-spec.md`](specs/quicksnap-app-spec.md)（权威 spec + 13 决策日志 + 治理规则）
 
 ---
 

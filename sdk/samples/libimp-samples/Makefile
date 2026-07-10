@@ -31,6 +31,7 @@ LDFLAG += -Wl,-gc-sections
 
 SAMPLES = sample-Ai-AEC \
 		  sample-Encoder-jpeg \
+		  sample-Encoder-jpeg-no-thumb \
 		  sample-GetFrameEx \
 		  sample-IVS-unbind-move \
 		  sample-Ai \
@@ -80,6 +81,9 @@ sample-Ai-AEC: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o 
 	$(STRIP) $@
 
 sample-Encoder-jpeg: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o sample-Encoder-jpeg.o
+	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) -lpthread -lm -lrt
+	$(STRIP) $@
+sample-Encoder-jpeg-no-thumb: $(SDK_LIB_DIR)/libimp.a $(SDK_LIB_DIR)/libalog.a sample-common.o sample-Encoder-jpeg-no-thumb.o
 	$(CPLUSPLUS) $(LDFLAG) -o $@ $^ $(LIBS) -lpthread -lm -lrt
 	$(STRIP) $@
 

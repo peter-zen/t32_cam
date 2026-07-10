@@ -1,12 +1,9 @@
 #ifndef APP_H
 #define APP_H
-#ifdef __cplusplus
-extern "C" {
-#endif
 #include "Common.h"
 #include "GPIO.h"
 
-#define QUICK_SNAP_DIR   "/tmp/quick_snap/"
+#define QUICK_SNAP_DIR   "/tmp/media/"
 #define QUICK_SNAP_INFO_FILE   QUICK_SNAP_DIR"info.json"
 
 #ifdef BUILD_FOR_SIMULATION
@@ -32,7 +29,4 @@ extern "C" {
 #define ETH_IFNAME "eth0"
 #define USB_DONGLE_IFNAME "usb0"
 #define UPDATE_CONFIG_FILE_PATHNAME SD_CARD_PATH"update_config.ini"
-#ifdef __cplusplus
-}
-#endif
 #endif /* APP_H */

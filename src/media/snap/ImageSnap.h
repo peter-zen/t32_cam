@@ -41,6 +41,12 @@ class ImageSnapParams {
 	void setThumbnailEnabled(bool enabled);
 	bool isThumbnailEnabled() const;
 
+	// AE ready wait (opt-in, default off): wait for auto-exposure convergence
+	// before capturing the first frame. Uses ae_converged fast-path and
+	// ae_mean-vs-target settling (6 consecutive in-tolerance frames, 3s timeout).
+	void setAEReadyWait(bool v) { aeReadyWait_ = v; }
+	bool isAEReadyWait() const { return aeReadyWait_; }
+
 	private:
     int sleepTime;
 	int nchannels;
@@ -49,6 +55,7 @@ class ImageSnapParams {
 	int sensorW;
 	int sensorH;
 	bool enableThumbnail;
+	bool aeReadyWait_ = false;
 };
 
 class ImageSnap {

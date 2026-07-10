@@ -91,6 +91,21 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T17
+  title: 'sample-Encoder-jpeg-no-thumb: JPEG snap without CH2 thumbnail'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T18
+  title: 'quickSnap boot 首程序（media_app 原地重构，spec: doc/knowledge/specs/quicksnap-app-spec.md）'
+  status: todo
+  assignee: implementer
+  deliverables: []
+- id: T19
+  title: wm 配合 quickSnap lean 模式：-m 3 heartbeat + lean 启动(无卡/无DB) + m2 /tmp 上传
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -168,4 +183,22 @@ risks:
   hang in IMP configure(). Sim cannot surface this (Misc::poweroff no-op + _exit(0)).
   Do this before C5 retire; htc_main_app -wm remains the fallback/baseline through
   C4.'
-active_task: T16
+- 'T17-R3 (medium, deferred-to-user): device capture unverified on PC (no MIPS runtime/real
+  IMP driver). User must run on T32 and confirm /mnt/sdcard/DCIM/snap-12-2560x1440-{0..19}.jpg
+  only, zero snap-14-*. Pre-retire gate.'
+- 'T17-R4 (low, process): reviewer + tester subagents could not spawn (provider 429
+  token-plan quota); PM executed both gates inline with full evidence. No verdict
+  impact.'
+- '{''key'': ''T19-RV-m2-tmp-scan-broad'', ''severity'': ''moderate'', ''description'':
+  ''m2 lean 下 UploadTask 扫描根 = /tmp（wm_scheduler.cpp:216 + upload_task.cpp:199）。 uploadOneDesc
+  对 /tmp 直属 json 文件按 PID 不匹配 / 缺 file_inf / 解析失败 / 非法 json 会静默 Misc::deleteFile（upload_task.cpp:244-262,
+  344-345）。专用设备 tmpfs 上现实暴露低 （通常只有刚写的 desc），但比专用子目录（如 /tmp/wm_upload/）宽。spec §2.1
+  line 64 与 §8 line 250 自相矛盾（前者说 /tmp，后者说 /tmp/media/），实现取 §2.1。建议后续收窄扫描根 + 对齐 spec。不阻塞合入。''}'
+- '{''key'': ''T19-RV-spec-skipfactory-silent'', ''severity'': ''low'', ''description'':
+  ''spec §2.1 lean 差异表未列 skipFactoryConfig/skipUpdateConfig，但实现额外设了这两个 （wm_app.cpp:201-202，planner
+  R2-2 决策，避免 lean 下访问 SD）。建议 spec §2.1 表补行。''}'
+- '{''key'': ''T19-HW-unverified'', ''severity'': ''medium'', ''description'': ''真
+  no-SD（HW mountSDCard non-fatal 分支）、真后端 upload/heartbeat 成功、IMP-not-init 在真机、tmpfs
+  占用——sim 测不全（sim mountSDCard 递归 mkdir 总成功）。需 T32 硬件回归 （planner 已标，留用户）。sim 验收 + 双平台编译
+  + 本审查 code-level 核实已足够放行合入。''}'
+active_task: T19

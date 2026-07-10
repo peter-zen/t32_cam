@@ -192,14 +192,14 @@ extern "C"
 #define BITRATE_720P_Kbs        1000
 
 #define NR_FRAMES_TO_SAVE       900
-#define NR_JPEG_TO_SAVE         20
+#define NR_JPEG_TO_SAVE         3
 #define STREAM_BUFFER_SIZE      (1 * 1024 * 1024)
 
 #define ENC_VIDEO_CHANNEL       0
 #define ENC_JPEG_CHANNEL        1
 
 #define STREAM_FILE_PATH_PREFIX     "/mnt/sdcard/DCIM"
-#define SNAP_FILE_PATH_PREFIX       "/mnt/sdcard/DCIM"
+#define SNAP_FILE_PATH_PREFIX       "/tmp/media"
 
 #define OSD_REGION_WIDTH            16
 #define OSD_REGION_HEIGHT           34
