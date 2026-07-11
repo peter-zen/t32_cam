@@ -24,6 +24,11 @@ public:
     static std::vector<std::string> listSubdirectories(const std::string& dirname);
     // 递归删除目录树（native opendir/unlink/rmdir，禁 system/popen；OOM-safe）。
     static bool removeDirectory(const std::string& path);
+    // 递归移动目录树（跨 fs 安全）：先 rename(2)；返 EXDEV（跨 fs）则递归 copy + delete 源。
+    // 禁 system/popen（OOM-safe，与 copyFile/moveFile 的 fork-exec 路径不同——wm shutdown
+    // 落卡用）。目标父目录须存在；碰撞由调用方预解析（本函数不覆盖）。
+    // 成功后 src 不存在。ENOSPC/写失败返回 false（dst 可能残留半成品，调用方负责清理）。
+    static bool moveDirectoryRecursive(const std::string& src, const std::string& dst);
 
     //network
     static std::string getIPAddress(const std::string &interface_name);

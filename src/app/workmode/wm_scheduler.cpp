@@ -6,7 +6,10 @@
 #include <chrono>
 #include <atomic>
 #include <cstdlib>
+#include <stdio.h>             // snprintf（碰撞后缀 int→string；uClibc 无 std::to_string）
+#include <cstring>             // strcmp（persistStrandedTmpDir gate）
 #include <string>
+#include <sys/stat.h>          // stat（tmpfs 工作目录存在性 / 碰撞探测）
 #include <thread>
 #include <utility>
 #include <vector>
@@ -19,6 +22,8 @@
 #include "pir_trigger.h"        // IPirTrigger
 #include "wm_paths.h"           // wmUploadPath
 #include "Power.h"              // Power::requestShutdown (upload-timeout -> SIGTERM)
+#include "app.h"                // QUICK_SNAP_DIR / SD_CARD_PATH（persist 落卡源/目的）
+#include "misc/Misc.h"          // mountSDCard / moveDirectoryRecursive / removeDirectory
 #include "Logger.h"
 
 namespace app_workmode {
@@ -284,6 +289,9 @@ void WmScheduler::run() {
     }
 
     scheduler.stopAll();
+    // spec §5.3 落卡钩子：stopAll() 已 join upload 线程（文件静默），可安全 move。
+    // 仅 UploadTimeout 且 HTC_WM_SD_FALLBACK!="0" 时把 tmpfs 工作目录落 SD。
+    persistStrandedTmpDir(reason);
     if (capture_) {
         capture_->stop();
         capture_.reset();
@@ -311,6 +319,58 @@ void WmScheduler::runHeartbeat() {
     Logger::log(LogLevel::INFO, "[wm] op=heartbeat_sent rc=%d", rc);
     // 不等 server resp、不 loop、不碰 /tmp、不上传
     // 返回后 wm_app 尾序走 shutdown → writebackMcu → poweroff
+}
+
+void WmScheduler::persistStrandedTmpDir(ShutdownReason reason) {
+    // spec §4 Q3：仅 clean UploadTimeout 落卡（Signal/IdleGrace 不落卡）。
+    if (reason != ShutdownReason::UploadTimeout) return;
+    const char* env = std::getenv("HTC_WM_SD_FALLBACK");
+    if (env && std::strcmp(env, "0") == 0) return;          // gate（默认开）
+
+    // retry-mount SD：lean S11 若 mount 失败，此处再试一次（落卡时 SD 多半已 ready）。
+    // mountSDCard 已含「已挂载则 skip」幂等（读 /proc/mounts，Misc.cpp）。
+    if (!Misc::mountSDCard(SD_CARD_PATH)) {
+        Logger::log(LogLevel::ERROR,
+                    "[wm] persist: SD mount failed, tmpfs work dir lost on reboot");
+        return;
+    }
+
+    // 落卡源 = workDirs_ 中前缀 QUICK_SNAP_DIR（"/tmp/media/"）且盘上仍存在的目录
+    //   （= 未被成功上传整目录清理的 tmpfs 工作目录）。SD 滞留目录前缀不匹配，自然跳过——
+    //   它们本就在 SD，无需再落。
+    const std::string sdMedia = std::string(SD_CARD_PATH) + "media/";
+    for (const std::string& wd : workDirs_) {
+        if (wd.rfind(QUICK_SNAP_DIR, 0) != 0) continue;     // 非 tmpfs 工作目录
+        struct stat st;
+        if (stat(wd.c_str(), &st) != 0) continue;            // 已被成功上传整目录清理
+
+        // 目标 SD_CARD_PATH"media/<basename>/"，碰撞加 _2/_3（resume 的 isTimestampDir 已放宽识别）。
+        std::string base = wd;
+        while (!base.empty() && base.back() == '/') base.pop_back();
+        size_t slash = base.find_last_of('/');
+        std::string name = (slash == std::string::npos) ? base : base.substr(slash + 1);
+        if (name.empty()) continue;
+
+        std::string dst = sdMedia + name + "/";
+        for (int suffix = 2; ; ++suffix) {
+            struct stat dstSt;
+            if (stat(dst.c_str(), &dstSt) != 0) break;       // 不冲突 → 用此名
+            char suf[16];
+            snprintf(suf, sizeof(suf), "%d", suffix);   // uClibc 无 std::to_string
+            dst = sdMedia + name + "_" + suf + "/";
+        }
+
+        // 递归 move（跨 fs：tmpfs→vfat rename 返 EXDEV → copy+delete）。失败（ENOSPC 等）
+        // 清半成品目标；tmpfs 源不动（reboot 即失——无 SD 空间/IO 失败无解）。
+        if (!Misc::moveDirectoryRecursive(wd, dst)) {
+            Logger::log(LogLevel::ERROR,
+                        "[wm] persist: move %s -> %s failed, cleanup partial",
+                        wd.c_str(), dst.c_str());
+            Misc::removeDirectory(dst);
+            continue;
+        }
+        Logger::log(LogLevel::INFO, "[wm] persist: stranded tmpfs dir moved -> %s", dst.c_str());
+    }
 }
 
 }  // namespace app_workmode

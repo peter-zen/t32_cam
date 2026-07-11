@@ -46,6 +46,12 @@ public:
 private:
     void runHeartbeat();  // m3: connect+auth+sendHeartbeat 一次 → return（不走 slot 模型）
 
+    // 落卡钩子：UploadTimeout 且 HTC_WM_SD_FALLBACK!="0" 时，retry-mount SD，把 workDirs_
+    // 中前缀 QUICK_SNAP_DIR 且仍存在的 tmpfs 工作目录递归 move 到 SD_CARD_PATH"media/<basename>/"。
+    // 碰撞加 _2/_3；ENOSPC 清半成品。在 run() 的 stopAll() 之后调用（upload 线程已 join，文件静默）。
+    // 见 doc/knowledge/specs/wm-upload-sd-fallback.md §5.3 / §6。
+    void persistStrandedTmpDir(ShutdownReason reason);
+
     app_lifecycle::ProcessLifecycle& lc_;
     WmMode  mode_;
     std::shared_ptr<CaptureLane>  capture_;

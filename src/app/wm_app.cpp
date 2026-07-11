@@ -333,7 +333,7 @@ int main(int argc, char* argv[])
     // 后续 PIR 走完整冷启流程，换取更快关机/省电）。env HTC_WM_IDLE_GRACE_MS 可覆盖。
     int64_t idleGraceMs = 2000;
     if (const char* e = std::getenv("HTC_WM_IDLE_GRACE_MS")) { int v = std::atoi(e); if (v > 0) idleGraceMs = v; }
-    int64_t uploadTimeoutMs = 60000;
+    int64_t uploadTimeoutMs = 120000;  // 上传超时默认 120s（网络差→落卡 SD 的 give-up 预算；HTC_UPLOAD_TIMEOUT_MS 可调）
     if (const char* e = std::getenv("HTC_UPLOAD_TIMEOUT_MS")) { int v = std::atoi(e); if (v > 0) uploadTimeoutMs = v; }
 
     // --- Capture lane + trigger（m0/m1 才有；m2/m3 无捕获）---
@@ -364,22 +364,36 @@ int main(int argc, char* argv[])
     // --- m2：构建工作目录列表（-d 目录 + 兜底滞留）并为每个建/复用 desc ---
     std::vector<std::string> workDirs;
     if (wm_mode == app_workmode::WmMode::UploadOnly) {
+        // [0] = 本次 -d（归一化尾斜杠）。恒在 [0]、不参与排序（spec §4.1 ordering 修正：
+        //   并入 SD 滞留后全局升序会把更老的历史滞留排到本次 -d 之前 → 违反「本次先传」）。
         if (!quicksnapDir.empty()) {
             std::string d = quicksnapDir;
             if (!d.empty() && d.back() != '/') d += '/';   // 尾斜杠归一（UploadTask 做 dir+文件名 拼接）
             workDirs.push_back(d);
         }
+        // backlog 段：tmpfs 滞留（/tmp/media/）∪ SD 滞留（SD_CARD_PATH"media/"），仅这段排序。
+        std::vector<std::string> backlog;
         if (app_workmode::sweepEnabled()) {
-            auto stranded = app_workmode::collectStrandedWorkDirs(QUICK_SNAP_DIR, quicksnapDir);
-            workDirs.insert(workDirs.end(), stranded.begin(), stranded.end());
+            auto tmpStranded = app_workmode::collectStrandedWorkDirs(QUICK_SNAP_DIR, quicksnapDir);
+            backlog.insert(backlog.end(), tmpStranded.begin(), tmpStranded.end());
         }
-        std::sort(workDirs.begin(), workDirs.end());   // 升序：老先传
+        if (app_workmode::sdFallbackEnabled()) {
+            // SD 滞留 = 上次 boot 落卡的目录。SD 未 mount 时 listSubdirectories 返空（ENOENT-safe），
+            // 自然不追加——lean 推迟到 SD 可 mount 的 boot。
+            auto sdStranded = app_workmode::collectStrandedWorkDirs(
+                std::string(SD_CARD_PATH) + "media/", quicksnapDir);
+            backlog.insert(backlog.end(), sdStranded.begin(), sdStranded.end());
+        }
+        std::sort(backlog.begin(), backlog.end());   // 仅 backlog 升序（老先传）
+        workDirs.insert(workDirs.end(), backlog.begin(), backlog.end());
         workDirs.erase(std::unique(workDirs.begin(), workDirs.end()), workDirs.end());
         for (const std::string& wd : workDirs) {
             app_workmode::ensureWorkDirDesc(wd);   // desc 不在才建；已在则复用（续传保 F_UploadedTag）
         }
-        Logger::log(LogLevel::INFO, "[wm] m2 work dirs: %zu (sweep=%d)",
-                    workDirs.size(), app_workmode::sweepEnabled() ? 1 : 0);
+        Logger::log(LogLevel::INFO, "[wm] m2 work dirs: %zu (sweep=%d sd_fallback=%d)",
+                    workDirs.size(),
+                    app_workmode::sweepEnabled() ? 1 : 0,
+                    app_workmode::sdFallbackEnabled() ? 1 : 0);
     }
 
     // --- 主循环（长驻直到关机）---

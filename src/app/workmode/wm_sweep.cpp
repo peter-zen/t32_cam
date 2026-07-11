@@ -24,12 +24,19 @@ std::string dirBasename(const std::string& d) {
     return (pos == std::string::npos) ? s : s.substr(pos + 1);
 }
 
-// ^\d{8}_\d{6}$ —— quickSnap 时间戳目录 YYYYMMDD_HHMMSS（手写，避免 <regex> 开销）。
+// ^\d{8}_\d{6}(_\d+)?$ —— quickSnap 时间戳目录 YYYYMMDD_HHMMSS，可选 _<digits> 后缀
+// （落卡碰撞时 persist 加的 _2/_3；手写，避免 <regex> 开销）。
 bool isTimestampDir(const std::string& s) {
-    if (s.size() != 15) return false;
+    if (s.size() < 15) return false;
     if (s[8] != '_') return false;
     for (int i = 0; i < 15; ++i) {
         if (i == 8) continue;
+        if (s[i] < '0' || s[i] > '9') return false;
+    }
+    if (s.size() == 15) return true;          // 无后缀（原 tmpfs 工作目录）
+    // 尾巴须形如 _<digits>（至少一位数字）：落卡碰撞后缀 _2/_3/...
+    if (s[15] != '_') return false;
+    for (size_t i = 16; i < s.size(); ++i) {
         if (s[i] < '0' || s[i] > '9') return false;
     }
     return true;
@@ -41,6 +48,12 @@ bool sweepEnabled() {
     const char* env = std::getenv("HTC_WM_SWEEP_STRANDED");
     if (env && std::strcmp(env, "0") == 0) return false;   // 仅显式 "0" 关
     return true;   // 默认开（未设或其它值均视为开）
+}
+
+bool sdFallbackEnabled() {
+    const char* env = std::getenv("HTC_WM_SD_FALLBACK");
+    if (env && std::strcmp(env, "0") == 0) return false;   // 仅显式 "0" 关
+    return true;   // 默认开：同时 gate persist（超时落卡）与 resume（扫 SD 滞留续传）
 }
 
 std::vector<std::string> collectStrandedWorkDirs(const std::string& baseDir,

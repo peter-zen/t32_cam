@@ -277,3 +277,57 @@ set_target_properties(test_elog_async PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+# T22 wm upload SD fallback (doc/knowledge/specs/wm-upload-sd-fallback.md).
+# Misc::moveDirectoryRecursive: cross-fs-safe recursive move (rename fast-path; EXDEV
+# fallback copy+delete; native open/read/write, no fork-exec). Same-fs rename path only
+# on PC sim (no tmpfs/vfat boundary); EXDEV branch covered on hardware (spec §8).
+add_executable(test_misc_move_directory test_misc_move_directory.cpp)
+
+target_link_libraries(test_misc_move_directory
+    PRIVATE
+    common_misc
+    logger
+    jsoncpp
+    pthread
+)
+
+target_include_directories(test_misc_move_directory PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/common
+    ${CMAKE_SOURCE_DIR}/src/logger
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+)
+
+set_target_properties(test_misc_move_directory PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# T22 collectStrandedWorkDirs + isTimestampDir relaxation (^\d{8}_\d{6}(_\d+)?$):
+# locks that persist's <ts>_2 collision suffix gets re-scanned on resume. Compiles
+# wm_sweep.cpp directly (light deps: Misc + Logger).
+add_executable(test_wm_sweep_stranded
+    test_wm_sweep_stranded.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/workmode/wm_sweep.cpp
+)
+
+target_link_libraries(test_wm_sweep_stranded
+    PRIVATE
+    common_misc
+    logger
+    easylogger
+    jsoncpp
+    pthread
+)
+
+target_include_directories(test_wm_sweep_stranded PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/app/workmode
+    ${CMAKE_SOURCE_DIR}/src/common
+    ${CMAKE_SOURCE_DIR}/src/logger
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+)
+
+set_target_properties(test_wm_sweep_stranded PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)

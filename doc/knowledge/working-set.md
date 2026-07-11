@@ -161,6 +161,8 @@ wm/um/共享三分(REPLACE，`runCommands` 瀑布退役)→稳定判据=退役 k
 **最高风险已收口**：时间链（原 sim-only）已用 `time_test` 真机验证（RTC/MCU/NTP + 链 + 回写均 GREEN）；剩 §11.5 RTC-drift 待决策。
 **参考文档**：[`specs/wm-app-spec.md`](specs/wm-app-spec.md)（权威 spec + 决策日志 + 治理规则）、[`../reviews/2026-06-23-time-chain-hw-verification.md`](../reviews/2026-06-23-time-chain-hw-verification.md)（时间链真机验证 + 发现）
 
+**T22（done，2026-07-11）**：wm 上传失败 SD 落卡 + 下次启动续传——超时（120s）放弃时把 `/tmp/media/<ts>/` move 到 `/mnt/sdcard/media/<ts>/`，下次 boot 本次 `-d` 传完后扫 SD 滞留续传。spec [`specs/wm-upload-sd-fallback.md`](specs/wm-upload-sd-fallback.md)；落地见 [`../../reviews/2026-07-11-wm-upload-sd-fallback.md`](../../reviews/2026-07-11-wm-upload-sd-fallback.md)；调度内核/UploadTask 零改；`HTC_WM_SD_FALLBACK=0` kill-switch；**真机 §8 AC3（落卡+续传+碰撞+gate）待用户/devctl 验**。
+
 ---
 
 ### um-app（新建 um 程序，组合长驻交互服务）

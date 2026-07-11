@@ -1,4 +1,6 @@
 #include <sys/stat.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -274,6 +276,106 @@ bool Misc::removeDirectory(const std::string& path)
         ok = false;
     }
     return ok;
+}
+
+namespace {
+
+// 文件拷贝（native open/read/write，chunked 64KB buf）。禁 syscall("cp")（fork-exec、
+// OOM 风险）。仅供 Misc::moveDirectoryRecursive 的 EXDEV 分支用；dst 父目录须存在。
+bool copyFileNative(const std::string& src, const std::string& dst)
+{
+    int in = ::open(src.c_str(), O_RDONLY);
+    if (in < 0) {
+        Logger::log(LogLevel::ERROR, "copyFileNative: open(src) %s failed: %s",
+                    src.c_str(), strerror(errno));
+        return false;
+    }
+    int out = ::open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out < 0) {
+        Logger::log(LogLevel::ERROR, "copyFileNative: open(dst) %s failed: %s",
+                    dst.c_str(), strerror(errno));
+        ::close(in);
+        return false;
+    }
+    bool ok = true;
+    char buf[65536];
+    for (;;) {
+        ssize_t n = ::read(in, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            Logger::log(LogLevel::ERROR, "copyFileNative: read %s failed: %s",
+                        src.c_str(), strerror(errno));
+            ok = false;
+            break;
+        }
+        if (n == 0) break;   // EOF
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t w = ::write(out, buf + off, static_cast<size_t>(n - off));
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                Logger::log(LogLevel::ERROR, "copyFileNative: write %s failed: %s",
+                            dst.c_str(), strerror(errno));
+                ok = false;
+                break;
+            }
+            off += w;
+        }
+        if (!ok) break;
+    }
+    ::close(in);
+    ::close(out);
+    return ok;
+}
+
+}  // namespace
+
+bool Misc::moveDirectoryRecursive(const std::string& src, const std::string& dst)
+{
+    if (src.empty() || dst.empty()) return false;
+    std::string s = src, d = dst;
+    while (!s.empty() && s.back() == '/') s.pop_back();
+    while (!d.empty() && d.back() == '/') d.pop_back();
+    if (s.empty() || d.empty()) return false;
+
+    // 快路径：同 fs rename（原子、O(1)）。EXDEV（跨 fs，如 tmpfs→vfat）→ 降级 copy+delete。
+    if (::rename(s.c_str(), d.c_str()) == 0) return true;
+    if (errno != EXDEV) {
+        Logger::log(LogLevel::ERROR, "moveDirectoryRecursive: rename %s -> %s failed: %s",
+                    s.c_str(), d.c_str(), strerror(errno));
+        return false;
+    }
+
+    // 跨 fs：递归 copy（深度优先，骨架同 removeDirectory）。
+    if (!createDirectory(d)) return false;
+    DIR* dir = opendir(s.c_str());
+    if (dir == nullptr) {
+        Logger::log(LogLevel::ERROR, "moveDirectoryRecursive: opendir %s failed: %s",
+                    s.c_str(), strerror(errno));
+        return false;
+    }
+    struct dirent* entry;
+    bool ok = true;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        std::string c = s + "/" + entry->d_name;
+        std::string t = d + "/" + entry->d_name;
+        bool isDir = (entry->d_type == DT_DIR);
+        if (entry->d_type == DT_UNKNOWN) {   // 某些 fs 不填 d_type，stat 兜底
+            struct stat st;
+            if (stat(c.c_str(), &st) == 0) isDir = S_ISDIR(st.st_mode);
+        }
+        if (isDir) {
+            if (!moveDirectoryRecursive(c, t)) ok = false;
+        } else {
+            if (!copyFileNative(c, t)) ok = false;
+        }
+    }
+    closedir(dir);
+    if (!ok) return false;   // 调用方清 dst 半成品
+
+    // 全部 copy 成功 → 删源目录树（removeDirectory 非目录/ENOENT 视为成功）。
+    return removeDirectory(s);
 }
 
 bool Misc::createDirectory(const std::string& path, mode_t mode)
