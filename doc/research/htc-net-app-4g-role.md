@@ -1,5 +1,8 @@
 # htc_net_app 架构定位与 quickSnap 同步链可行性调研
 
+> **ERRATUM (T27, 2026-07-11)**：`htc_net_app` 二进制已重命名为 `net`（CMake target / binary 名），
+> 源码文件 `net_app.cpp` 不变。本文其余 `htc_net_app` 保留历史名，均指今 `net`。
+
 > 调研主题：(1) `htc_net_app` 的当前职责、退出语义、在产品 boot 流里的位置 ——
 > 回答用户核心疑问"把 4G dongle 准备网络放进 htc_net_app 是否架构合理"；
 > (2) quickSnap spawn network app 后"等 4G 准备好再 spawn wm"的同步链是否可行 ——

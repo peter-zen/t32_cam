@@ -5,7 +5,7 @@ scenario to validate the devctl→verdict→device path on a non-record function
 
 Two checks:
   1. wlan0 has an IPv4 (the net module's outcome post-bringup).
-  2. (optional, if HTC_WIFI_PWD set) the just-built htc_net_app from NFS exits
+  2. (optional, if HTC_WIFI_PWD set) the just-built net from NFS exits
      cleanly when asked to REUSE the existing association (--no-dhcp). This
      exercises the binary without disrupting the link.
 
@@ -48,7 +48,7 @@ def test_wlan0_has_ipv4(device):
 
 
 def test_net_app_reuse_exits_clean(device):
-    """Run the NFS-deployed htc_net_app against the current SSID; with the link
+    """Run the NFS-deployed net against the current SSID; with the link
     already up it takes the REUSE path and exits 0 (no disruption, no DHCP).
     Requires HTC_WIFI_PWD (+ SSID by subnet)."""
     pwd = os.environ.get("HTC_WIFI_PWD")
@@ -57,7 +57,7 @@ def test_net_app_reuse_exits_clean(device):
         pytest.skip("set HTC_WIFI_PWD (+ HTC_WIFI_SSID or home/company subnet)")
     r = device.run(
         f"LD_LIBRARY_PATH=/mnt/huntcam/lib:$LD_LIBRARY_PATH "
-        f"/mnt/huntcam/bin/htc_net_app --ssid '{ssid}' --pwd '{pwd}' --no-dhcp",
+        f"/mnt/huntcam/bin/net --ssid '{ssid}' --pwd '{pwd}' --no-dhcp",
         timeout=60)
     # rc 0 = success, 5 = connected but MCU write-back gated (still reachable)
     v = judge(r["output"], r["rc"], r["timed_out"], VerdictSpec(

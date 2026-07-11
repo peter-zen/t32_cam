@@ -21,7 +21,7 @@ python3 tools/devctl/broker.py --self-test     # broker 逻辑
 python3 tools/devctl/broker.py &               # 起常驻 broker
 HTC_WIFI_PWD=... tools/devctl/devctl bringup   # 自动判环境 + wait-boot + 挂SD/连wifi/挂NFS + 验证
 ```
-`bringup` 会自动：`hostname -I` 命中网段 → 选 home/company → 等设备 shell 就绪 → 挂 SD → `htc_net_app` 连对应 SSID → **用本机 IP + 本 repo `build/` 路径** noac 挂 NFS → verify。
+`bringup` 会自动：`hostname -I` 命中网段 → 选 home/company → 等设备 shell 就绪 → 挂 SD → `net` 连对应 SSID → **用本机 IP + 本 repo `build/` 路径** noac 挂 NFS → verify。
 
 ## B. build 机 IP 迁移清单（例：company `192.168.0.210` → `192.168.0.206`）
 

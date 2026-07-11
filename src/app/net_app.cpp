@@ -1,4 +1,4 @@
-// htc_net_app — unified uplink connection tool (WiFi / Ethernet / USB dongle).
+// net — unified uplink connection tool (WiFi / Ethernet / USB dongle).
 //
 // Layered design (T7 planner full):
 //   main() (this file)              -> CLI parse + uplink dispatch + exit codes + logging
@@ -204,7 +204,7 @@ bool parseArgs(int argc, char **argv, CliArgs &out, std::string &err)
 int runWifi(const CliArgs &args)
 {
     Logger::log(LogLevel::INFO,
-                "htc_net_app wifi: if=%s writeMcu=%d dhcp=%s",
+                "net wifi: if=%s writeMcu=%d dhcp=%s",
                 args.ifname.c_str(), (int)args.writeMcu,
                 args.noDhcp ? "off" : "on");
 
@@ -260,7 +260,7 @@ int runWifi(const CliArgs &args)
             Logger::log(LogLevel::ERROR,
                         "No usable target SSID (empty). Aborting (exit 6).");
             fprintf(stderr,
-                "htc_net_app wifi: no target SSID available. "
+                "net wifi: no target SSID available. "
                 "Pass --ssid/--pwd or populate MCU registers.\n");
             return EXIT_ARG_ERROR;
         }
@@ -362,7 +362,7 @@ int runWifi(const CliArgs &args)
         fprintf(stderr, "[DEBUG] MCU write-back OK (verified)\n");
     }
 
-    Logger::log(LogLevel::INFO, "htc_net_app wifi done (exit 0).");
+    Logger::log(LogLevel::INFO, "net wifi done (exit 0).");
     return EXIT_OK;
 }
 
@@ -375,7 +375,7 @@ int runEth(const CliArgs &args)
 {
     const std::string ifname = netTypeIfname(NET_ETH); // "eth0"
     Logger::log(LogLevel::INFO,
-                "htc_net_app eth: if=%s dhcp=%s needsConnect=%d",
+                "net eth: if=%s dhcp=%s needsConnect=%d",
                 ifname.c_str(), args.noDhcp ? "off" : "on", (int)ethNeedsConnect());
 
     Misc::setNetworkInterfaceName(ifname);
@@ -388,7 +388,7 @@ int runEth(const CliArgs &args)
     }
 
     if (isNetworkUp(Misc::getIPAddress(ifname), Misc::getGatewayAddress(ifname))) {
-        Logger::log(LogLevel::INFO, "htc_net_app eth done (exit 0).");
+        Logger::log(LogLevel::INFO, "net eth done (exit 0).");
         return EXIT_OK;
     }
     Logger::log(LogLevel::ERROR, "eth link not up (no IP/gateway) (exit 3).");
@@ -416,7 +416,7 @@ int runUsb(const CliArgs &args)
 {
     const std::string ifname = netTypeIfname(NET_USB); // "usb0"
     Logger::log(LogLevel::INFO,
-                "htc_net_app usb: if=%s dhcp=%s bringup=%d model=%s needsStartDefault=%d",
+                "net usb: if=%s dhcp=%s bringup=%d model=%s needsStartDefault=%d",
                 ifname.c_str(), args.noDhcp ? "off" : "on",
                 (int)args.usbBringup, args.usbModel.c_str(),
                 (int)usbNeedsStartDefault());
@@ -425,7 +425,7 @@ int runUsb(const CliArgs &args)
 
     network::UsbDongleModel model = network::UsbDongleModel::EC20;
     if (args.usbBringup && !parseUsbModel(args.usbModel, model)) {
-        fprintf(stderr, "htc_net_app usb: invalid --usb-model '%s' "
+        fprintf(stderr, "net usb: invalid --usb-model '%s' "
                         "(expected EC20|EC200A|EG800K|RG255AA)\n", args.usbModel.c_str());
         return EXIT_ARG_ERROR;
     }
@@ -469,7 +469,7 @@ int runUsb(const CliArgs &args)
     }
 
     if (isNetworkUp(Misc::getIPAddress(ifname), Misc::getGatewayAddress(ifname))) {
-        Logger::log(LogLevel::INFO, "htc_net_app usb done (exit 0).");
+        Logger::log(LogLevel::INFO, "net usb done (exit 0).");
         return EXIT_OK;
     }
     Logger::log(LogLevel::ERROR, "usb link not up (no IP/gateway) (exit 3).");
@@ -483,7 +483,7 @@ int main(int argc, char **argv)
     CliArgs args;
     std::string parseErr;
     if (!parseArgs(argc, argv, args, parseErr)) {
-        fprintf(stderr, "htc_net_app: %s\n", parseErr.c_str());
+        fprintf(stderr, "net: %s\n", parseErr.c_str());
         printUsage(stderr, argv[0]);
         return EXIT_ARG_ERROR;
     }
@@ -496,19 +496,19 @@ int main(int argc, char **argv)
     // unparseable --type value still -> argument error exit 6 (checked below).
     if (!args.haveType) {
         Logger::log(LogLevel::INFO, "No --type given; defaulting to wifi.");
-        fprintf(stderr, "htc_net_app: no --type given, defaulting to wifi.\n");
+        fprintf(stderr, "net: no --type given, defaulting to wifi.\n");
     }
 
     NetType netType = parseNetType(args.typeStr);
     if (netType == NET_INVALID) {
-        fprintf(stderr, "htc_net_app: invalid --type '%s' (expected wifi|eth|usb).\n",
+        fprintf(stderr, "net: invalid --type '%s' (expected wifi|eth|usb).\n",
                 args.typeStr.c_str());
         printUsage(stderr, argv[0]);
         return EXIT_ARG_ERROR;
     }
 
     Logger::log(LogLevel::INFO,
-                "htc_net_app start: type=%s ifname=%s",
+                "net start: type=%s ifname=%s",
                 args.typeStr.c_str(), netTypeIfname(netType).c_str());
 
     switch (netType) {
@@ -516,7 +516,7 @@ int main(int argc, char **argv)
         case NET_ETH:  return runEth(args);
         case NET_USB:  return runUsb(args);
         default:
-            fprintf(stderr, "htc_net_app: unsupported uplink type.\n");
+            fprintf(stderr, "net: unsupported uplink type.\n");
             return EXIT_ARG_ERROR;
     }
 }

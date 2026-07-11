@@ -146,6 +146,11 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T27
+  title: rename htc_net_app binary/target → net (unify with wm/um/quickSnap naming)
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -241,4 +246,4 @@ risks:
   no-SD（HW mountSDCard non-fatal 分支）、真后端 upload/heartbeat 成功、IMP-not-init 在真机、tmpfs
   占用——sim 测不全（sim mountSDCard 递归 mkdir 总成功）。需 T32 硬件回归 （planner 已标，留用户）。sim 验收 + 双平台编译
   + 本审查 code-level 核实已足够放行合入。''}'
-active_task: T26
+active_task: T27

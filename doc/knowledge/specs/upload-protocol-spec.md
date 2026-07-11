@@ -23,7 +23,7 @@
 ### 1.2 不在本规范范围
 
 - 拍照/录影/编码(`snap_task` / `record_task` 的活)
-- NTP / DHCP / WiFi 连接(`htc_net_app` 的活)
+- NTP / DHCP / WiFi 连接(`net` 的活)
 - RTSP / HTTP server / MDNS(本地服务发现)
 - 心跳协议(`MSG_TYPE_UPLOAD_JSON`)
 - Server 主动下发的 cmd(`MSG_TYPE_SETTING` / `MSG_TYPE_RTMP` / `MSG_TYPE_DOWNLOAD_FILE`)
@@ -473,7 +473,7 @@ client 端从系统时区算(代码:`Timezone::getFormattedTimeWithTimezone(tv.t
 ### 7.3 不必实现(超出协议)
 
 - ❌ 拍照/录影/编码(那是 snap_task / record_task 的活)
-- ❌ NTP / DHCP / WiFi 连接(由 `htc_net_app` 完成)
+- ❌ NTP / DHCP / WiFi 连接(由 `net` 完成)
 - ❌ RTSP / HTTP server / MDNS
 - ❌ 设备 GPS / 电池 / 温度上报(可选,但心跳协议范围)
 

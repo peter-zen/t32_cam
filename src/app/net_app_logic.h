@@ -3,7 +3,7 @@
 
 #include <string>
 
-// Pure-logic layer for htc_net_app.
+// Pure-logic layer for net.
 //
 // This header/translation unit contains NO system calls. It holds:
 //   - the WiFi-specific "should we reconnect / should we write back / what exit

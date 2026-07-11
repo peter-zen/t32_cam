@@ -129,7 +129,7 @@ usermode 若以 `-m` 为基底则天然保留这些能力；若以 `-wm 3` 为�
   瀑布里抽成干净 unit，wm/um 直接 compose 这些 unit（REPLACE 语义，非复制）；
   `runCommands` 瀑布在抽取过程中**逐步退役**。
 - **wm/um/共享 三分**：wm={snap,record,upload,ntp}、um={rtsp,http控制+回放,mdns}、
-  共享库={mcu,thumbnail/DB,manifest}、前置=network(`htc_net_app`)。
+  共享库={mcu,thumbnail/DB,manifest}、前置=network(`net`)。
 - **先稳后组**：crash-prone(record/snap)用 loop-faithful 真机二进制 + 退役 kill-switch
   稳定后，才进 Phase-2 组合 + C4 repoint。
 - 与本 ADR §7.1–7.4 的兼容点（`-m` 子参数、RGB blink、CMake link 路线 A/B、repoint 时机）

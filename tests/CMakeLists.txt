@@ -102,7 +102,7 @@ target_include_directories(test_mcu_service PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
 )
 
-# htc_net_app pure-logic unit test (no syscalls; only links net_app_logic.cpp).
+# net pure-logic unit test (no syscalls; only links net_app_logic.cpp).
 add_executable(test_net_app_logic
     test_net_app_logic.cpp
     ${CMAKE_SOURCE_DIR}/src/app/net_app_logic.cpp

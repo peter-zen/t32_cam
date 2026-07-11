@@ -84,7 +84,7 @@ add_executable(upload_test
 
 target_link_libraries(upload_test
     PRIVATE
-    # 镜像 htc_net_app T32 link 闭包(同样调 network 但不 link app_workmode):
+    # 镜像 net T32 link 闭包(同样调 network 但不 link app_workmode):
     # 1) 业务/单例/工具 — 直接对应 upload 路径
     network                   # MgmtServClient + StorageServClient (PRIVATE 传: mcu/setting/env/devconf/disk/power/jsoncpp/md5/common_misc/...)
     logger                    # Logger::log
@@ -97,7 +97,7 @@ target_link_libraries(upload_test
     jsoncpp                   # json/json.h
     # 2) network → StorageServClient.cpp 调 CRC::calculate_crc16(src/common/utils/crc/CRC.cpp),
     #    network 库本身没链 common_utils_crc(latent missing-dep,见 common/utils/crc/CMakeLists 注释),
-    #    final link 时需显式补;镜像 htc_net_app 的 link 闭包。
+    #    final link 时需显式补;镜像 net 的 link 闭包。
     common_utils_crc
     crc16
     # 3) 线程/时钟

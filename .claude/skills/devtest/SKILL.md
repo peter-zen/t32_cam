@@ -32,7 +32,7 @@ or `wm_verdict.check_run`).
 |---|---|---|
 | `wm-repeat` (default) | `test_wm_repeat.py` | `-wm 0` twice in one boot; 2nd run must not hang at rc=137 (IMP residue) |
 | `record-smoke` | `test_record_smoke.py` | single `-wm 0`; record started + fps + rc 0, no non-benign E/ |
-| `net-smoke` | `test_net_smoke.py` | wlan0 has IPv4 + `htc_net_app` REUSE exits clean |
+| `net-smoke` | `test_net_smoke.py` | wlan0 has IPv4 + `net` REUSE exits clean |
 | `wm-modes-matrix` | `test_wm_modes_matrix.py` | `@parametrize` mode{0,1,2}×rtc{0,1}; each exits clean (crash/hang detector) |
 
 Pure verdict-logic unit tests (`test_verdict.py`, `test_scenario_verdict.py`)

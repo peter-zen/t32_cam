@@ -67,7 +67,7 @@ add_subdirectory(app_lifecycle)
 add_executable(htc_main_app ${MAIN_APP_SOURCES})
 add_executable(htc_media_app ${MEDIA_APP_SOURCES})
 add_executable(htc_daemon_app ${DAEMON_APP_SOURCES})
-add_executable(htc_net_app ${NET_APP_SOURCES} ${NET_APP_HELPER_SOURCES})
+add_executable(net ${NET_APP_SOURCES} ${NET_APP_HELPER_SOURCES})
 add_executable(htc_workmode_app ${WORKMODE_APP_SOURCES})
 add_executable(wm ${WM_APP_SOURCES})
 add_executable(um ${UM_APP_SOURCES})
@@ -207,7 +207,7 @@ if(BUILD_FOR_SIMULATION)
         stdc++
     )
 
-    # htc_net_app (SIM): links common_misc (connectWifi/isWifi*/startDHCP/
+    # net (SIM): links common_misc (connectWifi/isWifi*/startDHCP/
     # getIPAddress/getGatewayAddress/setNetworkInterfaceName) + mcu
     # (readUPID/readUPWD/writeUPID/writeUPWD via getInstance) + network
     # (UsbDongle: loadDriver/open/preconfig/start/setModel for --type usb).
@@ -218,7 +218,7 @@ if(BUILD_FOR_SIMULATION)
     # Graceful reconnect primitives live in wifi_reconnect.cpp compiled into the
     # target (sim stubs return empty/false). No system_call needed on sim
     # (sdk_stub).
-    target_link_libraries(htc_net_app
+    target_link_libraries(net
         PRIVATE
         common_misc
         mcu
@@ -503,14 +503,14 @@ target_link_libraries(snap_test
     gcc
     stdc++
 )
-# htc_net_app (T32): common_misc links system_call internally (for
+# net (T32): common_misc links system_call internally (for
 # popencall/syscall used by wifi_reconnect); we link mcu + system_call
 # explicitly to mirror daemon_app, plus network for UsbDongle (--type usb).
 # network's own PRIVATE dependencies (setting/env/devconf/disk/power/
 # common_time_*/md5/common_utils_crc/common_utils_serial) do not propagate to
 # this target, so they are linked explicitly here (same closure as sim).
 # No HAL / media deps needed.
-target_link_libraries(htc_net_app
+target_link_libraries(net
     PRIVATE
     common_misc
     mcu
@@ -690,7 +690,7 @@ set_target_properties(htc_daemon_app PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-set_target_properties(htc_net_app PROPERTIES
+set_target_properties(net PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

@@ -190,31 +190,31 @@ static int spawnAndWait(const char* path, char* const argv[])
 #endif  // BUILD_FOR_SIMULATION
 
 // ============================================================================
-// prepareNetwork — synchronous uplink bring-up via htc_net_app.
+// prepareNetwork — synchronous uplink bring-up via net.
 // network: "4g" -> --type usb --usb-bringup; "wifi" -> --type wifi (MCU creds).
 // Returns true if uplink is up (or bypassed on sim); false -> abort (no spawn wm).
 // ============================================================================
 static bool prepareNetwork(const std::string& network, const std::string& execDir)
 {
 #ifdef BUILD_FOR_SIMULATION
-    // SIM: no real 4G dongle / WiFi HW; htc_net_app exits non-zero on sim.
+    // SIM: no real 4G dongle / WiFi HW; net exits non-zero on sim.
     // Bypass to let sim smoke reach spawn wm. network 值不影响 sim 行为。
     Logger::log(LogLevel::INFO,
                 "SIM: bypass network prepare (network=%s, no HW in sim)",
                 network.c_str());
     return true;
 #else
-    std::string netBin = execDir.empty() ? "htc_net_app" : (execDir + "/htc_net_app");
+    std::string netBin = execDir.empty() ? "net" : (execDir + "/net");
     const char* netPath = netBin.c_str();
 
     if (network == "wifi") {
-        // WiFi: 不带凭据，htc_net_app 从 MCU 寄存器读 UPID/UPWD
+        // WiFi: 不带凭据，net 从 MCU 寄存器读 UPID/UPWD
         // (net_app.cpp:212-217: --ssid 空 -> readUPID/readUPWD)。
         Logger::log(LogLevel::INFO,
                     "preparing WiFi: spawnAndWait %s --type wifi (creds from MCU)",
                     netBin.c_str());
         char* const netArgv[] = {
-            const_cast<char*>("htc_net_app"),
+            const_cast<char*>("net"),
             const_cast<char*>("--type"),
             const_cast<char*>("wifi"),
             nullptr
@@ -236,7 +236,7 @@ static bool prepareNetwork(const std::string& network, const std::string& execDi
                     "preparing 4G: spawnAndWait %s --type usb --usb-bringup",
                     netBin.c_str());
         char* const netArgv[] = {
-            const_cast<char*>("htc_net_app"),
+            const_cast<char*>("net"),
             const_cast<char*>("--type"),
             const_cast<char*>("usb"),
             const_cast<char*>("--usb-bringup"),

@@ -153,7 +153,7 @@ def cmd_bringup(a):
         print("  WiFi: already up —", chk)
     else:
         c.run(f"cd /mnt/sdcard && LD_LIBRARY_PATH=/mnt/sdcard/lib:$LD_LIBRARY_PATH "
-              f"./bin/htc_net_app --ssid '{ssid}' --pwd '{pwd}'", timeout=60)
+              f"./bin/net --ssid '{ssid}' --pwd '{pwd}'", timeout=60)
         chk = c.run("ifconfig wlan0 2>/dev/null | grep 'inet addr'", timeout=8)["output"].strip()
         print("  WiFi:", chk or "(no IP — check SSID/pwd)")
 

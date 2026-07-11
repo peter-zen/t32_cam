@@ -63,16 +63,16 @@ crash **不是单功能逻辑 bug**，而是**单进程共享关机的并发 tea
 | 8 mDNS | `MdnsService`(CMD_MOBILE 分支 ~633) | 已实现 |
 | 9 HTTP渐进式回放(fMP4) | `http_api_v1.cpp::api_v1_camera_video_playback`(~1068，支持 fmp4/mp4 + playback_token) | 已实现 |
 | 10 MCU get/set | `MCU` + `McuService` + `McuCache` | 已实现 |
-| 11 Network 切换 | **`htc_net_app`**(`net_app.cpp --type wifi/eth/usb`) + `Misc::connectWifi/startDHCP` + `UsbDongle` | **已是独立 APP** |
+| 11 Network 切换 | **`net`**(`net_app.cpp --type wifi/eth/usb`) + `Misc::connectWifi/startDHCP` + `UsbDongle` | **已是独立 APP** |
 
 **5 个 APP 真实角色**：
 - `htc_media_app` = boot launcher（工作模式判定 + quick_snap + RTC/时间同步 + spawn daemon & main）
 - `htc_main_app` = 巨石 CLI，所有 `CMD_*` 载体（多数模块的实际家）
 - `htc_daemon_app` = 关机守护（进程监督 + 关机 GPIO 置输入）
-- `htc_net_app` = 已拆好的单功能网络工具（不是“准备拆”）
+- `net` = 已拆好的单功能网络工具（不是“准备拆”）
 - `htc_workmode_app` = `-wm` 薄壳（**C3 UNSPAWNED**：`media_app` 仍 spawn `main_app -wm`，未 repoint）+ 新 `EventLoop`(`-wm 0` PIR 录影)
 
-**两处纠正**：`htc_net_app` 已拆完可用；`htc_workmode_app` 已建但未上线。`snap_test` 是
+**两处纠正**：`net` 已拆完可用；`htc_workmode_app` 已建但未上线。`snap_test` 是
 “单功能测试程序”范本（目前仅覆盖模块 1，且是 48M 可行性工具，非生产 quick_snap 路径）。
 
 ## 5. 现有测试覆盖（决定缺口）
@@ -98,7 +98,7 @@ crash **不是单功能逻辑 bug**，而是**单进程共享关机的并发 tea
 | 7 http 控制+回放 | L1 sim | — | `tests/` 单测 | 部分缺 |
 | 6 thumbnail/DB | 随 record/snap L2 + `test_database` | CH2 | — | sim✓ |
 | 8 mdns / 10 mcu | 已有 sim | — | — | ✓ |
-| 11 network | 已是 `htc_net_app` | — | — | ✓ |
+| 11 network | 已是 `net` | — | — | ✓ |
 
 **实物 ≈ 4 个 L2 二进制（record/snap/upload/rtsp）+ 补 2 个 L1 sim（ntp/http）。**
 
@@ -109,7 +109,7 @@ media_app (supervisor)
   ├─ spawn daemon_app          (关机守护，现状)
   ├─ spawn wm  (单进程)         snap / record / upload / ntp   ← 一次性+可重复触发
   ├─ spawn um  (单进程，长驻)   rtsp / http控制+回放 / mdns     ← 等连接/信号
-  └─ 前置 htc_net_app           network（wm/um 启动前 spawn 一次拿 IP）
+  └─ 前置 net           network（wm/um 启动前 spawn 一次拿 IP）
 
 共享库（wm/um 各链/各实例）：mcu(McuService) / thumbnail+DB(storage) / manifest
 ```

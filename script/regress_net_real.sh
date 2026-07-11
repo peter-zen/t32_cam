@@ -1,11 +1,11 @@
 #!/bin/bash
-# regress_net_real.sh — real-hardware regression for htc_net_app Ethernet + USB
+# regress_net_real.sh — real-hardware regression for net Ethernet + USB
 # dongle uplinks (T7). The WiFi regression stays in regress_wifi_real.sh (the
 # wpa_supplicant PID invariant is WiFi-specific).
 #
 # Run MANUALLY on the T32 device. Same posture as T5/T6: NOT in CI (the PC
 # cannot reach the MIPS target or a real Ethernet/4G link). What we assert:
-#   - Ethernet: htc_net_app --type eth brings up eth0 (IP + gateway non-empty).
+#   - Ethernet: net --type eth brings up eth0 (IP + gateway non-empty).
 #   - USB default: faithfully ports main_app (loadDriver->open->preconfig, no
 #     start()) — EXPECTED to yield no IP on real hardware (known limitation
 #     T7-usb-no-start). We record this as a documented "known-defect" check.
@@ -23,7 +23,7 @@
 
 set -u
 
-BIN=/mnt/huntcam/bin/htc_net_app
+BIN=/mnt/huntcam/bin/net
 LIB=/mnt/huntcam/lib
 ETH_IF=eth0
 USB_IF=usb0

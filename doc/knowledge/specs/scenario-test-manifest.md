@@ -13,7 +13,7 @@
 - **L1 sim**（`tests/*.cpp`，sdk_stub）：功能正确性；crash 类永远跑不出。
 - **L2 真机**（`tests/host/*.py`，经 devctl 串口）：crash 类唯一仪器层（决策 2）。
 - **wm（一次性）** = {snap, record, upload, ntp}；**um（长驻）** = {rtsp, http控制+回放, mdns}；
-  共享库 = {mcu, thumbnail/DB, manifest}；前置 = network（`htc_net_app`）。
+  共享库 = {mcu, thumbnail/DB, manifest}；前置 = network（`net`）。
 - **硬约束**：
   - **1-wm-per-boot** —— IMP 驱动不支持一 boot 内 ≥2 个 IMP 进程，第 2 个 `IMP_System_Init`
     wedge 内核（需手动断电）。无论进程 1 是否 `IMP_System_Exit`，跨进程重复无解
@@ -69,7 +69,7 @@ devctl 现有子命令：`run` / `log` / `status` / `send`（原始字节）/ **
 |------|------|------|------|--------|
 | `test_record_smoke.py` | 2 record | loop-faithful | `-wm 0` 单段 | ✅ GREEN（含 thumbnail 锚点） |
 | `test_record_repeat.py` | 2 record | loop-faithful | `-wm 0` `HTC_TEST_RECORD_COUNT=3` 进程内 3 段 | ✅ GREEN（3×900帧~28fps，零 CreateChn） |
-| `test_net_smoke.py` | 11 network | single-shot | wlan0 IP + `htc_net_app --no-dhcp` REUSE | ✅ GREEN |
+| `test_net_smoke.py` | 11 network | single-shot | wlan0 IP + `net --no-dhcp` REUSE | ✅ GREEN |
 | `test_wm_modes_matrix.py` | wm 一次性组合 | crash/hang 探测 | `mode{0,1,2}×rtc{0,1}`，仅 rc/timeout | 🟡 代码就绪，**HW 未逐 case**（1 boot 1 case） |
 | `test_wm_repeat.py` | 跨进程 | — | 同 boot 2× `-wm 0` | ⏭️ **永久 skip**（IMP 跨进程 wedge=硬件限制） |
 

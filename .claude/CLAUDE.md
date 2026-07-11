@@ -89,11 +89,11 @@ mkdir -p /mnt/sdcard /mnt/huntcam
 mount /dev/mmcblk0p1 /mnt/sdcard
 export LD_LIBRARY_PATH=/mnt/sdcard/lib:$LD_LIBRARY_PATH
 cd /mnt/sdcard
-# home:    ./bin/htc_net_app --ssid no_mesh_02_2.4G --pwd <WIFI_PWD>  &&  . ./mount_nfs_home.sh
-# company: ./bin/htc_net_app --ssid no_mesh_01_2.4G --pwd <WIFI_PWD>  &&  . ./mount_nfs.sh
+# home:    ./bin/net --ssid no_mesh_02_2.4G --pwd <WIFI_PWD>  &&  . ./mount_nfs_home.sh
+# company: ./bin/net --ssid no_mesh_01_2.4G --pwd <WIFI_PWD>  &&  . ./mount_nfs.sh
 ```
 
-- `htc_net_app` + the mount scripts live on the **SD card** (`/mnt/sdcard`), not NFS — cold-boot bring-up cannot be served by NFS alone.
+- `net` + the mount scripts live on the **SD card** (`/mnt/sdcard`), not NFS — cold-boot bring-up cannot be served by NFS alone.
 - **Mount options are non-negotiable** (both scripts already pass them): `noac` (disables attribute caching → rebuilt binaries/.so visible immediately; without it the device runs stale code), `nolock` (embedded client lacks `rpc.lockd`), `vers=3`.
 - The NFS server's `/etc/exports` must whitelist the repo's `build/`.
 - The devtest broker owns `/dev/ttyUSB0` exclusively — to run bring-up from the loop, do it via `devctl run`, not by typing into a separate serial terminal (that contends for the port). The loop's one-command cold-boot bring-up is `HTC_WIFI_PWD=<pwd> tools/devctl/devctl bringup` — it auto-detects home/company from the host IP, mounts SD → connects WiFi → mounts NFS with noac → verifies. See `doc/knowledge/decisions/devtest-automation-loop.md`.

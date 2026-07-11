@@ -1,4 +1,4 @@
-// Unit tests for the pure-logic layer of htc_net_app.
+// Unit tests for the pure-logic layer of net.
 //
 // Covers:
 //   WiFi-specific (ported verbatim from the former test_wifi_app_logic):

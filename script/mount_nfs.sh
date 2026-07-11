@@ -1,7 +1,7 @@
 #!/bin/sh
 # Company environment NFS mount — network 192.168.0.x.
 # Run on the device AFTER WiFi is up:
-#   ./bin/htc_net_app --ssid no_mesh_01_2.4G --pwd <WIFI_PWD>
+#   ./bin/net --ssid no_mesh_01_2.4G --pwd <WIFI_PWD>
 #   . ./mount_nfs.sh
 # (Home environment on 192.168.31.x uses mount_nfs_home.sh instead.)
 NFS_HOST=192.168.0.206
