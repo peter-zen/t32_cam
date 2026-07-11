@@ -3,6 +3,8 @@
 #include <iomanip>
 #include <json/json.h>
 #include <sys/time.h>
+#include <time.h>
+#include <fstream>
 #include <cstring>
 #include <cstdlib>
 #include <cctype>
@@ -24,6 +26,7 @@
 #include "Rtmp.h"
 #include "Settings.h"
 #include "DeviceConfig.h"
+#include "ProductConfig.h"
 #include "EnvManager.h"
 #include "Logger.h"
 #include "UsbDongle.h"
@@ -167,7 +170,7 @@ std::string MgmtServClient::generateSyncKey(const std::string &pid, int dev_type
 int MgmtServClient::authenticate()
 {
 	Logger::log(LogLevel::INFO, "MgmtServClient: Authenticate device");
-	auto security_code = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_SMODE, 0);
+	auto security_code = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_SMODE, 0);
 	Logger::log(LogLevel::INFO, "MgmtServClient: Security code: %d", security_code);
 	std::string pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
 	std::string config_file = EnvManager::getInstance()->getEnv("CONFIG_FILE", "");
@@ -203,7 +206,7 @@ int MgmtServClient::authenticate()
 	root["Sync_Key"] = sync_key;
 	root["EUID"] = need_euid ? "1" : "0";
 	root["FW_Version"] = MCU::getInstance()->readFirmwareVersion();
-	root["PName"] = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PNAME, "");
+	root["PName"] = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PNAME, "");
 	root["API_Version"] = "V1";
 	if (remote_wakeup) {
 		root["Remote_Wakeup"] = "1";
@@ -712,92 +715,41 @@ bool MgmtServClient::isAuthSuccess() {
     return auth_success.load();
 }
 
-int MgmtServClient::sendHeartbeat(const std::string &message)
-{
-	struct timeval tv;
-	gettimeofday(&tv, nullptr);
-
-	auto message_length = message.length();
-	auto pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
-	auto comm_code = Settings::getInstance()->comm_code;
-
-	// Use the reusable function to format current time with dynamic timezone
-	std::string time_str = Timezone::getFormattedTimeWithTimezone(tv.tv_sec);
-
-	uint16_t check_code = 0x0000;
-	int ret = 0;
-
-	// Package message
-	Json::Value json_obj;
-	json_obj["PID"] = pid;
-	json_obj["Comm_Code"] = comm_code;
-	json_obj["File"] = "unknown";
-	json_obj["FileType"] = "json";
-	json_obj["FileSize"] = static_cast<Json::Value::UInt64>(message_length);
-	json_obj["FileName"] = "unknown";
-	json_obj["Upload_Date"] = time_str;
-
-	if (!ret && check_code != 0x0000) {
-		json_obj["F_CheckCode"] = check_code;
-	}
-
-	Json::StreamWriterBuilder writer;
-	std::string json_str = Json::writeString(writer, json_obj);
-
-	Logger::log(LogLevel::INFO, "Send heartbeat: %s", message.c_str());
-
-	// Upload data
-	int fixed_length = 12;
-	int json_length = json_str.length();
-	int total_length = fixed_length + json_length + message_length;
-	int msg_type = MSG_TYPE_UPLOAD_JSON;
-
-	memcpy(&send_buffer[0], &total_length, 4);
-	memcpy(&send_buffer[4], &msg_type, 4);
-	memcpy(&send_buffer[8], &json_length, 4);
-	memcpy(&send_buffer[12], json_str.c_str(), json_length);
-
-	auto start_time = std::chrono::steady_clock::now();
-
-	if (total_length <= send_buffer_size) {
-		memcpy(&send_buffer[fixed_length + json_length], message.c_str(), message_length);
-		ret = send(socket_fd, send_buffer.get(), total_length, 0);
-	} else {
-		int data_idx = 0;
-		memcpy(&send_buffer[fixed_length + json_length], message.c_str(),
-		       send_buffer_size - fixed_length - json_length);
-		ret = send(socket_fd, send_buffer.get(), send_buffer_size, 0);
-
-		while (ret >= 0 && data_idx < message_length) {
-			int n_read = std::min(static_cast<int>(send_buffer_size), static_cast<int>(message_length - data_idx));
-			if (n_read == 0) {
-				break;
-			}
-			memcpy(&send_buffer[0], message.c_str() + data_idx, n_read);
-			ret = send(socket_fd, send_buffer.get(), n_read, 0);
-			data_idx += n_read;
-		}
-	}
-
-	if (ret < 0) {
-		Logger::log(LogLevel::ERROR, "Send heartbeat failed");
-		return EC_FAILED;
-	}
-
-	auto end_time = std::chrono::steady_clock::now();
-	int duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-	Logger::log(LogLevel::INFO, "Send heartbeat speed: %d kb/s, time: %d ms",
-		    duration > 0 ? total_length / duration : 0, duration);
-
-	return EC_SUCCESS;
-}
-
 int MgmtServClient::sendHeartbeat()
 {
-	std::string message = formatHeartbeatMessage();
-	Logger::log(LogLevel::DEBUG, "Heartbeat JSON: %s", message.c_str());
+	std::string payload = formatHeartbeatMessage();
+	Logger::log(LogLevel::DEBUG, "Heartbeat JSON: %s", payload.c_str());
 
-	return sendHeartbeat(message);
+	// spec：心跳走与 JPG 相同的 type-1 文件上传通道（服务器不处理 type=254，
+	// 实测 type=254 5s 内无 ACK、服务器不入库）。文件名 = PID_YYYYMMDD_HHMMSS.JSON，
+	// 落 /tmp 临时文件，upload() 后删除。newStorageServClient 共享本连接已 auth 的
+	// socket_fd，upload() 内部构造 type-1 信封 + sendWithTimeout + 等 upload ACK
+	//（回包走 handleUploadCommand，与 JPG 上传完全同流程）。
+	struct timeval tv;
+	gettimeofday(&tv, nullptr);
+	struct tm tm_local;
+	localtime_r(&tv.tv_sec, &tm_local);
+	char file_time[16];
+	strftime(file_time, sizeof(file_time), "%Y%m%d_%H%M%S", &tm_local);
+	auto pid = DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
+	std::string tmp_path = std::string("/tmp/") + pid + "_" + file_time + ".JSON";
+
+	std::ofstream out(tmp_path, std::ios::binary);
+	if (!out.is_open()) {
+		Logger::log(LogLevel::ERROR, "Heartbeat: write tmp file failed: %s", tmp_path.c_str());
+		return EC_FAILED;
+	}
+	out << payload;
+	out.close();
+
+	Logger::log(LogLevel::INFO, "Heartbeat JSON file=%s size=%u",
+		    tmp_path.c_str(), (unsigned)payload.length());
+
+	auto storage = newStorageServClient();
+	int rc = storage->upload(tmp_path);
+
+	unlink(tmp_path.c_str());   // 清理临时文件（无论上传成败）
+	return rc;
 }
 
 std::string MgmtServClient::formatHeartbeatMessage()
@@ -850,15 +802,8 @@ std::string MgmtServClient::formatHeartbeatMessage()
 	device_info["ONTime"] = settings->onTime_0 + (settings->onTime_1 << 8);
 	device_info["NStatus"] = this->socket_fd > 0 ? 1 : 0;
 
-	if (1) {//TODO read from mcu
-		device_info["AStatus"] = 22;
-	} else if (battery1_volte <= shutdown_volte && external_volte <= shutdown_volte) {
-		device_info["AStatus"] = 23; // power off
-	} else if (battery1_volte <= lowpower_volte && external_volte <= lowpower_volte) {
-		device_info["AStatus"] = 21; // low
-	} else {
-		device_info["AStatus"] = 10;
-	}
+	// spec：心跳固定报 AStatus=10
+	device_info["AStatus"] = 10;
 
 	auto battery_level = mcu->readBatteryLevel();
 	device_info["BAT1_Level"] = battery_level;
@@ -875,9 +820,9 @@ std::string MgmtServClient::formatHeartbeatMessage()
 
 	json_root["data"] = data_info;
 
-	// Network
+	// Network — T25 Phase-3: UPID migrated from DeviceConfig SYSTEM to Settings
 	Json::Value network_info;
-	auto upid = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_UPID, "");
+	auto upid = Settings::getInstance()->upid;
 	network_info["N_UPID"] = upid;
 	network_info["N_UIP"] = "0";
 	network_info["N_CStatus"] = 0;
@@ -900,7 +845,7 @@ std::string MgmtServClient::formatHeartbeatMessage()
 		signal_info["S_TD"] = mcu->readSignalTD();
 		signal_info["S_TP"] = mcu->readSignalTP();
 	} else {
-		auto program_type = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
+		auto program_type = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
 		if (PTYPE_USB_DONGLE == program_type && mcu->Is4gExist()) {
 			signal_info["S_RSSI"] = mcu->readSignalRSSI();
 			signal_info["S_CF"] = mcu->readSignalCF();

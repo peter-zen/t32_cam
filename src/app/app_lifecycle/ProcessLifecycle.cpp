@@ -11,7 +11,6 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <limits.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -29,6 +28,7 @@
 #include "DatabaseManager.h"
 #include "DayNightSwitch.h"
 #include "DeviceConfig.h"
+#include "ProductConfig.h"
 #include "ElogInit.h"
 #include "EnvManager.h"
 #include "GPIO.h"
@@ -45,6 +45,7 @@
 #include "Settings.h"
 #include "TcpEventService.h"
 #include "Timezone.h"
+#include "Paths.h"
 #include "app.h"
 #include "daemon_api.h"
 #include "http_server.h"
@@ -275,16 +276,31 @@ bool ProcessLifecycle::commonStartup(const StartupConfig& cfg) {
     setenv("SIM_SD_ROOT", simRootPath.c_str(), 0);
 
     auto env_manager = EnvManager::getInstance();
-    setEnvIfEmpty(env_manager, "CONFIG_FILE", projectRootPath + "/res/config.sim.ini");
+    setEnvIfEmpty(env_manager, "CONFIG_FILE", projectRootPath + "/res/system.sim.json");
+    setEnvIfEmpty(env_manager, "PRODUCT_FILE", projectRootPath + "/res/product.sim.json");
     setEnvIfEmpty(env_manager, "SETTING_FILE_PATH", projectRootPath + "/res/setting.json");
     setEnvIfEmpty(env_manager, "BROADCAST_FILELIST_PATHNAME", simRootPath + "/media/audio/AUDIO_PLAY_LIST.txt");
     setEnvIfEmpty(env_manager, "BROADCAST_FILE_PATH", simRootPath + "/media/audio/");
     setEnvIfEmpty(env_manager, "ISP_FILE_PATH", simRootPath + "/media/audio/");
 #else
-    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
+    // env.ini retired (T26 Phase-4): 5 keys now fixed constexpr defaults from
+    // Paths.h. env-var overrides (CONFIG_FILE/PRODUCT_FILE for test injection)
+    // still win — setEnvIfEmpty does not clobber a non-empty existing value.
+    auto env_manager = EnvManager::getInstance();
+    setEnvIfEmpty(env_manager, "CONFIG_FILE", kSystemFilePath);
+    setEnvIfEmpty(env_manager, "PRODUCT_FILE", kProductFilePath);
+    setEnvIfEmpty(env_manager, "SETTING_FILE_PATH", kSettingFilePath);
+    setEnvIfEmpty(env_manager, "BROADCAST_FILELIST_PATHNAME", kBroadcastFilelistPath);
+    setEnvIfEmpty(env_manager, "BROADCAST_FILE_PATH", kBroadcastFileDir);
+    setEnvIfEmpty(env_manager, "ISP_FILE_PATH", kIspFileDir);
     if (const char* configOverride = std::getenv("CONFIG_FILE")) {
         if (configOverride[0] != '\0') {
-            EnvManager::getInstance()->setEnv("CONFIG_FILE", configOverride);
+            env_manager->setEnv("CONFIG_FILE", configOverride);
+        }
+    }
+    if (const char* productOverride = std::getenv("PRODUCT_FILE")) {
+        if (productOverride[0] != '\0') {
+            env_manager->setEnv("PRODUCT_FILE", productOverride);
         }
     }
 #endif
@@ -359,9 +375,9 @@ bool ProcessLifecycle::commonStartup(const StartupConfig& cfg) {
     // runs AFTER syncSystemTime, every later localtime()/elog tick shifts the
     // visible clock by 8h — exactly the symptom we hit. Set TZ first so the
     // system clock we land in is the correct local epoch.
+    // T25 Phase-3: timezone migrated from config.json NTP to Settings.
     {
-        auto config = DeviceConfig::getInstance();
-        std::string timezone = config->get(INI_SECTION_NTP, INI_KEY_TIMEZONE, "");
+        const std::string& timezone = Settings::getInstance()->timezone;
         if (!timezone.empty()) {
             Logger::log(LogLevel::INFO, "Set timezone to %s", timezone.c_str());
             Timezone::setTimezone(timezone);
@@ -456,7 +472,7 @@ bool ProcessLifecycle::commonStartupPostDispatch(const StartupConfig& cfg, int c
     // (config already captured above — DeviceConfig::getInstance())
 
     // S10b — DeviceConfig + program_type capture
-    program_type = config->get(INI_SECTION_BOOT, INI_KEY_PTYPE, PTYPE_NO_NET);
+    program_type = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, PTYPE_NO_NET);
     Logger::log(LogLevel::INFO, "program type %d", program_type);
 
     // S11 — mount sdcard + netif selection (+ HW-only factory/update sub-steps)
@@ -515,31 +531,6 @@ bool ProcessLifecycle::commonStartupPostDispatch(const StartupConfig& cfg, int c
                             "Factory JSON import applied from %s, count=%d, restart required",
                             import_result.selectedInput.c_str(),
                             import_result.appliedCount);
-                config->flush_control(false);
-                return false;
-            }
-        }
-    }
-
-    if (!cfg.skipUpdateConfig) {
-        //update config
-        // First, check if update config file exists by opening it
-        bool update_config_exists = false;
-        {   // Use a scope to ensure file is closed before moving
-            std::fstream update_config_file(UPDATE_CONFIG_FILE_PATHNAME, std::ios::in);
-            update_config_exists = update_config_file.is_open();
-            if (update_config_exists) {
-                Logger::log(LogLevel::INFO, "Update config file exists, preparing to update config");
-                update_config_file.close();
-            }
-        }
-
-        // Now that file is closed, attempt to move it
-        if (update_config_exists) {
-            if (!Misc::moveFile(UPDATE_CONFIG_FILE_PATHNAME, CONFIG_FILE_PATHNAME)) {
-                Logger::log(LogLevel::ERROR, "Failed to update config file");
-            } else {
-                Logger::log(LogLevel::INFO, "Successfully updated config file");
                 config->flush_control(false);
                 return false;
             }
@@ -652,16 +643,26 @@ bool syncWithMCU()
         }
     }
 
-    //UPID & UPWD
+    //UPID & UPWD — T25 Phase-3: migrated from DeviceConfig SYSTEM to Settings.
     {
         auto upid = mcu->readUPID();
         auto upwd = mcu->readUPWD();
         if (!upid.empty() && !upwd.empty()) {
-            devconf->set(INI_SECTION_SYS, INI_KEY_UPID, upid);
-            devconf->set(INI_SECTION_SYS, INI_KEY_UPWD, upwd);
+            auto settings = Settings::getInstance();
+            settings->upid = upid;
+            settings->upwd = upwd;
         }
     }
-    devconf->flush();
+    devconf->flush();  // PID still persists via DeviceConfig
+    // Persist Settings (UPID/UPWD) on shutdown — same pattern as persistSettings.
+    {
+        std::string settingFilePath = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", "");
+        if (!settingFilePath.empty()) {
+            if (!Settings::getInstance()->saveToJsonFile(settingFilePath)) {
+                Logger::log(LogLevel::WARNING, "%s: failed to save settings on shutdown", __func__);
+            }
+        }
+    }
 
     //RTC — 仅当系统时间可信（≥2026-01-01）才写 MCU，避免把错误时间固化进 MCU。
     {

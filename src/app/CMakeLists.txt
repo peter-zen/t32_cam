@@ -17,6 +17,7 @@ include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/../logger
         ${CMAKE_CURRENT_SOURCE_DIR}/../common
         ${CMAKE_CURRENT_SOURCE_DIR}/../common/misc
+        ${CMAKE_CURRENT_SOURCE_DIR}/../config
         ${CMAKE_CURRENT_SOURCE_DIR}/../config/setting
         ${CMAKE_CURRENT_SOURCE_DIR}/../config/env
         ${CMAKE_CURRENT_SOURCE_DIR}/../config/devconf

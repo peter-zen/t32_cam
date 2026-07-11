@@ -19,6 +19,7 @@
 #include "utils/string/StringConvert.h"
 #include "system_call.h"
 #include "DeviceConfig.h"
+#include "Paths.h"
 #include "app.h"
 #include "Common.h"
 #include "workmode/WorkMode.h"
@@ -182,6 +183,16 @@ int main(int argc, char* argv[])
         Logger::log(LogLevel::INFO, "main entry at %ld ms", ts0.tv_sec * 1000 + ts0.tv_nsec / 1000000);
     }
 
+    // env.ini retired (T26 Phase-4): paths now fixed constexpr from Paths.h.
+    // env-var override (CONFIG_FILE/PRODUCT_FILE/etc) still honored via
+    // setEnvIfEmpty (does not clobber a non-empty existing/env-var value).
+    {
+        auto env = EnvManager::getInstance();
+        if (env->getEnv("CONFIG_FILE", "").empty())       env->setEnv("CONFIG_FILE", kSystemFilePath);
+        if (env->getEnv("PRODUCT_FILE", "").empty())      env->setEnv("PRODUCT_FILE", kProductFilePath);
+        if (env->getEnv("SETTING_FILE_PATH", "").empty()) env->setEnv("SETTING_FILE_PATH", kSettingFilePath);
+    }
+
     {
         auto gpio_power_hold = GPIO(POWER_HOLD_PIN);
         if (!gpio_power_hold.exportGPIO() || !gpio_power_hold.setDirection(GPIO_DIRECTION::OUTPUT)
@@ -190,26 +201,27 @@ int main(int argc, char* argv[])
             goto main_exit;
         }
     }
-
-    if (EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME)) {
-        auto config = DeviceConfig::getInstance();
-        std::string timezone = config->get(INI_SECTION_NTP, INI_KEY_TIMEZONE, "");
+    // T25 Phase-3: load setting.json BEFORE reading timezone (timezone migrated
+    // from config.json NTP section to Settings). setting.json lives in /config
+    // and is available at boot.
+    setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", "");
+    if (!setting_file_path.empty()) {
+        load_success = Settings::getInstance()->loadFromJsonFile(setting_file_path);
+    }
+    {
+        const std::string& timezone = Settings::getInstance()->timezone;
         if (!timezone.empty()) {
             Logger::log(LogLevel::INFO, "Set timezone to %s", timezone.c_str());
             Timezone::setTimezone(timezone);
         }
-        setting_file_path = EnvManager::getInstance()->getEnv("SETTING_FILE_PATH", ""); 
-        if (!setting_file_path.empty()) {
-            load_success = Settings::getInstance()->loadFromJsonFile(setting_file_path);
-            if (load_success) {
-                Logger::log(LogLevel::INFO, "force_upload = %d", Settings::getInstance()->force_upload);
-                if (Settings::getInstance()->force_upload == 1) {
-                    working_mode = workingMode::WORKING_MODE_UPLOAD_ONLY;
-                    Settings::getInstance()->force_upload = 0;
-                    Settings::getInstance()->saveToJsonFile(setting_file_path);
-                    goto main_exit;
-                }
-            }
+    }
+    if (load_success) {
+        Logger::log(LogLevel::INFO, "force_upload = %d", Settings::getInstance()->force_upload);
+        if (Settings::getInstance()->force_upload == 1) {
+            working_mode = workingMode::WORKING_MODE_UPLOAD_ONLY;
+            Settings::getInstance()->force_upload = 0;
+            Settings::getInstance()->saveToJsonFile(setting_file_path);
+            goto main_exit;
         }
     }
 

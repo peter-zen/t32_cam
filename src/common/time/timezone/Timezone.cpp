@@ -4,6 +4,7 @@
 #include <ctime>
 #include <cstdlib>
 #include <cstdio>
+#include <fstream>
 #include "Logger.h"
 #include "Timezone.h"
 
@@ -90,6 +91,19 @@ bool Timezone::setTimezone(const std::string& timezone)
     // 设置调整后的TZ环境变量并刷新
     setenv("TZ", adjusted_timezone.c_str(), 1);
     tzset();
+
+#ifndef BUILD_FOR_SIMULATION
+    // 持久化到 /etc/TZ：同一开机周期内的兄弟/后续进程在 TZ 环境变量未设时，
+    // uClibc 会自动读取 /etc/TZ（回退顺序：TZ env → /etc/TZ → UTC），从而
+    // elog/localtime 从进程第一行起就是本地时区，无需每个进程各自重新设置。
+    // 根 "/" 是可写 rootfs(内存盘)，root 可写；best-effort，失败静默。注意
+    // 内存盘重启清空：每次开机由首个设置时区的 app 重新写入（幂等）。
+    // 写入带换行，与 echo > /etc/TZ 实测过的格式一致。
+    std::ofstream tz_file("/etc/TZ");
+    if (tz_file) {
+        tz_file << adjusted_timezone << "\n";
+    }
+#endif
 
     return true;
 }

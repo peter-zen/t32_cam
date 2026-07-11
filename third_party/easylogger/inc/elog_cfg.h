@@ -46,9 +46,9 @@
  */
 #define ELOG_ASYNC_OUTPUT_ENABLE
 
-/* Number of ring slots (each ELOG_LINE_BUF_SIZE bytes). 128 slots ~= 64 KB. */
+/* Number of ring slots (each ELOG_LINE_BUF_SIZE bytes). 64 slots × 2048 = 128 KB。 */
 #ifndef ELOG_ASYNC_OUTPUT_BUF_SIZE
-#define ELOG_ASYNC_OUTPUT_BUF_SIZE              128
+#define ELOG_ASYNC_OUTPUT_BUF_SIZE              64
 #endif
 
 /* setting static output log level. range: from ELOG_LVL_ASSERT to ELOG_LVL_VERBOSE */
@@ -57,8 +57,9 @@
 /* enable assert check */
 /* #define ELOG_ASSERT_ENABLE */
 
-/* buffer size for every line's log */
-#define ELOG_LINE_BUF_SIZE                       512
+/* buffer size for every line's log.
+ * 2048 容纳完整心跳 payload（缩进 JSON ~900B + elog 前缀），原 512 会截断。 */
+#define ELOG_LINE_BUF_SIZE                       2048
 
 /* output line number max length */
 #define ELOG_LINE_NUM_MAX_LEN                    5

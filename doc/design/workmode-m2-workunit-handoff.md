@@ -61,7 +61,7 @@
    spawn(wmPath, wmArgv);
    ```
    传绝对路径，避免 wm CWD 歧义。仅当 `willSnap && !snapDir.empty()` 时带 `-d`（force_upload 路径 `willSnap=false` → 不带，靠兜底）。
-   - ⚠️ **rtc-fail "pic" 目录**：rtc 同步失败时工作目录是 `/tmp/media/pic/`（非时间戳名），不匹配兜底正则 `^\d{8}_\d{6}$`，兜底扫不到；但因 `willSnap=true` 仍经 `-d .../pic` **显式**进入主队列，故可正常上传。
+   - ✅ **rtc-fail 命名已统一**（2026-07-11）：rtc 同步失败时工作目录**不再**叫 `/tmp/media/pic/`，而是**始终**用当前系统时间命名 `/tmp/media/<YYYYMMDD_HHMMSS>/`（时间不可信也照用，见 `quicksnap-app-spec §5.1`）。历史背景：旧 "pic" 非时间戳名不匹配兜底正则 `^\d{8}_\d{6}$`，本进程 `-d` 显式入队可传，但 T22「上传失败 SD 落卡」后 `persistStrandedTmpDir` 会把 "pic" 落到 SD，下次 boot SD-resume 的 `isTimestampDir` 认不出 → 永久 stranding。统一时间戳命名从源头消除该 gap。
 
 ## 5. wm 职责（m2）
 

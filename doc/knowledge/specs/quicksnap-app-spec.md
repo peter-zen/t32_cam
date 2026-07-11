@@ -121,14 +121,23 @@ GPIO **暂沿用旧 `workingMode` 枚举**（2 根 pin `PC(9)/PC(8)` = 4 组合�
 
 ## 5. 拍照路径（≤8M，HW scaler）
 
-- 用 `ImageSnap`，`stillSize` 钳到 ≤ `SNAP_IMG_SIZE_8M`（3840×2160，下标 4）。**不走 strip 拼接 + SIMD 放大**（>8M 的 `LargeImageSnap` 重路径禁用）。
-- sensor 原生 2560×1440（gc4653）；`ImageSnap::initialize` 对 ≤ sensor-native 走 HW encoder 路径（见 `ImageSnap.cpp:113-120` 注释：CH0 不能配高于 sensor-native）。
+- 用 `ImageSnap`，`stillSize` **钳到 ≤ `SNAP_IMG_SIZE_4M`（2560×1440，下标 1）= sensor-native**。两维均不超 sensor → `isLargeImage=false` → 走 HW encoder 路径（只需 JPEG CH12，`ImageSnap.cpp:124`）。
+- **>4M（8M…）任一维超 sensor-native → `isLargeImage=true` → strip 路径**（`snap_large_internal`）。strip 需 sensor framesource **CH0**（`ImageSnap.cpp:471` `IMP_FrameSource_EnableChn(0)`），但 quickSnap photo-only HAL（`residentMode=0`）只建 CH12+CH14、**不建 CH0**（selective-preBind 省 ~1.84MB，`IngenicVideo.cpp:1141`）→ `EnableChn(0)` 必败 → snap 失败。故 quickSnap 精简 HAL 结构上**不支持 >4M**；doSnap clamp（`quick_snap.cpp` stillSize clamp）从源头杜绝 strip。注：旧版 spec 写「≤8M 走 HW 路径」有误——8M(3840×2160)>sensor-native 同样走 strip。
 - 产出落 `/tmp/media/`（`QUICK_SNAP_DIR` 常量改名 `/tmp/quick_snap/`→`/tmp/media/`，`app.h`）。
 - `info.json` manifest（`{files:[..], dir:"<ts>"}`）写给 **wm `-m 2` 直接读取并造 desc 上传**——**不搬移到 SD**（wm lean 模式无卡可跑；见 [`wm-app-spec.md`](wm-app-spec.md) §2.1）。旧 `processCmdSnap` 的 /tmp→SD 搬移路径**作废**。
 - **成片即终片**：SNAP_ONLY/SNAP_UPLOAD 模式下 quickSnap 出的片就是最终成片（wm `-m 2` 直接从 /tmp 上传、不补拍），故 ≤8M 封顶是产品取舍（高清留给后续）。
 - **不入库（no DB）**：quickSnap 出片即终片、wm 直传，**不入 `media_file.db`**（无 playback/相册索引需求）。`ImageSnap` 是**纯拍照类**——只写 JPEG，不调 `addMedia`（2026-07-10 把 addMedia 从 `ImageSnap` 移出，归还调用方；wm `snap_task` / 主 app `CameraServiceT32::takePhoto` 各自入库）。quickSnap 全程**不 init `DatabaseManager`**，`addMedia` 路径在 quickSnap 不存在。
 - **CH2 缩略图全关（两层都关，省内存）**：quickSnap 不要缩略图。两层——① HAL preBind 的 group2/CH14（320×180 JPEG 通道，`IngenicVideo::buildResidentChannels`）由 `HalVideoConfig.withThumb=false` 门控不建；② `ImageSnap` 的 `thumbStream_`（`setThumbnailEnabled(false)`）不创建。只关一层（②）省不下主体内存——group2 编码器通道仍 idle 占着，故两层都必须关。
 - **HAL channel 配置走显式 API（env 退役）**：quickSnap 在决定拍照后（`if(willSnap)` 内、`doSnap` 前）调 `hal::HalProvider::start(HalVideoConfig{residentMode:0, withThumb:false})` 声明本进程的常驻通道配置。旧的 `HTC_HAL_RESIDENT_MODE` env **全面退役**（`buildResidentChannels` 改读 `HalVideoConfig` 成员，不再 `getenv`）。`sharedVideo()` 仍 lazy 构造，但用 `start()` 设的 config（未调则默认 `{-1, true}` = um/legacy 全建）——这让 cm==1 的 `resetSharedVideo`→re-init 自动用同 config，且 um/main_app/test 零改动继承默认。
+
+### 5.1 文件/目录命名规则（始终时间戳，不区分 rtcOk）
+
+- **目录** = `/tmp/media/YYYYMMDD_HHMMSS/`；**文件** = `<YYYYMMDD_HHMMSS>_<n>.JPG`（`<n>` = 1..burstNumber）。`<ts>` 来自 `getCurrentTimeFormatted()`（`time()`+`localtime`，本进程时区）。
+- **`rtcOk` 不影响命名**：rtc 同步失败（RTC+MCU 都不可信，时钟 `<2026`）时，**仍原样用当前（不可信）系统时间**命名，**不另设 "pic" 兜底名**。理由：
+  - 命名必须统一为 `^\d{8}_\d{6}(_\d+)?$`，wm 的兜底扫描 / SD 续传（`isTimestampDir`，`wm_sweep.cpp`）才认得；非时间戳名（旧 "pic"）会被兜底/续传略过。
+  - T22「上传失败 SD 落卡」后，tmpfs 工作目录会被 `persistStrandedTmpDir` 落到 SD；若名非时间戳，下次 boot SD-resume 认不出 → **永久 stranding**。统一时间戳命名从源头消除该 gap（根因见 [`workmode-m2-workunit-handoff.md`](../../../doc/design/workmode-m2-workunit-handoff.md) §4 rtc-fail 注）。
+  - **刻意不 clamp** 时间到 plausible 下限：wm `syncWithMCU` 仅在系统时间 `≥2026`（可信）时才写 MCU；若 quickSnap 把时钟 clamp 成假 plausible，wm 在 NTP 失败时会把假时间固化进 MCU，污染最后已知好时间。保持时钟 implausible → wm 可信门关闭 → MCU 安全。（`snap_test` 的 `ensurePlausibleClock` clamp 是独立测试工具、不进 MCU 写回链，不可照搬。）
+- `rtcOk` 仍由 `syncSystemTime()` 求值并打 log（标识本次嵌入的时间戳是否可信），但**不再用于命名分支**。
 
 ---
 

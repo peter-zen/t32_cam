@@ -25,6 +25,7 @@
 #include <fstream>
 #include <algorithm>
 #include <vector>
+#include <json/json.h>
 
 #include "wm_scheduler.h"     // app_workmode::WmScheduler + WmMode
 #include "wm_time.h"          // app_workmode::acquireTimeChain / writebackMcuTime
@@ -45,7 +46,8 @@
 #include "misc/Misc.h"
 #include "Settings.h"
 #include "StringConvert.h"    // stoi_custom / to_string_custom (uClibc-safe)
-#include "app.h"              // ENV_FILE_PATHNAME, POWER_HOLD_PIN
+#include "app.h"              // POWER_HOLD_PIN, INI_*
+#include "Paths.h"            // kSystemFilePath / kProductFilePath (env.ini retired)
 #include "Power.h"
 #include "DayNightSwitch.h"
 #include "GPIO.h"             // GPIO, GPIO_VALUE, GPIO_DIRECTION, POWER_HOLD_PIN
@@ -60,37 +62,18 @@ std::string normalizePath(const std::string& path) {
     return path;
 }
 #else
-std::string trimIniValue(const std::string& value) {
-    size_t start = 0;
-    while (start < value.size() && (value[start] == ' ' || value[start] == '\t')) ++start;
-    size_t end = value.size();
-    while (end > start && (value[end - 1] == ' ' || value[end - 1] == '\t' ||
-                           value[end - 1] == '\r' || value[end - 1] == '\n')) {
-        --end;
-    }
-    return value.substr(start, end - start);
-}
-
-std::string readIniString(const std::string& path, const std::string& section, const std::string& key) {
+std::string readJsonString(const std::string& path, const std::string& section, const std::string& key) {
     std::ifstream file(path);
     if (!file.is_open()) return "";
 
-    std::string current;
-    std::string line;
-    while (std::getline(file, line)) {
-        line = trimIniValue(line);
-        if (line.empty() || line[0] == ';' || line[0] == '#') continue;
-        if (line.front() == '[' && line.back() == ']') {
-            current = line.substr(1, line.size() - 2);
-            continue;
-        }
-        if (current != section) continue;
-        size_t pos = line.find('=');
-        if (pos == std::string::npos) continue;
-        std::string k = trimIniValue(line.substr(0, pos));
-        if (k == key) return trimIniValue(line.substr(pos + 1));
-    }
-    return "";
+    Json::CharReaderBuilder builder;
+    Json::Value root;
+    std::string errs;
+    if (!Json::parseFromStream(builder, file, &root, &errs)) return "";
+    if (!root.isObject() || !root.isMember(section)) return "";
+    const Json::Value &secNode = root[section];
+    if (!secNode.isObject() || !secNode.isMember(key)) return "";
+    return secNode[key].asString();
 }
 
 bool isTestPid(const std::string& pid) {
@@ -111,9 +94,9 @@ void selectWmHardwareConfig(std::string& note) {
     }
 
     const std::string current = env->getEnv("CONFIG_FILE", "");
-    const std::string currentPid = readIniString(current, INI_SECTION_DEVICE, INI_KEY_PID);
-    const std::string huntcamConfig = "/mnt/huntcam/config.ini";
-    const std::string huntcamPid = readIniString(huntcamConfig, INI_SECTION_DEVICE, INI_KEY_PID);
+    const std::string currentPid = readJsonString(current, INI_SECTION_DEVICE, INI_KEY_PID);
+    const std::string huntcamConfig = "/mnt/huntcam/system.json";
+    const std::string huntcamPid = readJsonString(huntcamConfig, INI_SECTION_DEVICE, INI_KEY_PID);
 
     if (isTestPid(currentPid) && !isTestPid(huntcamPid)) {
         env->setEnv("CONFIG_FILE", huntcamConfig);
@@ -155,7 +138,15 @@ int main(int argc, char* argv[])
     cfg.logFile   = cfg.logRoot + "/app.log";
 #else
     cfg.isSimulation = false;
-    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);  // 必须在最开始
+    // env.ini retired (T26 Phase-4): paths fixed constexpr from Paths.h. Must
+    // run BEFORE selectWmHardwareConfig() (reads CONFIG_FILE) and commonStartup
+    // (which also setEnvIfEmpty's — no-op here since already set).
+    {
+        auto env = EnvManager::getInstance();
+        if (env->getEnv("CONFIG_FILE", "").empty())       env->setEnv("CONFIG_FILE", kSystemFilePath);
+        if (env->getEnv("PRODUCT_FILE", "").empty())      env->setEnv("PRODUCT_FILE", kProductFilePath);
+        if (env->getEnv("SETTING_FILE_PATH", "").empty()) env->setEnv("SETTING_FILE_PATH", kSettingFilePath);
+    }
     selectWmHardwareConfig(configSelectionNote);
     auto storagePaths = std::make_shared<storage::StoragePaths>("/mnt/sdcard", "media");
     app_workmode::setStorage(storagePaths);
@@ -205,7 +196,6 @@ int main(int argc, char* argv[])
             cfg.skipDatabase = true;
             cfg.skipMediaScanner = true;
             cfg.skipFactoryConfig = true;
-            cfg.skipUpdateConfig = true;
     #ifndef BUILD_FOR_SIMULATION
             // lean: SD 可选，缺则 log 回退 /tmp/wm.log
             if (access("/mnt/sdcard", W_OK) != 0) {

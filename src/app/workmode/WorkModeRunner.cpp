@@ -13,6 +13,7 @@
 #include "RtspServer.h"
 #include "http_server.h"
 #include "DeviceConfig.h"
+#include "ProductConfig.h"
 #include "Common.h"
 #include "Logger.h"
 #include "ElogInit.h"
@@ -427,8 +428,9 @@ CascadeResult runCommands(int command, WorkModeContext& ctx)
     //connect wifi
     if (command & CMD_CONN_NET) {
         if (program_type == PTYPE_WIFI) {
-            auto wifi_ssid = config->get(INI_SECTION_SYS, INI_KEY_UPID, "");
-            auto wifi_pwd = config->get(INI_SECTION_SYS, INI_KEY_UPWD, "");
+            // T25 Phase-3: UPID/UPWD migrated from DeviceConfig SYSTEM to Settings
+            auto wifi_ssid = Settings::getInstance()->upid;
+            auto wifi_pwd = Settings::getInstance()->upwd;
             if (wifi_ssid.empty() || wifi_pwd.empty()) {
                 Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");
                 return CascadeResult::Continue;
@@ -598,8 +600,8 @@ CascadeResult runCommands(int command, WorkModeContext& ctx)
 
         uint16_t http_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_CTRL_PORT, 80);
         uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
-        auto wifi_ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
-        auto wifi_pwd = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
+        auto wifi_ssid = ProductConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
+        auto wifi_pwd = ProductConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
 #ifndef BUILD_FOR_SIMULATION
         if (wifi_ssid.empty() || wifi_pwd.empty()) {
             Logger::log(LogLevel::ERROR, "wifi ssid or pwd is empty");

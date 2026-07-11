@@ -3,6 +3,7 @@
 #include "CameraParameterRegistry.h"
 
 #include "../../config/devconf/DeviceConfig.h"
+#include "../../config/devconf/ProductConfig.h"
 #include "../../config/setting/Settings.h"
 
 #include <algorithm>
@@ -61,6 +62,19 @@ Json::Value readStatusValue(const ParameterDefinition& definition) {
                                  definition.storage.key,
                                  definition.defaultValue.isString() ? definition.defaultValue.asString()
                                                                     : jsonValueToString(definition.defaultValue));
+    }
+
+    if (definition.storage.kind == ParameterStorageKind::PRODUCT) {
+        ProductConfig* productConfig = ProductConfig::getInstance().get();
+        if (definition.type == ParameterValueType::NUMBER || definition.type == ParameterValueType::BOOLEAN) {
+            return productConfig->get(definition.storage.section,
+                                      definition.storage.key,
+                                      definition.defaultValue.isInt() ? definition.defaultValue.asInt() : 0);
+        }
+        return productConfig->get(definition.storage.section,
+                                  definition.storage.key,
+                                  definition.defaultValue.isString() ? definition.defaultValue.asString()
+                                                                     : jsonValueToString(definition.defaultValue));
     }
 
     if (definition.storage.kind == ParameterStorageKind::SETTINGS) {

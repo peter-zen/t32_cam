@@ -125,6 +125,7 @@ bool Settings::saveToJsonFile(const std::string& filePath)
 	root["devPwd"] = std::string(this->devPwd);
 
 	root["bitRate_4k"] = static_cast<int>(this->bitRate_4k);
+	root["bitRate_2_5k"] = static_cast<int>(this->bitRate_2_5k);
 	root["bitRate_1080p"] = static_cast<int>(this->bitRate_1080p);
 	root["bitRate_720p"] = static_cast<int>(this->bitRate_720p);
 	root["isWLed"] = static_cast<int>(this->isWLed);
@@ -135,6 +136,13 @@ bool Settings::saveToJsonFile(const std::string& filePath)
 	root["comm_code"] = this->comm_code;
 	root["euid"] = this->euid;
 	root["duid"] = this->duid;
+
+	// T25 Phase-3: user-mutable fields
+	root["timezone"] = this->timezone;
+	root["upid"] = this->upid;
+	root["upwd"] = this->upwd;
+	root["lowVoltage"] = this->lowVoltage;
+	root["endVoltage"] = this->endVoltage;
 
 	// Save int variables
 	root["setting_mark"] = this->setting_mark;
@@ -299,6 +307,10 @@ bool Settings::loadFromJsonFile(const std::string& filePath)
 		int v = root["bitRate_4k"].asInt();
 		this->bitRate_4k = (v >= 1 && v <= 8) ? static_cast<uint8_t>(v) : 8;
 	}
+	if (root.isMember("bitRate_2_5k")) {
+		int v = root["bitRate_2_5k"].asInt();
+		this->bitRate_2_5k = (v >= 1 && v <= 8) ? static_cast<uint8_t>(v) : 6;
+	}
 	if (root.isMember("bitRate_1080p")) {
 		int v = root["bitRate_1080p"].asInt();
 		this->bitRate_1080p = (v >= 1 && v <= 8) ? static_cast<uint8_t>(v) : 4;
@@ -315,6 +327,13 @@ bool Settings::loadFromJsonFile(const std::string& filePath)
 	if (root.isMember("comm_code")) this->comm_code = root["comm_code"].asString();
 	if (root.isMember("euid")) this->euid = root["euid"].asString();
 	if (root.isMember("duid")) this->duid = root["duid"].asString();
+
+	// T25 Phase-3: user-mutable fields
+	if (root.isMember("timezone")) this->timezone = root["timezone"].asString();
+	if (root.isMember("upid")) this->upid = root["upid"].asString();
+	if (root.isMember("upwd")) this->upwd = root["upwd"].asString();
+	if (root.isMember("lowVoltage")) this->lowVoltage = root["lowVoltage"].asString();
+	if (root.isMember("endVoltage")) this->endVoltage = root["endVoltage"].asString();
 
 	// Load int variables
 	if (root.isMember("setting_mark")) this->setting_mark = root["setting_mark"].asInt();

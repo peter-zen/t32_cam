@@ -12,8 +12,8 @@ sudo cp -rf ~/t32/app/build/bin/wpa_conn  ~/t32/bsp/board/Ingenic-SDK-T32/resour
 
 #res
 sudo rm -rf ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/config_bak/htc/*
-sudo cp -rf ~/t32/app/res/config.ini  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/config_bak/htc/
-sudo cp -rf ~/t32/app/res/env.ini  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/config_bak/htc/
+sudo cp -rf ~/t32/app/res/system.json   ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/config_bak/htc/
+sudo cp -rf ~/t32/app/res/product.json  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/config_bak/htc/
 sudo cp -rf ~/t32/app/res/setting.json  ~/t32/bsp/board/Ingenic-SDK-T32/resource/rootfs/zeratul/5.4.0/uclibc/rootfs_camera/config_bak/htc/
 
 #lib

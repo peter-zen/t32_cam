@@ -33,6 +33,7 @@ class DeviceConfig {
         DeviceConfig(const DeviceConfig &) = delete;
         DeviceConfig &operator=(const DeviceConfig &) = delete;
         bool parse(const std::string &configFile);
+        bool copyFile(const std::string &src, const std::string &dst);  // R4 EXDEV fallback
 
         std::unordered_map<std::string, std::unordered_map<std::string, std::string>> config_data;
         std::mutex config_mutex;

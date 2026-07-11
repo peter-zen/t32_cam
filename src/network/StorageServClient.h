@@ -23,13 +23,16 @@ class StorageServClient : public Client {
 		using UploadCallback = std::function<void(const std::string &filename, int error_code)>;
 		void bindUploadCallback(UploadCallback callback);
 		void uploadFile(const std::string &filename);
+		// 同步上传单文件：构造 type-1 信封 + sendWithTimeout + 等 upload ACK，
+		// 返回 EC_SUCCESS/EC_FAILED。供 one-shot 调用方（如心跳）直接用；
+		// 批量异步上传走 uploadFile + uploadThread。
+		int upload(const std::string &file_pathname);
 		void processCommand(int type, const Json::Value& cmd);
 		bool isUploadFinished();
 		void requestStop();
 
     private:
 	void uploadThread();
-	int upload(const std::string &file_pathname);
 	void handleUploadCommand(const Json::Value &cmd);
 
     private:

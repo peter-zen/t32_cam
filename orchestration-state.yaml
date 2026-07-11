@@ -123,6 +123,29 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T23
+  title: 'config.ini→JSON Phase-1: DeviceConfig ini→JSON 后端切换(行为等价 + golden)'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T24
+  title: 'config.ini→JSON Phase-2: 抽 ProductConfig (BOOT + DEVICE 静态字段; PID 留 DeviceConfig
+    因 MCU-mirror)'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T25
+  title: 'config.ini→JSON Phase-3: setting.json 吸收用户字段 (timezone/bitrate/电压/UPID-UPWD)
+    + test fixture'
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T26
+  title: 'config.ini→JSON Phase-4: 清场+三桶成型 (rename config.json→system.json; 退役 env.ini/update_config.ini;
+    删旧 .ini; constexpr 路径; install.sh; R4 EXDEV)'
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -218,4 +241,4 @@ risks:
   no-SD（HW mountSDCard non-fatal 分支）、真后端 upload/heartbeat 成功、IMP-not-init 在真机、tmpfs
   占用——sim 测不全（sim mountSDCard 递归 mkdir 总成功）。需 T32 硬件回归 （planner 已标，留用户）。sim 验收 + 双平台编译
   + 本审查 code-level 核实已足够放行合入。''}'
-active_task: T22
+active_task: T26

@@ -315,10 +315,11 @@ void WmScheduler::runHeartbeat() {
         Logger::log(LogLevel::ERROR, "[wm] heartbeat: auth failed");
         return;
     }
-    int rc = mgmt.sendHeartbeat();   // 恰好一次（spec §12.2 #19）
+    // sendHeartbeat：payload 落 /tmp 临时 JSON，走 type-1 文件上传（与 JPG 同流程，
+    // 服务器不处理 type=254），upload() 等服务器 ACK 才返回 → 删临时文件。
+    int rc = mgmt.sendHeartbeat();   // rc = upload() 结果（EC_SUCCESS = 服务器已 ACK 入库）
     Logger::log(LogLevel::INFO, "[wm] op=heartbeat_sent rc=%d", rc);
-    // 不等 server resp、不 loop、不碰 /tmp、不上传
-    // 返回后 wm_app 尾序走 shutdown → writebackMcu → poweroff
+    // 不 loop。返回后 wm_app 尾序走 shutdown → writebackMcu → poweroff
 }
 
 void WmScheduler::persistStrandedTmpDir(ShutdownReason reason) {

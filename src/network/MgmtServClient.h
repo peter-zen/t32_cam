@@ -38,7 +38,6 @@ private:
 	int getCode(const char c);
 	std::string generateSyncKey(const std::string &pid, int dev_type);
 	std::string formatHeartbeatMessage();
-	int sendHeartbeat(const std::string &message);
 	int str2time(const std::string& str);
 	int str2time(const char * str);
 	int str2week(const std::string& str);

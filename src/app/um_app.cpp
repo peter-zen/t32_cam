@@ -32,6 +32,7 @@
 #include "ProcessLifecycle.h" // app_lifecycle::ProcessLifecycle + Startup/ShutdownContext
 #include "StoragePaths.h"     // storage::StoragePaths (S1 path layout)
 #include "DeviceConfig.h"
+#include "ProductConfig.h"
 #include "Common.h"
 #include "Logger.h"
 #include "ElogInit.h"
@@ -39,7 +40,7 @@
 #include "misc/Misc.h"
 #include "Settings.h"
 #include "StringConvert.h"    // to_string_custom (uClibc-safe)
-#include "app.h"              // ENV_FILE_PATHNAME, POWER_HOLD_PIN
+#include "app.h"              // POWER_HOLD_PIN
 #include "Power.h"
 #include "DayNightSwitch.h"
 #include "GPIO.h"             // GPIO, GPIO_VALUE, GPIO_DIRECTION, POWER_HOLD_PIN
@@ -128,7 +129,6 @@ int main(int argc, char* argv[])
     cfg.logFile   = cfg.logRoot + "/app.log";
 #else
     cfg.isSimulation = false;
-    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);  // 必须在最开始
     storagePaths = std::make_shared<storage::StoragePaths>("/mnt/sdcard", "DCIM");
     cfg.dbPath    = EnvManager::getInstance()->getEnv("DB_PATH", storagePaths->dataDb());
     cfg.mediaRoot = storagePaths->mediaRoot();
@@ -250,8 +250,8 @@ int main(int argc, char* argv[])
     uint16_t rtsp_port = getConfiguredPort(config, INI_SECTION_MDNS, INI_KEY_MDNS_RTSP_PORT, DEFAULT_RTSP_PORT);
 #ifndef BUILD_FOR_SIMULATION
     {
-        auto ssid = config->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
-        auto pwd  = config->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
+        auto ssid = ProductConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "");
+        auto pwd  = ProductConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_CPWD, "");
         if (ssid.empty() || pwd.empty()) {
             Logger::log(LogLevel::ERROR, "[um] wifi ssid or pwd empty");
             goto um_exit;

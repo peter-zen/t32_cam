@@ -36,7 +36,7 @@
 #include "misc/Misc.h"
 #include "Settings.h"
 #include "StringConvert.h"      // stoi_custom (uClibc-safe)
-#include "app.h"                // ENV_FILE_PATHNAME, POWER_HOLD_PIN, PTYPE_*, INI_*
+#include "app.h"                // POWER_HOLD_PIN, PTYPE_*, INI_*
 #include "Power.h"
 #include "DayNightSwitch.h"
 #include "GPIO.h"               // GPIO, GPIO_VALUE, GPIO_DIRECTION, POWER_HOLD_PIN (cleanupHook body)
@@ -92,7 +92,6 @@ int main(int argc, char* argv[])
     cfg.logFile  = cfg.logRoot + "/app.log";
 #else
     cfg.isSimulation = false;
-    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
     storage::StoragePaths sp("/mnt/sdcard", "DCIM");
     cfg.dbPath   = EnvManager::getInstance()->getEnv("DB_PATH", sp.dataDb());
     cfg.mediaRoot = sp.mediaRoot();

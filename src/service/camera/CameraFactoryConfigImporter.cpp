@@ -4,8 +4,12 @@
 #include "CameraPropertyService.h"
 
 #include "../../config/devconf/DeviceConfig.h"
+#include "../../config/devconf/ProductConfig.h"
+#include "../../config/env/EnvManager.h"
 
+#include <cstdio>
 #include <fstream>
+#include <json/json.h>
 #include <sys/stat.h>
 
 namespace service {
@@ -17,6 +21,66 @@ std::string joinPath(const std::string& base, const std::string& name) {
         return name;
     }
     return base.back() == '/' ? base + name : base + "/" + name;
+}
+
+// Read-modify-write product.json with a set of section/key deltas collected
+// during factory import. PRODUCT-kind fields are the ONLY thing written here —
+// ProductConfig has no write surface (read-only by construction), so the factory
+// importer writes product.json directly via jsoncpp and then calls
+// ProductConfig::reload() to refresh the in-memory bag. Same-partition rename
+// for atomicity, mirroring DeviceConfig::flush.
+bool writeProductDelta(const Json::Value& productDelta) {
+    if (productDelta.empty()) {
+        return true;
+    }
+    const std::string path = EnvManager::getInstance()->getEnv("PRODUCT_FILE");
+    if (path.empty()) {
+        return false;
+    }
+
+    Json::Value root(Json::objectValue);
+    {
+        std::ifstream in(path);
+        if (in.is_open()) {
+            Json::CharReaderBuilder reader;
+            std::string errs;
+            Json::parseFromStream(reader, in, &root, &errs);
+        }
+    }
+    for (const auto& section : productDelta.getMemberNames()) {
+        Json::Value& secNode = root[section];
+        if (secNode.type() != Json::objectValue) {
+            secNode = Json::objectValue;
+        }
+        const Json::Value& deltaSec = productDelta[section];
+        for (const auto& key : deltaSec.getMemberNames()) {
+            secNode[key] = deltaSec[key];
+        }
+    }
+
+    Json::StreamWriterBuilder writer;
+    writer["indentation"] = "    ";
+    const std::string doc = Json::writeString(writer, root);
+
+    const std::string tmpPath = path + ".tmp";
+    {
+        std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) {
+            return false;
+        }
+        out << doc;
+        out.flush();
+        if (!out.good()) {
+            out.close();
+            std::remove(tmpPath.c_str());
+            return false;
+        }
+    }
+    if (std::rename(tmpPath.c_str(), path.c_str()) != 0) {
+        std::remove(tmpPath.c_str());
+        return false;
+    }
+    return true;
 }
 
 ParameterClassification parseClassification(const std::string& classification) {
@@ -115,6 +179,7 @@ bool CameraFactoryConfigImporter::loadJsonFile(const std::string& path,
 
 bool CameraFactoryConfigImporter::isWritableStorage(const ParameterDefinition& definition) const {
     return definition.storage.kind == ParameterStorageKind::DEVICE_CONFIG ||
+           definition.storage.kind == ParameterStorageKind::PRODUCT ||
            definition.storage.kind == ParameterStorageKind::SETTINGS;
 }
 
@@ -174,7 +239,6 @@ bool CameraFactoryConfigImporter::validateFactoryConfigJson(const Json::Value& r
 CameraFactoryImportResult CameraFactoryConfigImporter::importFromSdRoot(const std::string& sdRoot) const {
     CameraFactoryImportResult result;
     const std::string jsonPath = joinPath(sdRoot, kJsonFileName);
-    const std::string iniPath = joinPath(sdRoot, kIniFileName);
 
     if (fileExists(jsonPath)) {
         result.selectedInput = jsonPath;
@@ -193,6 +257,7 @@ CameraFactoryImportResult CameraFactoryConfigImporter::importFromSdRoot(const st
             return result;
         }
 
+        Json::Value productDelta(Json::objectValue);
         for (const auto& group : root["factory"].getMemberNames()) {
             for (const auto& name : root["factory"][group].getMemberNames()) {
                 const ParameterDefinition* definition =
@@ -200,15 +265,27 @@ CameraFactoryImportResult CameraFactoryConfigImporter::importFromSdRoot(const st
                 if (!definition || !isWritableStorage(*definition)) {
                     continue;
                 }
-                if (definition->type == ParameterValueType::NUMBER ||
-                    definition->type == ParameterValueType::BOOLEAN) {
-                    DeviceConfig::getInstance()->set(definition->storage.section,
-                                                     definition->storage.key,
-                                                     root["factory"][group][name].asInt());
+                if (definition->storage.kind == ParameterStorageKind::PRODUCT) {
+                    // Collect into product.json delta (read-modify-write at loop end).
+                    // ProductConfig is read-only by construction; factory import is the
+                    // sole writer and bypasses ProductConfig entirely (direct jsoncpp).
+                    productDelta[definition->storage.section][definition->storage.key] =
+                        (definition->type == ParameterValueType::NUMBER ||
+                         definition->type == ParameterValueType::BOOLEAN)
+                            ? Json::Value(root["factory"][group][name].asInt())
+                            : Json::Value(root["factory"][group][name].asString());
                 } else {
-                    DeviceConfig::getInstance()->set(definition->storage.section,
-                                                     definition->storage.key,
-                                                     root["factory"][group][name].asString());
+                    // DEVICE_CONFIG (PID) and SETTINGS remain on their existing writers.
+                    if (definition->type == ParameterValueType::NUMBER ||
+                        definition->type == ParameterValueType::BOOLEAN) {
+                        DeviceConfig::getInstance()->set(definition->storage.section,
+                                                         definition->storage.key,
+                                                         root["factory"][group][name].asInt());
+                    } else {
+                        DeviceConfig::getInstance()->set(definition->storage.section,
+                                                         definition->storage.key,
+                                                         root["factory"][group][name].asString());
+                    }
                 }
                 result.appliedCount++;
             }
@@ -234,17 +311,18 @@ CameraFactoryImportResult CameraFactoryConfigImporter::importFromSdRoot(const st
             }
         }
 
+        if (!productDelta.empty()) {
+            if (!writeProductDelta(productDelta)) {
+                appendError(result.errors, "factory", "", "product.json", "failed to persist product.json");
+                result.success = false;
+                result.decision = "product_persist_failed";
+                return result;
+            }
+            ProductConfig::getInstance()->reload();
+        }
         DeviceConfig::getInstance()->flush();
         result.success = true;
         result.restartRequired = true;
-        return result;
-    }
-
-    if (fileExists(iniPath)) {
-        result.success = true;
-        result.restartRequired = true;
-        result.selectedInput = iniPath;
-        result.decision = "ini_compatibility_selected";
         return result;
     }
 

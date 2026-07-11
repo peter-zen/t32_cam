@@ -20,7 +20,6 @@ struct CameraFactoryImportResult {
 class CameraFactoryConfigImporter {
 public:
     static constexpr const char* kJsonFileName = "camera_factory_config.json";
-    static constexpr const char* kIniFileName = "update_config.ini";
 
     CameraFactoryImportResult importFromSdRoot(const std::string& sdRoot) const;
     bool validateFactoryConfigJson(const Json::Value& root, Json::Value& errors) const;

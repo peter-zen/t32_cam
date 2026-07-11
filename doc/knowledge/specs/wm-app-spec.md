@@ -38,7 +38,7 @@
 | **0** | CAPTURE_ONLY | 有 | **无** | **关**（离线） | 省电拍照/录影，文件留 SD，下次 boot 传 |
 | **1** | CAPTURE+UPLOAD | 有 | 有（首个 Capture 完成后才调度，之后并发） | 开 | 拍完即传 |
 | **2** | UPLOAD_ONLY（**lean**） | **无** | 有（扫 `/tmp/media/` quickSnap 产物） | 开 | 上传 quickSnap 本次拍的片；**无卡可跑、无重传**（§2.1） |
-| **3** | HEARTBEAT（**lean**） | **无** | **无** | 开 | 单次心跳上报在线；**不碰 /tmp、不上传**（§2.1） |
+| **3** | HEARTBEAT（**lean**） | **无** | **无** | 开 | 单次心跳上报在线；payload 落 /tmp 临时 JSON 走 **type-1 文件上传**（与 JPG 同流程）后删（§2.1） |
 
 > 说明：`-m 0` 离线 → 无 NTP，时间只靠 RTC/MCU（见 §6.3）。
 
@@ -69,8 +69,8 @@
 **`-m 3`（HEARTBEAT，lean）行为**：
 1. lean 启动（上表）。
 2. connect + auth mgmt（`MS_IP`/`MS_PORT`，flash config）。
-3. **单次** `sendHeartbeat()` → poweroff。
-4. **不碰 `/tmp`、不上传、不 init IMP**。「周期性心跳」= **MCU 周期唤醒**设备（每次唤醒 = 1 boot = quickSnap → `wm -m 3` → 单次心跳），非单 boot 内 loop。m3 **不走 capture/upload slot 模型**，heartbeat 作为 scheduler 的一个新「动作」，套薄 scheduler 外壳以统一 signal/poweroff/§7 MCU 回写尾序。
+3. **单次** `sendHeartbeat()`：payload（`formatHeartbeatMessage`，`device.AStatus=10`）落 `/tmp/<PID>_YYYYMMDD_HHMMSS.JSON` 临时文件 → 经 `StorageServClient::upload` 走 **type-1 文件上传通道（与 JPG 完全同流程）** → 服务器 ACK 后返回、删临时文件 → poweroff。**关键：服务器不处理 `MSG_TYPE_UPLOAD_JSON`(254)**（真机实测 type=254 发出 5s 无 ACK、服务器不入库），故心跳 JSON 必须走 type-1 文件上传，而非自定义 type-254。
+4. **不 init IMP、不扫 `/tmp` 上传目录**（m3 仅写一个自用临时 JSON 走 type-1 上传后即删，**非** m2 那样扫 `/tmp/media` quickSnap 产物）。「周期性心跳」= **MCU 周期唤醒**设备（每次唤醒 = 1 boot = quickSnap → `wm -m 3` → 单次心跳），非单 boot 内 loop。m3 **不走 capture/upload slot 模型**，heartbeat 作为 scheduler 的一个新「动作」，套薄 scheduler 外壳以统一 signal/poweroff/§7 MCU 回写尾序。
 
 **协议约束**：server **强制要求 desc 元数据**（[`upload-protocol-spec.md`](upload-protocol-spec.md) §5：先传 desc JSON 再传 file）——故 m2 必须从 manifest 造 desc 再传，不能只传裸媒体。
 
@@ -339,7 +339,7 @@ Shutdown task（或 MCU override）的 teardown 序：
 | 16 | 无 DB 支援 | m2/m3 跳 DB init + MediaScanner（上传链路 DB-free）；DB 只给 capture/其他产品形态 |
 | 17 | lean gating | **按模式**（m2/m3），非配置开关（DB 需求 = capture 需求） |
 | 18 | m2 上传源 | `/tmp/media/info.json`→desc，UploadTask 扫 `/tmp`；**不扫 SD、无重传**（失败可接受丢失） |
-| 19 | m3 语义 | connect+auth+**单次** sendHeartbeat+poweroff；周期性 = MCU 唤醒；薄 scheduler 外壳 |
+| 19 | m3 语义 | connect+auth+**单次** sendHeartbeat+poweroff；周期性 = MCU 唤醒；薄 scheduler 外壳。**心跳 JSON 走 type-1 文件上传通道（与 JPG 同流程）**：`sendHeartbeat` 把 payload 落 `/tmp/<PID>_<ts>.JSON` 临时文件 → `StorageServClient::upload`（type-1 信封 + sendWithTimeout + 等 `upload_cv` ACK，回包走 `handleUploadCommand`）→ 删临时文件。原因：服务器**不处理 `MSG_TYPE_UPLOAD_JSON`(254)**（真机实测 type=254 发出 5s 无 ACK、不入库），只能复用服务器认的 type-1 通道。`upload()` 等 ACK 才返回 → 天然把析构/关机推迟到送达确认之后（同时修掉早期「发后立即断电 ~8ms 丢包」）。ACK 超时沿用 `HTC_UPLOAD_ACK_TIMEOUT_MS`（默认 15s） |
 | 20 | m2 不发心跳 | （暂）保持模式职责单一 |
 | 21 | `QUICK_SNAP_DIR` 改名 | `/tmp/quick_snap/`→`/tmp/media/`（`app.h` + quickSnap 新码；不碰死引用） |
 | 22 | 验收 | 扩 `test_wm_modes_matrix.py`（m3/no-SD//tmp-seed/no-DB）+ sim stub/HW 日志验 IMP-not-init |

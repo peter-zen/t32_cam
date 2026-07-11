@@ -54,13 +54,8 @@ def _setup_sim_env(tmpdir):
     os.makedirs(os.path.join(sim_root, "media", "upload"), exist_ok=True)
     os.makedirs(os.path.join(sim_root, "logs"), exist_ok=True)
 
-    res_dir = os.path.join(tmpdir, "res")
-    os.makedirs(res_dir, exist_ok=True)
-    env_ini = os.path.join(res_dir, "env.ini")
-    config_ini = os.path.join(res_dir, "config.sim.ini")
-    for path in [env_ini, config_ini]:
-        with open(path, "w") as f:
-            f.write("\n")
+    # env.ini / config.sim.ini retired (T26 Phase-4): paths now fixed constexpr
+    # from Paths.h, no runtime config files needed for sim boot.
 
     return {
         "SIM_SD_ROOT": sim_root,

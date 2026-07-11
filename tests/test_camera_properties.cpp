@@ -1,5 +1,6 @@
 #include "../src/config/env/EnvManager.h"
 #include "../src/config/devconf/DeviceConfig.h"
+#include "../src/config/devconf/ProductConfig.h"
 #include "../src/config/setting/Settings.h"
 #include "../src/service/camera/CameraFactoryConfigImporter.h"
 #include "../src/service/camera/CameraParameterRegistry.h"
@@ -27,10 +28,13 @@ void check(bool condition, const char* expression, int line) {
 #define CHECK(condition) check((condition), #condition, __LINE__)
 
 const char* kTestDir = "/tmp/t32_camera_property_test";
-const char* kConfigPath = "/tmp/t32_camera_property_test/config.ini";
+const char* kConfigPath = "/tmp/t32_camera_property_test/config.json";
 const char* kSettingPath = "/tmp/t32_camera_property_test/setting.json";
+const char* kProductPath = "/tmp/t32_camera_property_test/product.json";
 
 void normalizeSettingsFileForTest(const std::string& path);
+void writeJson(const std::string& path, const Json::Value& root);
+bool writeProductFile(const std::string& path);
 
 bool copyFile(const std::string& from, const std::string& to) {
     std::ifstream input(from, std::ios::binary);
@@ -43,35 +47,28 @@ bool copyFile(const std::string& from, const std::string& to) {
 }
 
 bool writeConfigFile(const std::string& path) {
-    std::ofstream file(path);
-    if (!file.is_open()) {
-        return false;
-    }
-
-    file << "[BOOT]\n";
-    file << "PType=1\n";
-    file << "MVideo=1\n";
-    file << "\n";
-    file << "[SYSTEM]\n";
-    file << "BR4K=32\n";
-    file << "BR1080P=16\n";
-    file << "BR720P=8\n";
-    file << "\n";
-    file << "[POLICY]\n";
-    file << "Record=1\n";
-    file << "\n";
-    file << "[Functions]\n";
-    file << "Photo_DS_EN=0\n";
-    file << "Video_DS_EN=1\n";
-    file << "Timer_Range_MAX=3\n";
-    file << "Stamp_EN=1\n";
-    file << "RWakeup _SET=0\n";
-    return file.good();
+    // T25 Phase-3: config fixture as JSON (DeviceConfig parses JSON after
+    // Phase-1). SYSTEM section removed (BR*/UPID/PWD/voltage migrated to
+    // Settings). POLICY + Functions stay in DeviceConfig.
+    Json::Value root(Json::objectValue);
+    Json::Value policy(Json::objectValue);
+    policy["Record"] = "1";
+    root["POLICY"] = policy;
+    Json::Value functions(Json::objectValue);
+    functions["Photo_DS_EN"] = "0";
+    functions["Video_DS_EN"] = "1";
+    functions["Timer_Range_MAX"] = "3";
+    functions["Stamp_EN"] = "1";
+    functions["RWakeup _SET"] = "0";
+    root["Functions"] = functions;
+    writeJson(path, root);
+    return true;
 }
 
 void prepareFiles() {
     mkdir(kTestDir, 0777);
     CHECK(writeConfigFile(kConfigPath));
+    CHECK(writeProductFile(kProductPath));
     CHECK(copyFile(std::string(TEST_PROJECT_ROOT) + "/res/setting.json", kSettingPath));
     normalizeSettingsFileForTest(kSettingPath);
 }
@@ -97,6 +94,24 @@ void writeJson(const std::string& path, const Json::Value& root) {
     std::unique_ptr<Json::StreamWriter> jsonWriter(writer.newStreamWriter());
     jsonWriter->write(root, &file);
     CHECK(file.good());
+}
+
+// Seed a minimal product.json (PRODUCT_FILE). T24 introduced PRODUCT-kind
+// fields (BOOT.* + DEVICE-static CSSID/CPWD/SPKVOL), which factory import now
+// routes to product.json via writeProductDelta. Without PRODUCT_FILE set,
+// factory import fails at the product-persist step (T24 regression). The
+// values here mirror factory defaults in res/product.json.
+bool writeProductFile(const std::string& path) {
+    Json::Value root(Json::objectValue);
+    Json::Value boot(Json::objectValue);
+    boot["PType"] = "1";
+    boot["PModel"] = "T32";
+    root["BOOT"] = boot;
+    Json::Value device(Json::objectValue);
+    device["CSSID"] = "CKV";
+    root["DEVICE"] = device;
+    writeJson(path, root);
+    return true;
 }
 
 void normalizeSettingsFileForTest(const std::string& path) {
@@ -322,8 +337,11 @@ void test_factory_importer_json_path() {
     CHECK(result.restartRequired);
     CHECK(result.appliedCount == 3);
     CHECK(result.decision == "json_selected");
-    CHECK(DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0) == 4);
-    CHECK(DeviceConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "") == "FACTORY_SSID");
+    // PType/CSSID are PRODUCT-kind fields: factory import routes them to
+    // product.json (via writeProductDelta) and reloads ProductConfig. Assert
+    // on ProductConfig to reflect the T24 carve-out.
+    CHECK(ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0) == 4);
+    CHECK(ProductConfig::getInstance()->get(INI_SECTION_DEVICE, INI_KEY_CSSID, "") == "FACTORY_SSID");
     CHECK(Settings::getInstance()->cameraMode == 2);
 }
 
@@ -380,6 +398,7 @@ int main() {
 
     auto env = EnvManager::getInstance();
     env->setEnv("CONFIG_FILE", kConfigPath);
+    env->setEnv("PRODUCT_FILE", kProductPath);
     env->setEnv("SETTING_FILE_PATH", kSettingPath);
 
     CHECK(Settings::getInstance()->loadFromJsonFile(kSettingPath));

@@ -273,7 +273,7 @@ static std::string getCurrentTimeFormatted()
 // doSnap — ImageSnap (<=8M HW scaler)。媒体落 <workDir>/；工作目录经 outDirPath 透出
 // 给 main → spawn `wm -m 2 -d <workDir>`。不再写 info.json（wm 自扫目录建 desc）。
 // ============================================================================
-static int doSnap(const QuickSnapConfig& config, bool rtcOk, bool& impInitialized,
+static int doSnap(const QuickSnapConfig& config, bool& impInitialized,
                   std::string& outDirPath)
 {
     impInitialized = false;
@@ -285,13 +285,12 @@ static int doSnap(const QuickSnapConfig& config, bool rtcOk, bool& impInitialize
     }
 
     // --- timestamp subdirectory ---
+    // 始终用当前系统时间命名（rtcOk==false 时时间不可信，但仍用）：命名规则统一为
+    // YYYYMMDD_HHMMSS，wm 的 isTimestampDir 兜底/SD-resume 才认得；否则 rtc-fail 目录会被
+    // 兜底扫描/续传略过（T22 SD 落卡后 pic 会 stranding 在 SD）。时间不准接受——刻意不 clamp，
+    // 以免污染 wm syncWithMCU 的 ≥2026 可信门（见 quicksnap-app-spec §5.1）。
     std::string timeStr = getCurrentTimeFormatted();
-    std::string dirPath;
-    if (rtcOk) {
-        dirPath = baseDir + timeStr;
-    } else {
-        dirPath = baseDir + "pic";
-    }
+    std::string dirPath = baseDir + timeStr;
 
     if (!Misc::createDirectory(dirPath, 0777)) {
         Logger::log(LogLevel::ERROR, "Failed to create directory: %s", dirPath.c_str());
@@ -302,19 +301,17 @@ static int doSnap(const QuickSnapConfig& config, bool rtcOk, bool& impInitialize
     // --- generate filenames ---
     std::vector<std::string> fileNames;
     for (int i = 0; i < config.burstNumber; i++) {
-        if (rtcOk) {
-            fileNames.push_back(dirPath + "/" + timeStr + "_" + to_string_custom(i + 1) + ".JPG");
-        } else {
-            fileNames.push_back(dirPath + "/" + to_string_custom(i + 1) + ".JPG");
-        }
+        fileNames.push_back(dirPath + "/" + timeStr + "_" + to_string_custom(i + 1) + ".JPG");
     }
 
     // --- stillSize clamp (memory-only, never written back to json) ---
+    // 钳到 4M（2560×1440 = sensor-native，两维均不超 → isLargeImage=false → HW encoder 路径，
+    // 只需 JPEG CH12）。>4M（8M 3840×2160…）任一维超 sensor-native → 走 strip 路径，
+    // strip 需 sensor framesource CH0（ImageSnap.cpp:471 EnableChn(0)）；但 photo-only HAL
+    // （residentMode=0）只建 CH12、不建 CH0（省 ~1.84MB）→ snap 必败。故 quickSnap 精简 HAL
+    // 结构上不支持 >4M，clamp 从源头杜绝 strip。见 quicksnap-app-spec §5。
     int snapSizeIndex = config.stillSize;
-    if (snapSizeIndex > SNAP_IMG_SIZE_8M) {
-        snapSizeIndex = SNAP_IMG_SIZE_8M;
-    }
-    if (snapSizeIndex >= SNAP_IMG_SIZE_MAX) {
+    if (snapSizeIndex > SNAP_IMG_SIZE_4M || snapSizeIndex >= SNAP_IMG_SIZE_MAX) {
         snapSizeIndex = SNAP_IMG_SIZE_4M;
     }
 
@@ -463,7 +460,7 @@ int main(int /*argc*/, char* /*argv*/[])
         // 无缩略图(withThumb=false → 不建 group2/CH14，省内存)。取代旧 HTC_HAL_RESIDENT_MODE env。
         // 须在 doSnap（其内 ImageSnap 构造 → 首次 sharedVideo lazy init）之前。
         hal::HalProvider::start(hal::HalVideoConfig{/*residentMode=*/0, /*withThumb=*/false});
-        if (doSnap(config, rtcOk, impInitialized, snapDir) < 0) {
+        if (doSnap(config, impInitialized, snapDir) < 0) {
             Logger::log(LogLevel::ERROR, "doSnap failed");
             // Continue to spawn downstream anyway (best effort).
             // impInitialized may still be true if ImageSnap was constructed
@@ -508,7 +505,7 @@ int main(int /*argc*/, char* /*argv*/[])
                         config.network.c_str());
             return 1;
         }
-        // -d 仅在拍了照（snapDir 非空，含 rtc-fail 的 "pic" 目录）时带上；force_upload
+        // -d 仅在拍了照（snapDir 非空，含 rtc-fail 时仍为时间戳目录）时带上；force_upload
         // （willSnap=false → snapDir 空）不带，wm 靠兜底扫描补传滞留。
         Logger::log(LogLevel::INFO, "spawning wm -m 2%s%s",
                     snapDir.empty() ? "" : " -d ", snapDir.empty() ? "" : snapDir.c_str());

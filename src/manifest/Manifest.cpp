@@ -20,6 +20,7 @@
 #include "Settings.h"                     // Settings::getInstance()
 #include "MCU.h"                          // MCU::getInstance()
 #include "DeviceConfig.h"                 // DeviceConfig::getInstance()
+#include "ProductConfig.h"                // ProductConfig::getInstance() (BOOT fields)
 #include "Disk.h"                         // Disk::getInfo
 
 namespace manifest {
@@ -202,7 +203,10 @@ int generateDescInfo(std::vector<std::string>& files, std::string& desc_info)
     //network
     Json::Value network_obj;
     {
-        network_obj["N_UPID"] = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_UPID, "CKVISON");
+        // T25 Phase-3: UPID migrated from DeviceConfig SYSTEM to Settings
+        network_obj["N_UPID"] = Settings::getInstance()->upid.empty()
+                                    ? std::string("CKVISON")
+                                    : Settings::getInstance()->upid;
         network_obj["N_UIP"] = "0";
         network_obj["N_CStatus"] = 0;
         network_obj["N_CIP"] = "0";
@@ -225,7 +229,7 @@ int generateDescInfo(std::vector<std::string>& files, std::string& desc_info)
             signal_obj["S_TD"] = mcu->readSignalTD();
             signal_obj["S_TP"] = mcu->readSignalTP();
         } else {
-            auto program_type = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
+            auto program_type = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
             if (PTYPE_USB_DONGLE == program_type && mcu->Is4gExist()) {
                 signal_obj["S_RSSI"] = mcu->readSignalRSSI();
                 signal_obj["S_CF"] = mcu->readSignalCF();

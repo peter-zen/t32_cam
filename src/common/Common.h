@@ -143,8 +143,6 @@ enum dev_type {
 enum {
 	SNAP_IMG_SIZE_2M,    // 1920x1080
 	SNAP_IMG_SIZE_4M,    // 2560x1440
-	SNAP_IMG_SIZE_5M,    // 2560x1944
-	SNAP_IMG_SIZE_6M,    // 2688x2048
 	SNAP_IMG_SIZE_8M,    // 3840x2160
 	SNAP_IMG_SIZE_16M,   // 5120x2880
 	SNAP_IMG_SIZE_24M,   // 6400x3600
@@ -167,8 +165,6 @@ static struct {
 } SnapImgSize[SNAP_IMG_SIZE_MAX]= {
 	{1920, 1080}, /* 2M  */
 	{2560, 1440}, /* 4M  */
-	{2560, 1944}, /* 5M  */
-	{2688, 2048}, /* 6M  */
 	{3840, 2160}, /* 8M  */
 	{5120, 2880}, /* 16M */
 	{6400, 3600}, /* 24M */

@@ -9,14 +9,14 @@
 #ifdef BUILD_FOR_SIMULATION
 // PC模拟模式: 使用相对路径
 #define SD_CARD_PATH   "./sim_sdcard_runtime/"
-#define ENV_FILE_PATHNAME "./res/env.ini"
-#define CONFIG_FILE_PATHNAME "./res/config.sim.ini"
+#define CONFIG_FILE_PATHNAME "./res/system.sim.json"
+#define PRODUCT_FILE_PATHNAME "./res/product.sim.json"
 #define NETIF_NAME "eth0"
 #else
 // 真机模式: 使用绝对路径
 #define SD_CARD_PATH   "/mnt/sdcard/"
-#define ENV_FILE_PATHNAME "/config/htc/env.ini"
-#define CONFIG_FILE_PATHNAME "/config/htc/config.ini"
+#define CONFIG_FILE_PATHNAME "/config/htc/system.json"
+#define PRODUCT_FILE_PATHNAME "/config/htc/product.json"
 #define NETIF_NAME "wlan0"
 #endif
 
@@ -28,5 +28,4 @@
 #define WIFI_IFNAME "wlan0"
 #define ETH_IFNAME "eth0"
 #define USB_DONGLE_IFNAME "usb0"
-#define UPDATE_CONFIG_FILE_PATHNAME SD_CARD_PATH"update_config.ini"
 #endif /* APP_H */

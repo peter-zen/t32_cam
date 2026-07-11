@@ -146,6 +146,12 @@ public:
 	std::string comm_code;
 	std::string euid;
 	std::string duid;
+	// T25 Phase-3: user-mutable fields migrated from config.json SYSTEM/NTP section
+	std::string timezone {"UTC+8"};   // NTP.TIMEZONE (UTC-prefixed for Timezone::setTimezone)
+	std::string upid;                 // SYSTEM.UPID (user WiFi SSID)
+	std::string upwd;                 // SYSTEM.PWD  (user WiFi password)
+	std::string lowVoltage {"0.0"};   // SYSTEM.LowVoltage (conservative string path, §12.3)
+	std::string endVoltage {"0.0"};   // SYSTEM.EndVoltage
 	/* int variables */
 	int setting_mark;
 	int enable_firmware_update;

@@ -1,0 +1,18 @@
+{
+    "DEVICE": {
+        "CSSID": "CKV",
+        "CPWD": "ckvison6688",
+        "SPKVOL": "0"
+    },
+    "BOOT": {
+        "PType": "1",
+        "PModel": "T32",
+        "PName": "\"CAMERA\"",
+        "PCompany": "\"CKVISON\"",
+        "WLED": "0",
+        "MVideo": "1",
+        "MPic": "5",
+        "SMode": "0",
+        "PMac": ""
+    }
+}

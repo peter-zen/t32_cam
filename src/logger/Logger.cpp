@@ -46,8 +46,9 @@ void Logger::log(LogLevel level, const std::string &message)
 
 void Logger::log(LogLevel level, const char *format, ...)
 {
-    // Format the message first
-    char buffer[512];
+    // Format the message first. 与 elog 行缓冲（ELOG_LINE_BUF_SIZE）对齐，
+    // 否则这里会先于 elog 把长日志（如完整心跳 JSON）截断。
+    char buffer[ELOG_LINE_BUF_SIZE];
     va_list args;
     va_start(args, format);
     vsnprintf(buffer, sizeof(buffer), format, args);

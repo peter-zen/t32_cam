@@ -331,3 +331,131 @@ set_target_properties(test_wm_sweep_stranded PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+# T23 DeviceConfig golden characterization test (config.ini -> JSON Phase-1).
+# Locks U1-U8 observable behavior: the SAME assertions run against an ini fixture
+# (before the backend swap) and a json fixture (after). Both must stay green --
+# that equivalence is the proof the Phase-1 format swap is behavior-preserving.
+# Roundtrip (U5-U8) fork+execs this binary to rebuild the singleton from a
+# flushed file (DeviceConfig is a process-wide singleton, cannot be rebuilt
+# in-process).
+add_executable(test_device_config test_device_config.cpp)
+
+target_compile_definitions(test_device_config PRIVATE
+    TEST_PROJECT_ROOT="${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_device_config
+    PRIVATE
+    devconf
+    env
+    jsoncpp
+    logger
+    easylogger
+    pthread
+    dl
+)
+
+target_include_directories(test_device_config PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
+)
+
+set_target_properties(test_device_config PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# T24 ProductConfig golden test (config.ini -> JSON Phase-2). Locks the BOOT +
+# DEVICE-static carve-out from DeviceConfig into the new read-only ProductConfig.
+# P1-P6 exercise the get(int/string) bag API against a product.json fixture,
+# plus a structural read-only check (grep ProductConfig.h for set/flush — must
+# be absent). EQ is the equivalence snapshot: ProductConfig holds PModel/CSSID,
+# DeviceConfig still holds PID — proving no field was lost in the carve-out.
+add_executable(test_product_config test_product_config.cpp)
+
+target_compile_definitions(test_product_config PRIVATE
+    TEST_PROJECT_ROOT="${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_product_config
+    PRIVATE
+    devconf
+    env
+    jsoncpp
+    logger
+    easylogger
+    pthread
+    dl
+)
+
+target_include_directories(test_product_config PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
+)
+
+set_target_properties(test_product_config PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# T25 Phase-3 Settings golden test: lock load/save roundtrip + defaults for the
+# 5 user-mutable fields migrated from config.json (SYSTEM + NTP) to setting.json.
+add_executable(test_settings test_settings.cpp)
+
+target_link_libraries(test_settings
+    PRIVATE
+    setting
+    jsoncpp
+    logger
+    easylogger
+    pthread
+    dl
+)
+
+target_include_directories(test_settings PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+)
+
+set_target_properties(test_settings PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# T26 Phase-4 coverage-gap test: path resolution + res file integrity.
+# The 3 golden tests use SYNTHETIC fixtures; this test loads the ACTUAL
+# res/system.json + res/product.json to verify the Phase-4 rename (config.json
+# -> system.json) + env.ini retirement produced a correct three-bucket split.
+# R1-R5: system.json yields SERVER/MDNS/POLICY/DEVICE:PID; product.json yields
+# BOOT + DEVICE-static; system.json has no BOOT/SYSTEM residue; system.sim.json
+# exists; EnvManager supplies CONFIG_FILE (no env.ini parsing needed).
+add_executable(test_t26_phase4_paths test_t26_phase4_paths.cpp)
+
+target_compile_definitions(test_t26_phase4_paths PRIVATE
+    TEST_PROJECT_ROOT="${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_t26_phase4_paths
+    PRIVATE
+    devconf
+    env
+    jsoncpp
+    logger
+    easylogger
+    pthread
+    dl
+)
+
+target_include_directories(test_t26_phase4_paths PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/third_party/easylogger/inc
+)
+
+set_target_properties(test_t26_phase4_paths PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)

@@ -9,6 +9,7 @@
 #include "UsbDongle.h"
 #include "Settings.h"
 #include "DeviceConfig.h"
+#include "ProductConfig.h"
 #include "time/rtc/RTC.h"
 #include "Power.h"
 #include "Disk.h"
@@ -141,11 +142,11 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 	json_item["ENV_HT"] = "";
 	json_item["ENV_IT"] = "";
 	json_item["ENV_II"] = "";
-	vid_max_size = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_MVIDEO, 8);
-	pic_max_size = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_MPIC, 12);
+	vid_max_size = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_MVIDEO, 8);
+	pic_max_size = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_MPIC, 12);
 	Logger::log(LogLevel::INFO, "RemoteCtrlClient: vid_max_size: %d, pic_max_size: %d", vid_max_size, pic_max_size);
 	// Program Type
-	json_item["Program_Type"] = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
+	json_item["Program_Type"] = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
 
 	// Shooting mode
 	json_item["CAM_Mode"] = settings->realCameraMode;
@@ -155,8 +156,6 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 		if (pic_max_size == 32 || pic_max_size == 42) {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2560*1944");
-			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
 			json_array.append("16M/5120*2880");
 			json_array.append("24M/6400*3600");
@@ -168,8 +167,6 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 		} else if (pic_max_size == 24) {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2560*1944");
-			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
 			json_array.append("16M/5120*2880");
 			json_array.append("24M/6400*3600");
@@ -179,8 +176,6 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 		} else if (16 == pic_max_size) {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2560*1944");
-			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
 			json_array.append("16M/5120*2880");
 
@@ -190,31 +185,10 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 		} else if (8 == pic_max_size) {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2560*1944");
-			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
 
 			if (still_size > SNAP_IMG_SIZE_8M) {
 				still_size = SNAP_IMG_SIZE_8M;
-			}
-		}
-		else if (6 == pic_max_size) {
-			json_array.append("2M/1920*1080");
-			json_array.append("4M/2560*1440");
-			json_array.append("5M/2560*1944");
-			json_array.append("6M/2688*2048");
-
-			if (still_size > SNAP_IMG_SIZE_6M) {
-				still_size = SNAP_IMG_SIZE_6M;
-			}
-		}
-		else if (5 == pic_max_size) {
-			json_array.append("2M/1920*1080");
-			json_array.append("4M/2560*1440");
-			json_array.append("5M/2560*1944");
-
-			if (still_size > SNAP_IMG_SIZE_5M) {
-				still_size = SNAP_IMG_SIZE_5M;
 			}
 		}
 		else if (4 == pic_max_size) {
@@ -233,8 +207,6 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 		} else {
 			json_array.append("2M/1920*1080");
 			json_array.append("4M/2560*1440");
-			json_array.append("5M/2560*1944");
-			json_array.append("6M/2688*2048");
 			json_array.append("8M/3840*2160");
 			json_array.append("16M/5120*2880");
 			json_array.append("24M/6400*3600");
@@ -384,17 +356,17 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 	json_item["Other_Stamp"] = settings->stampEn;
 	json_item["Other_Cycle"] = settings->autoCover;
 
-	// System settings
-	auto upid = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_UPID, "CKVISON");
+	// System settings — T25 Phase-3: UPID/UPWD/voltage migrated to Settings
+	auto upid = settings->upid.empty() ? std::string("CKVISON") : settings->upid;
 	json_item["SYS_UPID"] = upid;
 
-	auto pwd = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_UPWD, "");
+	auto pwd = settings->upwd;
 	json_item["SYS_Pwd"] = pwd;
 
-	auto low_voltage = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_LOW_VOL, "4.2");
+	auto low_voltage = settings->lowVoltage.empty() ? std::string("4.2") : settings->lowVoltage;
 	json_item["SYS_LowVoltage"] = low_voltage;
 
-	auto end_voltage = DeviceConfig::getInstance()->get(INI_SECTION_SYS, INI_KEY_END_VOL, "4.0");
+	auto end_voltage = settings->endVoltage.empty() ? std::string("4.0") : settings->endVoltage;
 	json_item["SYS_EndVoltage"] = end_voltage;
 
 	json_item["SYS_ONTime"] = settings->onTime_0 + (settings->onTime_1 << 8);
@@ -438,7 +410,7 @@ void RemoteCtrlClient::handleGetParamAllCommand(const Json::Value &root)
 		json_item["Record_Policy"] = settings->continuous_record;
 	}
 	auto remote_wakeup_feature_on = device_config->get(INI_SECTION_POLICY, INI_KEY_REMOTE_WAKEUP, 0);
-	auto program_type = device_config->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
+	auto program_type = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PTYPE, 0);
 	// Remote wake-up
 	if (program_type == PTYPE_USB_DONGLE && remote_wakeup_feature_on == 1) {
 		json_item["Remote_Wakeup"] = settings->remote_wakeup;
@@ -599,11 +571,11 @@ void RemoteCtrlClient::handleSetParamCommand(const Json::Value &root)
 		} else if (key == "SYS_UPID") {
 			std::string upid = value.asString();
 			Logger::log(LogLevel::INFO, "SYS_UPID -> %s", upid.c_str());
-			device_config->set(INI_SECTION_SYS, INI_KEY_UPID, upid);
+			settings->upid = upid;
 		} else if (key == "SYS_Pwd") {
 			std::string pwd = value.asString();
 			Logger::log(LogLevel::INFO, "SYS_Pwd -> %s", pwd.c_str());
-			device_config->set(INI_SECTION_SYS, INI_KEY_UPWD, pwd);
+			settings->upwd = pwd;
 		} else if (key == "Dev_NameEn") {
 			int show_dev_name_en = value.asInt();
 			Logger::log(LogLevel::INFO, "Dev_NameEn -> %d", show_dev_name_en);
@@ -847,7 +819,7 @@ void RemoteCtrlClient::handleGetSensorInfoCommand(const Json::Value &root)
 	auto pid = device_config->get(INI_SECTION_DEVICE, INI_KEY_PID, "");
 	resp_root["pid"] = pid;
 	resp_root["camera_ver"] = CAMERA_VERSION;
-	resp_root["camera_model"] = device_config->get(INI_SECTION_BOOT, INI_KEY_PMODEL, "");
+	resp_root["camera_model"] = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PMODEL, "");
 	resp_root["camera_build"] = CAMERA_BUILD_TIME;
 	resp_root["mcu_ver"] = mcu->readVersion();
 /*

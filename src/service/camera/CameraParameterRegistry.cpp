@@ -51,6 +51,14 @@ ParameterStorageBinding deviceConfigBinding(const std::string& section, const st
     return binding;
 }
 
+ParameterStorageBinding productBinding(const std::string& section, const std::string& key) {
+    ParameterStorageBinding binding;
+    binding.kind = ParameterStorageKind::PRODUCT;
+    binding.section = section;
+    binding.key = key;
+    return binding;
+}
+
 ParameterStorageBinding placeholderBinding() {
     ParameterStorageBinding binding;
     binding.kind = ParameterStorageKind::PLACEHOLDER;
@@ -152,28 +160,28 @@ std::vector<ParameterDefinition> buildDefinitions() {
     std::vector<ParameterDefinition> defs;
 
     addFactory(defs, "BOOT", "PType", ParameterValueType::NUMBER, 0,
-               deviceConfigBinding(INI_SECTION_BOOT, INI_KEY_PTYPE), "网络类型");
+               productBinding(INI_SECTION_BOOT, INI_KEY_PTYPE), "网络类型");
     addFactory(defs, "BOOT", "PModel", ParameterValueType::STRING, "SCT000",
-               deviceConfigBinding(INI_SECTION_BOOT, INI_KEY_PMODEL), "产品型号");
+               productBinding(INI_SECTION_BOOT, INI_KEY_PMODEL), "产品型号");
     addFactory(defs, "BOOT", "PName", ParameterValueType::STRING, "智感相机",
-               deviceConfigBinding(INI_SECTION_BOOT, INI_KEY_PNAME), "产品名称");
+               productBinding(INI_SECTION_BOOT, INI_KEY_PNAME), "产品名称");
     addFactory(defs, "BOOT", "PCompany", ParameterValueType::STRING, "SEESUNG",
-               deviceConfigBinding(INI_SECTION_BOOT, INI_KEY_PCOMPANT), "品牌");
+               productBinding(INI_SECTION_BOOT, INI_KEY_PCOMPANT), "品牌");
     addFactory(defs, "BOOT", "LED_Mode", ParameterValueType::NUMBER, 0,
                placeholderBinding(), "夜间灯光模式");
 
     addFactory(defs, "DEVICE", "PMAC", ParameterValueType::STRING, "",
-               deviceConfigBinding(INI_SECTION_BOOT, INI_KEY_PMAC), "产品MAC地址");
+               productBinding(INI_SECTION_BOOT, INI_KEY_PMAC), "产品MAC地址");
     addFactory(defs, "DEVICE", "PID", ParameterValueType::STRING, "SCT00000S26000000",
                deviceConfigBinding(INI_SECTION_DEVICE, INI_KEY_PID), "产品PID");
     addFactory(defs, "DEVICE", "CSSID", ParameterValueType::STRING, "SCT",
-               deviceConfigBinding(INI_SECTION_DEVICE, INI_KEY_CSSID), "热点SSID");
+               productBinding(INI_SECTION_DEVICE, INI_KEY_CSSID), "热点SSID");
     addFactory(defs, "DEVICE", "CPWD", ParameterValueType::STRING, "12345678",
-               deviceConfigBinding(INI_SECTION_DEVICE, INI_KEY_CPWD), "热点密码");
+               productBinding(INI_SECTION_DEVICE, INI_KEY_CPWD), "热点密码");
     addFactory(defs, "DEVICE", "UPID", ParameterValueType::STRING, "Null",
-               deviceConfigBinding(INI_SECTION_SYS, INI_KEY_UPID), "上级网络设备连接PID");
+               settingsBinding("upid"), "上级网络设备连接PID");
     addFactory(defs, "DEVICE", "UPWD", ParameterValueType::STRING, "12345678",
-               deviceConfigBinding(INI_SECTION_SYS, INI_KEY_UPWD), "上级网络设备连接密码");
+               settingsBinding("upwd"), "上级网络设备连接密码");
 
     addFactory(defs, "SERVER", "TP_Setting", ParameterValueType::STRING, "10",
                placeholderBinding(), "传输协议选择");
@@ -182,7 +190,7 @@ std::vector<ParameterDefinition> buildDefinitions() {
     addFactory(defs, "SERVER", "NTP_Server", ParameterValueType::STRING, "www.aidetcloud.com:123",
                deviceConfigBinding(INI_SECTION_SERVER, INI_KEY_NTP_IP), "NTP服务器");
     addFactory(defs, "SERVER", "NTP_Timezone", ParameterValueType::STRING, "+8",
-               deviceConfigBinding(INI_SECTION_NTP, INI_KEY_TIMEZONE), "时区");
+               settingsBinding("timezone"), "时区");
     addFactory(defs, "SERVER", "B_Server", ParameterValueType::STRING, "0",
                deviceConfigBinding(INI_SECTION_SERVER, INI_KEY_FS_IP), "备用服务器地址");
     addFactory(defs, "SERVER", "AI_Server", ParameterValueType::STRING, "0",
@@ -212,10 +220,6 @@ std::vector<ParameterDefinition> buildDefinitions() {
                                              settingsBinding("stillSize"), "照片大小");
     addOption(imageSize, "2M");
     addOption(imageSize, "4M");
-#if !defined(SENSOR_TYPE_GC4653) && !defined(SENSOR_TYPE_SC4336P)
-    addOption(imageSize, "5M");
-    addOption(imageSize, "6M");
-#endif
     addOption(imageSize, "8M");
     addOption(imageSize, "16M");
     addOption(imageSize, "24M");
@@ -297,7 +301,7 @@ std::vector<ParameterDefinition> buildDefinitions() {
     defs.push_back(videoLength);
 
     ParameterDefinition audioVolume = property("Audio_Setting", "Audio_SPK_Volume", ParameterValueType::NUMBER, 50,
-                                               deviceConfigBinding(INI_SECTION_DEVICE, INI_KEY_SPKVOL), "喇叭音量");
+                                               productBinding(INI_SECTION_DEVICE, INI_KEY_SPKVOL), "喇叭音量");
     dependsOn(audioVolume, "Audio_SPK_EN", "Audio_SPK_EN is disabled");
     setRange(audioVolume, 0, 100, 10);
     defs.push_back(audioVolume);
@@ -361,13 +365,13 @@ std::vector<ParameterDefinition> buildDefinitions() {
                             settingsBinding("weekRepeats"), "重复"));
 
     defs.push_back(property("Network_Setting", "CSSID", ParameterValueType::STRING, "SCTCAM",
-                            deviceConfigBinding(INI_SECTION_DEVICE, INI_KEY_CSSID), "热点名称"));
+                            productBinding(INI_SECTION_DEVICE, INI_KEY_CSSID), "热点名称"));
     defs.push_back(property("Network_Setting", "CPWR", ParameterValueType::STRING, "12345678",
-                            deviceConfigBinding(INI_SECTION_DEVICE, INI_KEY_CPWD), "热点密码"));
+                            productBinding(INI_SECTION_DEVICE, INI_KEY_CPWD), "热点密码"));
     defs.push_back(property("Network_Setting", "UPID", ParameterValueType::STRING, "NULL",
-                            deviceConfigBinding(INI_SECTION_SYS, INI_KEY_UPID), "上级设备PID"));
+                            settingsBinding("upid"), "上级设备PID"));
     defs.push_back(property("Network_Setting", "UPWR", ParameterValueType::STRING, "12345678",
-                            deviceConfigBinding(INI_SECTION_SYS, INI_KEY_UPWD), "上级设备密码"));
+                            settingsBinding("upwd"), "上级设备密码"));
     const char* networkPlaceholders[] = {"DHCP_ON", "LOCAL_IP", "NETMASK", "GATEWAY", "DNS1", "DNS2"};
     for (const char* name : networkPlaceholders) {
         ParameterDefinition network = property("Network_Setting", name, ParameterValueType::STRING, "0",
@@ -381,7 +385,7 @@ std::vector<ParameterDefinition> buildDefinitions() {
     defs.push_back(property("Server_Setting", "NTP_Server", ParameterValueType::STRING, "www.aidetcloud.com:123",
                             deviceConfigBinding(INI_SECTION_SERVER, INI_KEY_NTP_IP), "NTP服务器"));
     defs.push_back(property("Server_Setting", "NTP_Timezone", ParameterValueType::STRING, "+8",
-                            deviceConfigBinding(INI_SECTION_NTP, INI_KEY_TIMEZONE), "时区"));
+                            settingsBinding("timezone"), "时区"));
     ParameterDefinition bsServer = property("Server_Setting", "BS_Server", ParameterValueType::STRING, "0",
                                             deviceConfigBinding(INI_SECTION_SERVER, INI_KEY_FS_IP), "备用服务器");
     dependsOn(bsServer, "BServer_EN", "BServer_EN is disabled");
@@ -454,11 +458,11 @@ std::vector<ParameterDefinition> buildDefinitions() {
     addStatus(defs, "Device", "Device_Name", ParameterValueType::STRING, "",
               settingsBinding("devName"), ParameterAvailability::PERSISTED, "设备名称");
     addStatus(defs, "Device", "PCompany", ParameterValueType::STRING, "SEESUNG",
-              deviceConfigBinding(INI_SECTION_BOOT, INI_KEY_PCOMPANT), ParameterAvailability::PERSISTED, "品牌");
+              productBinding(INI_SECTION_BOOT, INI_KEY_PCOMPANT), ParameterAvailability::PERSISTED, "品牌");
     addStatus(defs, "Device", "PModel", ParameterValueType::STRING, "SCT00000",
-              deviceConfigBinding(INI_SECTION_BOOT, INI_KEY_PMODEL), ParameterAvailability::PERSISTED, "产品型号");
+              productBinding(INI_SECTION_BOOT, INI_KEY_PMODEL), ParameterAvailability::PERSISTED, "产品型号");
     addStatus(defs, "Device", "PName", ParameterValueType::STRING, "智感相机",
-              deviceConfigBinding(INI_SECTION_BOOT, INI_KEY_PNAME), ParameterAvailability::PERSISTED, "产品名称");
+              productBinding(INI_SECTION_BOOT, INI_KEY_PNAME), ParameterAvailability::PERSISTED, "产品名称");
     addStatus(defs, "Device", "FW_Version", ParameterValueType::STRING, "V000.00.000-000000",
               computedBinding("fw_version"), ParameterAvailability::COMPUTED, "固件版本号");
     addStatus(defs, "Device", "MCU_Version", ParameterValueType::STRING, "V00.000",
@@ -659,6 +663,8 @@ const char* parameterStorageKindToString(ParameterStorageKind kind) {
         return "settings";
     case ParameterStorageKind::DEVICE_CONFIG:
         return "device_config";
+    case ParameterStorageKind::PRODUCT:
+        return "product";
     case ParameterStorageKind::COMPUTED:
         return "computed";
     case ParameterStorageKind::PLACEHOLDER:

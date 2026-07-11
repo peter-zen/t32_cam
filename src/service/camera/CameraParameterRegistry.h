@@ -41,6 +41,7 @@ enum class ParameterStorageKind {
     NONE,
     SETTINGS,
     DEVICE_CONFIG,
+    PRODUCT,
     COMPUTED,
     PLACEHOLDER,
     COMMAND,

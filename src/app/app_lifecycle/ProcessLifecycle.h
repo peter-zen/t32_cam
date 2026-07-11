@@ -14,12 +14,12 @@ class GPIO;
 namespace app_lifecycle {
 
 // S1-S13 startup configuration. The skip-* flags let a pure -wm app drop the
-// MediaScanner / factory-config / update-config steps that only make sense in
-// the full main_app boot. htc_main_app sets none of the skip flags.
+// MediaScanner / factory-config steps that only make sense in the full
+// main_app boot. htc_main_app sets none of the skip flags.
 struct StartupConfig {
     // Path inputs (resolved by the caller before commonStartup):
     //   sim: projectRootPath + simRootPath (computed in main_app)
-    //   hw : ENV_FILE_PATHNAME-driven (EnvManager::parsePrimaryEnv already ran)
+    //   hw : Paths.h constexpr defaults (injected via setEnvIfEmpty in S1)
     std::string simRootPath;          // empty on HW
     std::string projectRootPath;      // empty on HW
     std::string dbPath;               // simRootPath+"/data/db" | "/mnt/sdcard/data/db"
@@ -32,7 +32,6 @@ struct StartupConfig {
     bool skipDatabase       = false;  // S2 (lean m2/m3: upload/heartbeat are DB-free)
     bool skipMediaScanner   = false;  // S3
     bool skipFactoryConfig  = false;  // HW-only sub-step of S11
-    bool skipUpdateConfig   = false;  // HW-only sub-step of S11
     bool skipDaemonRegister = false;  // S10 (gated by DAEMON_ENABLE in main_app today)
 };
 
@@ -65,12 +64,11 @@ public:
 
     // S9-S12 common startup (post-dispatch). Performs: daemon-registration,
     // Settings load, DeviceConfig + program_type capture, SD-mount + netif
-    // selection, (HW-only) factory-config + update-config. (HW-only) timezone
-    // is set earlier, in commonStartup() as S4b, before S4.5 syncSystemTime.
+    // selection, (HW-only) factory-config. (HW-only) timezone is set earlier,
+    // in commonStartup() as S4b, before S4.5 syncSystemTime.
     // Takes `command` because S11 netif selection reads CMD_MOBILE.
     // Returns false when the caller should goto main_exit (mountSDCard /
-    // factory-import / update-config-applied failures, or an unsupported
-    // program type on HW).
+    // factory-import failures, or an unsupported program type on HW).
     bool commonStartupPostDispatch(const StartupConfig& cfg, int command);
 
     // Create the self-pipe (O_NONBLOCK both ends) + signal(SIGINT/SIGTERM,

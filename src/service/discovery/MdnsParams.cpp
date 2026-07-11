@@ -3,6 +3,7 @@
 #include "MdnsService.h"
 #include "MdnsTxtRecord.h"
 #include "DeviceConfig.h"
+#include "ProductConfig.h"
 #include "misc/Misc.h"
 #include "Common.h"
 #include "Logger.h"
@@ -43,7 +44,7 @@ static std::string getDefaultMdnsInstanceName(const std::shared_ptr<DeviceConfig
         return instance_name;
     }
 
-    instance_name = trimConfigString(config->get(INI_SECTION_BOOT, INI_KEY_PNAME, ""));
+    instance_name = trimConfigString(ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PNAME, ""));
     if (!instance_name.empty()) {
         return instance_name;
     }
@@ -87,7 +88,7 @@ MdnsServiceParams buildMdnsParams(const std::shared_ptr<DeviceConfig>& config,
     params.instanceName = getDefaultMdnsInstanceName(config);
     params.hostName = getDefaultMdnsHostName(config);
     params.txt.deviceFamily = kDefaultMdnsDeviceFamily;
-    params.txt.model = trimConfigString(config->get(INI_SECTION_BOOT, INI_KEY_PMODEL, "T32"));
+    params.txt.model = trimConfigString(ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_PMODEL, "T32"));
     params.txt.serialNumber = trimConfigString(config->get(INI_SECTION_DEVICE, INI_KEY_PID, ""));
     params.txt.firmwareVersion = CAMERA_VERSION;
     params.txt.rtspPort = rtsp_port;

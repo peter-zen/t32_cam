@@ -2,6 +2,7 @@
 
 #include "../../common/Common.h"
 #include "../../config/devconf/DeviceConfig.h"
+#include "../../config/devconf/ProductConfig.h"
 #include "../../config/env/EnvManager.h"
 #include "../../config/setting/Settings.h"
 
@@ -340,37 +341,24 @@ int resolutionBucketDefaultMbps(int width, int height) {
 }
 
 int getConfiguredBucketMbps(const Settings* settings, int width, int height) {
-    DeviceConfig* deviceConfig = DeviceConfig::getInstance().get();
     if (width >= 3840 || height >= 2160) {
         int settingsValue = static_cast<int>(settings->bitRate_4k);
-        if (settingsValue > 0) {
-            return settingsValue;
-        }
-        return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_4K, 8);
+        return settingsValue > 0 ? settingsValue : 8;
     }
 
     // 2026-06-10: 新增 2.5K (2560x1440) 桶, 6 Mbps
     if (width >= 2560 || height >= 1440) {
         int settingsValue = static_cast<int>(settings->bitRate_2_5k);
-        if (settingsValue > 0) {
-            return settingsValue;
-        }
-        return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_2_5K, 6);
+        return settingsValue > 0 ? settingsValue : 6;
     }
 
     if (width >= 1920 || height >= 1080) {
         int settingsValue = static_cast<int>(settings->bitRate_1080p);
-        if (settingsValue > 0) {
-            return settingsValue;
-        }
-        return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_1080P, 4);
+        return settingsValue > 0 ? settingsValue : 4;
     }
 
     int settingsValue = static_cast<int>(settings->bitRate_720p);
-    if (settingsValue > 0) {
-        return settingsValue;
-    }
-    return deviceConfig->get(INI_SECTION_SYS, INI_KEY_BITRATE_720P, 2);
+    return settingsValue > 0 ? settingsValue : 2;
 }
 
 int currentBitrateKbpsForMode(const VideoMode& mode) {
@@ -382,29 +370,24 @@ int currentBitrateKbpsForMode(const VideoMode& mode) {
 void writeBitrateForMode(const VideoMode& mode, int bitrateKbps) {
     int bucketMbps = std::max(1, (bitrateKbps + 512) / 1024);
     Settings* settings = Settings::getInstance().get();
-    auto deviceConfig = DeviceConfig::getInstance();
 
     if (mode.width >= 3840 || mode.height >= 2160) {
         settings->bitRate_4k = static_cast<uint8_t>(bucketMbps);
-        deviceConfig->set(INI_SECTION_SYS, INI_KEY_BITRATE_4K, bucketMbps);
         return;
     }
 
     // 2026-06-10: 新增 2.5K 桶
     if (mode.width >= 2560 || mode.height >= 1440) {
         settings->bitRate_2_5k = static_cast<uint8_t>(bucketMbps);
-        deviceConfig->set(INI_SECTION_SYS, INI_KEY_BITRATE_2_5K, bucketMbps);
         return;
     }
 
     if (mode.width >= 1920 || mode.height >= 1080) {
         settings->bitRate_1080p = static_cast<uint8_t>(bucketMbps);
-        deviceConfig->set(INI_SECTION_SYS, INI_KEY_BITRATE_1080P, bucketMbps);
         return;
     }
 
     settings->bitRate_720p = static_cast<uint8_t>(bucketMbps);
-    deviceConfig->set(INI_SECTION_SYS, INI_KEY_BITRATE_720P, bucketMbps);
 }
 
 int currentVideoLengthSeconds() {
@@ -699,6 +682,19 @@ Json::Value CameraPropertyService::readRegistryValue(const ParameterDefinition& 
                                                                     : jsonValueToString(definition.defaultValue));
     }
 
+    if (definition.storage.kind == ParameterStorageKind::PRODUCT) {
+        ProductConfig* productConfig = ProductConfig::getInstance().get();
+        if (definition.type == ParameterValueType::NUMBER || definition.type == ParameterValueType::BOOLEAN) {
+            return productConfig->get(definition.storage.section,
+                                      definition.storage.key,
+                                      definition.defaultValue.isInt() ? definition.defaultValue.asInt() : 0);
+        }
+        return productConfig->get(definition.storage.section,
+                                  definition.storage.key,
+                                  definition.defaultValue.isString() ? definition.defaultValue.asString()
+                                                                     : jsonValueToString(definition.defaultValue));
+    }
+
     if (definition.storage.kind == ParameterStorageKind::COMPUTED) {
         if (definition.storage.member == "fw_version") {
 #ifdef CAMERA_VERSION
@@ -725,7 +721,7 @@ Json::Value CameraPropertyService::readRegistryValue(const ParameterDefinition& 
     if (member == "cameraMode") return settingByte(settings->cameraMode);
     if (member == "stillSize") {
         static const char* sizeNames[] = {
-            "2M", "4M", "5M", "6M", "8M", "16M", "24M", "32M", "42M"
+            "2M", "4M", "8M", "16M", "24M", "32M", "42M"
         };
         int index = static_cast<int>(settings->stillSize);
         if (index >= 0 && index < SNAP_IMG_SIZE_MAX) {
@@ -773,6 +769,12 @@ Json::Value CameraPropertyService::readRegistryValue(const ParameterDefinition& 
     if (member == "remote_wakeup") return settingByte(settings->remote_wakeup);
     if (member == "devName") return Json::Value(std::string(settings->devName));
     if (member == "duid") return Json::Value(settings->duid);
+    // T25 Phase-3: user-mutable fields migrated from DeviceConfig
+    if (member == "timezone") return Json::Value(settings->timezone);
+    if (member == "upid") return Json::Value(settings->upid);
+    if (member == "upwd") return Json::Value(settings->upwd);
+    if (member == "lowVoltage") return Json::Value(settings->lowVoltage);
+    if (member == "endVoltage") return Json::Value(settings->endVoltage);
 
     return definition.defaultValue;
 }
@@ -1282,7 +1284,6 @@ int CameraPropertyService::writeRegistryValue(const ParameterDefinition& definit
     } else if (member == "stillSize") {
         static const struct { const char* name; int index; } sizeMap[] = {
             {"2M", SNAP_IMG_SIZE_2M}, {"4M", SNAP_IMG_SIZE_4M},
-            {"5M", SNAP_IMG_SIZE_5M}, {"6M", SNAP_IMG_SIZE_6M},
             {"8M", SNAP_IMG_SIZE_8M}, {"16M", SNAP_IMG_SIZE_16M},
             {"24M", SNAP_IMG_SIZE_24M}, {"32M", SNAP_IMG_SIZE_32M},
             {"42M", SNAP_IMG_SIZE_42M},
@@ -1416,6 +1417,22 @@ int CameraPropertyService::writeRegistryValue(const ParameterDefinition& definit
     } else if (member == "devName") {
         std::strncpy(settings->devName, normalized.asString().c_str(), sizeof(settings->devName) - 1);
         settings->devName[sizeof(settings->devName) - 1] = '\0';
+    } else if (member == "timezone") {
+        // R_timezone_format: normalize to UTC-prefixed form (Timezone::setTimezone
+        // needs "UTC+"/"UTC-" for POSIX sign flip; registry default is "+8" shorthand).
+        std::string tz = normalized.asString();
+        if (tz.find("UTC") == std::string::npos && !tz.empty()) {
+            tz = "UTC" + tz;
+        }
+        settings->timezone = tz;
+    } else if (member == "upid") {
+        settings->upid = normalized.asString();
+    } else if (member == "upwd") {
+        settings->upwd = normalized.asString();
+    } else if (member == "lowVoltage") {
+        settings->lowVoltage = normalized.asString();
+    } else if (member == "endVoltage") {
+        settings->endVoltage = normalized.asString();
     } else {
         if (error) {
             *error = "Storage binding is not implemented in first pass";

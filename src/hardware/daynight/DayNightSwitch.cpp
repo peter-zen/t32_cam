@@ -10,6 +10,7 @@
 #include "IVideo.h"
 #include "Common.h"
 #include "DeviceConfig.h"
+#include "ProductConfig.h"
 
 std::shared_ptr<DayNightSwitch> DayNightSwitch::getInstance()
 {
@@ -95,7 +96,7 @@ bool DayNightSwitch::controlIRCut(DayNightState state)
         return false;
     }
 
-    auto wled = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_WLED, 0);
+    auto wled = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_WLED, 0);
     if (state == DayNightState::NIGHT && wled == 1) {
         state = DayNightState::DAY;
     }
@@ -165,7 +166,7 @@ bool DayNightSwitch::controlISP(DayNightState state)
         return false;
     }
  
-    auto wled = DeviceConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_WLED, 0);
+    auto wled = ProductConfig::getInstance()->get(INI_SECTION_BOOT, INI_KEY_WLED, 0);
     if (state == DayNightState::NIGHT && wled == 1) {
         state = DayNightState::DAY;
     }

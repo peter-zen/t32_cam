@@ -1,0 +1,30 @@
+{
+    "DEVICE" : 
+    {
+        "PID" : "T152T20250624001"
+    },
+    "MDNS" : 
+    {
+        "CtrlPort" : "8080",
+        "Enable" : "1",
+        "HostName" : "",
+        "InstanceName" : "",
+        "RtspPort" : "8554",
+        "ServiceType" : "_t32cam._tcp"
+    },
+    "POLICY" : 
+    {
+        "FileManage" : "0",
+        "Record" : "0",
+        "RemoteWakeup" : "0"
+    },
+    "SERVER" : 
+    {
+        "FS" : "0",
+        "FSPort" : "0",
+        "MS" : "www.aidetcloud.com",
+        "MSPort" : "8899",
+        "NTP" : "www.aidetcloud.com",
+        "NTPPort" : "123"
+    }
+}

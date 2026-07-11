@@ -141,8 +141,14 @@ int main(int argc, char *argv[])
 
 	fprintf(stderr, "[%s] start (WAIT_AE_READY=%d)\n", TAG, WAIT_AE_READY);
 
-	/* Drop CH2 thumbnail: only capture the main JPEG (enc ch 12). */
+	/* 8M up-scale test #2: relative to stock sample, ONLY change CH0
+	 * scaler.outwidth/outheight to 3840x2160. Keep nrVBs=2 (NOT 1 — earlier
+	 * nrVBs=1 run gave size=0 even at native 2560x1440: single buffer starves
+	 * the FS<->encoder handshake, dropped=1 then stuck). CH0/CH1 stay enabled
+	 * as stock. picWidth stays sensor-native 2560x1440. */
 	chn[2].enable = 0;
+	chn[0].fs_chn_attr.scaler.outwidth = 3840;
+	chn[0].fs_chn_attr.scaler.outheight = 2160;
 
 	/* Ensure output dir exists — open() creates files, not dirs. */
 	mkdir("/tmp/media", 0777);

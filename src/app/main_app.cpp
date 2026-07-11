@@ -174,7 +174,6 @@ int main(int argc, char* argv[])
     cfg.logFile  = cfg.logRoot + "/app.log";
 #else
     cfg.isSimulation = false;
-    EnvManager::getInstance()->parsePrimaryEnv(ENV_FILE_PATHNAME);//必须放在main函数的最开始位置
     storage::StoragePaths sp("/mnt/sdcard", "DCIM");
     cfg.dbPath   = EnvManager::getInstance()->getEnv("DB_PATH", sp.dataDb());
     cfg.mediaRoot = sp.mediaRoot();

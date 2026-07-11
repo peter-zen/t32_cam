@@ -42,10 +42,7 @@ mkdir -p sim_sdcard_runtime/media/audio
 mkdir -p sim_sdcard_runtime/media/video
 mkdir -p sim_sdcard_runtime/data/db
 
-# 复制默认配置
-if [ -f res/config.sim.ini ]; then
-    cp res/config.sim.ini sim_sdcard_runtime/configs/
-fi
+# 复制默认配置 (config.sim.ini retired T26 Phase-4)
 if [ -f res/setting.json ]; then
     cp res/setting.json sim_sdcard_runtime/configs/
 fi
