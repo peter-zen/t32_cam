@@ -14,5 +14,6 @@
         "MPic": "5",
         "SMode": "0",
         "PMac": ""
-    }
+    },
+    "capabilities": "um_live"
 }

@@ -16,6 +16,7 @@
 // every shutdown by syncWithMCU), so ProductConfig's DEVICE section only holds
 // CSSID/CPWD/SPKVOL.
 
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <mutex>
@@ -31,6 +32,13 @@ class ProductConfig {
                         const char* default_value);
         std::string get(const std::string &section, const std::string &key,
                         std::string default_value);
+
+        // T28 capability presence-set (um_*). Loaded from the top-level
+        // "capabilities" field in product.json (comma-separated). Absent or
+        // empty -> fail-safe {"um_live"} (design um-capability-advertising §3.7).
+        bool hasCap(const std::string &token) const;
+        std::set<std::string> getCaps() const;
+
         void reload();
 
     private:
@@ -38,10 +46,12 @@ class ProductConfig {
         ProductConfig(const ProductConfig &) = delete;
         ProductConfig &operator=(const ProductConfig &) = delete;
         bool load(const std::string &configFile);
+        void parseCapabilities(const std::string &raw);
 
         std::unordered_map<std::string, std::unordered_map<std::string, std::string>> config_data;
-        std::mutex config_mutex;
+        mutable std::mutex config_mutex;
         std::string config_filename;
+        std::set<std::string> caps_set_;
 };
 
 #endif /* PRODUCTCONFIG_H */

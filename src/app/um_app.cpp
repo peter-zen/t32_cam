@@ -50,6 +50,7 @@
 #include "MdnsParams.h"       // service::buildMdnsParams / isMdnsEnabled
 #include "TcpEventService.h"  // service::TcpEventService
 #include "CameraServiceFactory.h"  // service::CameraServiceFactory (prewarm snap channel)
+#include "HalProvider.h"       // T28: hal::HalProvider::start (cap-driven resident config)
 
 namespace {
 
@@ -229,6 +230,24 @@ int main(int argc, char* argv[])
     }
 
     // --- bring-up（按 CMD_MOBILE WorkModeRunner.cpp:584-681 顺序；任一必需失败 goto um_exit）---
+    // 0) T28 — um_* capability bootstrap (design um-capability-advertising §3.6).
+    // Single source of truth: product.json capabilities drives ① which IMP
+    // resident channels HalProvider builds (lean = save ~2-4MB CMA), ② HTTP
+    // route gates (http_api_register_v1 reads ProductConfig too), ③ mDNS TXT.
+    // HalProvider::start MUST run before sharedVideo()'s lazy init (RTSP trigger
+    // below) — the resident cfg is sticky once the singleton is constructed.
+    {
+        auto caps = ProductConfig::getInstance()->getCaps();
+        hal::HalVideoConfig hvc;
+        hvc.residentMode = -1;   // unused when caps non-empty (cap-driven path)
+        hvc.withThumb    = false;  // um 预览/录像不需要缩略图通道（group2/CH14）
+        hvc.enableOsd    = false;  // um 纯预览不需要 OSD（省内存）
+        hvc.caps         = caps;
+        hal::HalProvider::start(hvc);
+        Logger::log(LogLevel::INFO, "[um] capabilities: %s (lean resident build)",
+                    caps.empty() ? "(empty)" : "loaded");
+    }
+
     // 1) day/night one-shot
     if (lc.daynight()) {
         const char* forceDay = std::getenv("HTC_FORCE_RECORD_DAY_MODE");
@@ -314,7 +333,8 @@ int main(int argc, char* argv[])
         lc.markRtspSingletonUsed();   // 必调：gate lc.shutdown() 内的 RtspServer::shutdown()(HAL/IMP)
         // 预热拍照 channel：在 RTSP EnableChn(group1) 前建 group0 encoder 链（官方 Bind-before-enable），
         // 否则拍照时 Bind 落在 FrameSource 使能后 → JPEG polling 超时（um 拍照 bug 根因）。
-        if (!flags.noHttp) {
+        // T28 — gate on um_snap:首产品 um_snap OFF → prewarm 不调（省拍照链内存，APP 也不发拍请求）。
+        if (!flags.noHttp && ProductConfig::getInstance()->hasCap("um_snap")) {
             service::CameraServiceFactory::getInstance(storagePaths)->prewarm();
         }
         media::RtspServer::getInstance()->registerOnsessionPlayCallback([&idleCore]() {

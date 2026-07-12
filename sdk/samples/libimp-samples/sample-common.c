@@ -13,7 +13,7 @@
 #define TAG "sample-Common"
 
 int S_RC_METHOD = ENC_RC_MODE_CBR;
-int direct_switch = 0;
+int direct_switch = 1; /* IVDC=true for CH0 — 与 um 配置一致（对照实验） */
 int gosd_enable = 0; /* 1: ipu osd, 2: isp osd, 3: ipu osd and isp osd */
 int kerenc_enable[FS_CHN_NUM] = {0};
 int g_fs_nvbufs = 0; /* 0: use default, >0: override nrVBs for frame source */

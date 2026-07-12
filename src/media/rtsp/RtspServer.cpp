@@ -20,6 +20,7 @@
 #include "MediaSession.h"
 #include "VideoSource.h"
 #include "AudioSource.h"
+#include "ProductConfig.h"
 
 using namespace media;
 
@@ -38,6 +39,24 @@ void logRtspStreamInfo(const char* label, const hal::VideoStreamInfo& info) {
                 info.fps_num,
                 info.fps_den,
                 static_cast<int>(info.payload));
+}
+
+// T29 — RTSP stream (FS channel) selection by capability set (design §3.6).
+// Single source of truth = ProductConfig caps (same source HalProvider reads).
+//   Pure-preview single-stream ({um_live} without um_rec) → CH0 (stream_index=0):
+//     the FS layer built only CH0 at 720p (fillFsAttrForOutput 720p branch +
+//     buildChannels cap-driven enable), so RTSP MUST consume CH0 to match.
+//   Multi-cap (um_rec present) / legacy / caps-empty → CH1 (stream_index=1):
+//     classic main/sub pair — CH0 is record full-res, CH1 is preview 720p.
+// This condition mirrors fillFsAttrForOutput's 720p guard so the RTSP sink
+// always lands on the channel that was actually CreateChn'd at the expected
+// resolution.
+int rtspStreamIdForCaps() {
+    auto caps = ProductConfig::getInstance()->getCaps();
+    if (!caps.empty() && caps.count("um_live") && !caps.count("um_rec")) {
+        return 0;  // pure-preview single-stream → CH0
+    }
+    return RTSP_STREAM_ID;  // default 1 (CH1 sub-stream / legacy)
 }
 
 }
@@ -154,7 +173,7 @@ RtspServer::RtspServer()
 	, pullFrameThreadRun(false)
 	, alreadyGetSpsPps(false)
     , port_(DEFAULT_RTSP_PORT)
-    , enableAudio_(true)
+    , enableAudio_(false)
     , streamingEnabled_(false)
 {
     initialized = initialize();
@@ -191,6 +210,8 @@ bool RtspServer::initialize()
             Logger::log(LogLevel::ERROR, "Audio init failed, continue without audio");
             enableAudio_ = false;
         }
+    } else {
+        Logger::log(LogLevel::INFO, "Audio disabled (enableAudio_=false)");
     }
     Logger::log(LogLevel::DEBUG, "Video init success");
     return true;
@@ -477,7 +498,10 @@ bool RtspServer::initVideo()
     memset(&cfg, 0, sizeof(hal::VideoStreamConfig));
     cfg.payload = hal::VideoPayloadType::H264;
     cfg.channel.sensor_index = RTSP_SENSOR_ID;
-    cfg.channel.stream_index = RTSP_STREAM_ID;
+    // T29 — stream_index is now cap-driven (rtspStreamIdForCaps): pure-preview
+    // single-stream consumes CH0 (matches FS CH0-Scaler-720p build); multi-cap
+    // or legacy consumes CH1. See design um-capability-advertising §3.6.
+    cfg.channel.stream_index = rtspStreamIdForCaps();
     cfg.width = 1280;
     cfg.height = 720;
     cfg.fps_num = 30;
@@ -505,7 +529,10 @@ bool RtspServer::initVideo()
         Logger::log(LogLevel::WARNING, "rtsp stream info: query failed");
     }
     auto videoSource = std::make_shared<VideoSource>(stream);
-    videoSession_ = std::make_shared<MediaSession>(videoSource, 60);
+    // FIFO size: 60→10。60 帧缓存太大——consumer 跟不上时积压大量帧，
+    // 每帧 malloc 的匿名页在 zram 上反复 dirty/压缩，64MB RAM 下引发 OOM。
+    // 10 帧（~85KB）足够平滑网络抖动，满了直接丢帧。
+    videoSession_ = std::make_shared<MediaSession>(videoSource, 10);
     return true;
 }
 
@@ -572,7 +599,7 @@ bool RtspServer::initAudio()
                 audioFrameDurationUs, audioPollTimeoutMs);
 
     auto audioSource = std::make_shared<AudioSource>(audioStream, audioPollTimeoutMs, audioFrameDurationUs);
-    audioSession_ = std::make_shared<MediaSession>(audioSource, 80);
+    audioSession_ = std::make_shared<MediaSession>(audioSource, 20);
     return true;
 }
 

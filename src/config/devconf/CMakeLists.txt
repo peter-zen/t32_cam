@@ -19,7 +19,7 @@ include_directories(
 # Create library
 add_library(devconf SHARED ${SOURCE_FILES})
 
-target_link_libraries(devconf PRIVATE env jsoncpp)
+target_link_libraries(devconf PRIVATE env jsoncpp logger)
 
 # Set the output directory for the library
 set_target_properties(devconf PROPERTIES

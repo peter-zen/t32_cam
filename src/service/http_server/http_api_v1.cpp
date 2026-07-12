@@ -14,6 +14,7 @@
 #include "../../storage/DatabaseManager.h"
 #include "../../storage/MediaScanner.h"
 #include "../../storage/MetadataDao.h"
+#include "../../config/devconf/ProductConfig.h"
 
 #include <elog.h>
 #include <json/json.h>
@@ -733,6 +734,31 @@ static int api_v1_device_sensors(struct mg_connection* conn, void* cbdata) {
     }
 
     send_success_response(conn, build_sensor_data_json(get_sensor_service()->getSensorData()));
+    return 200;
+}
+
+// T28 — device capability self-report (design um-capability-advertising §3.8).
+// Returns the um_* presence-set derived from product.json so APPs can hide
+// unsupported features after connecting. Single source of truth: the same
+// set drives IMP channel construction + HTTP route gates + mDNS TXT.
+static int api_v1_device_capabilities(struct mg_connection* conn, void* cbdata) {
+    (void)cbdata;
+    if (!uri_equals(conn, "/api/v1/device/capabilities")) {
+        return reject_unmatched_subpath(conn, "/api/v1/device/capabilities");
+    }
+    if (strcmp(mg_get_request_info(conn)->request_method, "GET") != 0) {
+        send_http_error(conn, 405, "Method Not Allowed");
+        return 405;
+    }
+
+    Json::Value data;
+    Json::Value arr(Json::arrayValue);
+    const auto caps = ProductConfig::getInstance()->getCaps();
+    for (const auto& token : caps) {
+        arr.append(token);
+    }
+    data["capabilities"] = arr;
+    send_success_response(conn, data);
     return 200;
 }
 
@@ -1722,8 +1748,22 @@ static int api_v1_camera_thumbnail(struct mg_connection* conn, void* cbdata) {
 extern "C" void http_api_register_v1(struct mg_context* ctx) {
     elog_i(TAG, "Registering V1 APIs");
 
+    // T28 — capability gates (design um-capability-advertising §3.9). caps load
+    // is triggered here (first ProductConfig::getInstance() in this process —
+    // boot-time, single-threaded). mg_set_request_handler binds at registration;
+    // runtime cannot deregister — so the gate must complete here. Absent route
+    // → mongoose 404 (semantic "feature not present on this product").
+    auto product = ProductConfig::getInstance();
+    const bool hasSnap = product->hasCap("um_snap");
+    const bool hasRec  = product->hasCap("um_rec");
+    const bool hasPb   = product->hasCap("um_pb");
+    elog_i(TAG, "Capability gates: snap=%d rec=%d pb=%d", hasSnap ? 1 : 0,
+           hasRec ? 1 : 0, hasPb ? 1 : 0);
+
+    // ---- Always-registered (control / device / camera-config, design §3.9) ----
     mg_set_request_handler(ctx, "/api/v1/device/info", api_v1_device_info, NULL);
     mg_set_request_handler(ctx, "/api/v1/device/sensors", api_v1_device_sensors, NULL);
+    mg_set_request_handler(ctx, "/api/v1/device/capabilities", api_v1_device_capabilities, NULL);
 
     mg_set_request_handler(ctx, "/api/v1/system/datetime", api_v1_system_datetime, NULL);
     mg_set_request_handler(ctx, "/api/v1/system/workmode", api_v1_system_workmode, NULL);
@@ -1731,17 +1771,44 @@ extern "C" void http_api_register_v1(struct mg_context* ctx) {
     mg_set_request_handler(ctx, "/api/v1/storage/info", api_v1_storage_info, NULL);
     mg_set_request_handler(ctx, "/api/v1/storage/format", api_v1_storage_format, NULL);
 
-    mg_set_request_handler(ctx, "/api/v1/camera/photo/burst", api_v1_camera_photo_burst, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/photo/status", api_v1_camera_photo_status, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/photo/timer", api_v1_camera_photo_timer, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/photo", api_v1_camera_photo, NULL);
+    // ---- um_snap gate: write-new-media (photo) + photo-related live capture ----
+    // Note: /thumbnail is dual-semantic — `?file_path=` reads existing (browse,
+    // um_pb per design §3.6) but no-arg form calls capturePreviewFrame (live snap
+    // companion, design §3.6 note). takePhoto's response carries NO thumbnail
+    // (PhotoResult only has filePath/timestamp; thumbnail is saved to sqlite by
+    // MetadataDao::saveThumbnail at CameraServiceT32.cpp:216). The route is kept
+    // under um_snap because the no-arg live-capture branch is a snap companion;
+    // moving it to um_pb would hide live preview capture from um_snap-only
+    // products. Design §3.6 table lists only `thumbnail?file_path=` under um_pb.
+    if (hasSnap) {
+        mg_set_request_handler(ctx, "/api/v1/camera/photo/burst", api_v1_camera_photo_burst, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/photo/status", api_v1_camera_photo_status, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/photo/timer", api_v1_camera_photo_timer, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/photo", api_v1_camera_photo, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/thumbnail", api_v1_camera_thumbnail, NULL);
+    }
 
-    mg_set_request_handler(ctx, "/api/v1/camera/video/start", api_v1_camera_video_start, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/video/stop", api_v1_camera_video_stop, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/video/status", api_v1_camera_video_status, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/video/playback", api_v1_camera_video_playback, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/video/list", api_v1_camera_video_list, NULL);
+    // ---- um_rec gate: record start/stop/status ----
+    if (hasRec) {
+        mg_set_request_handler(ctx, "/api/v1/camera/video/start", api_v1_camera_video_start, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/video/stop", api_v1_camera_video_stop, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/video/status", api_v1_camera_video_status, NULL);
+    }
 
+    // ---- um_pb gate: read-existing-media (browse/playback) ----
+    // photos + database/thumbnail moved here from um_snap (loopback #1): they
+    // read existing media (browse), not write new. POST /photo stays um_snap.
+    if (hasPb) {
+        mg_set_request_handler(ctx, "/api/v1/camera/photos", api_v1_camera_photos, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/database/thumbnail", api_v1_camera_db_thumb, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/video/playback", api_v1_camera_video_playback, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/video/list", api_v1_camera_video_list, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/files/download", api_v1_camera_files_download, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/files/delete", api_v1_camera_files_delete, NULL);
+        mg_set_request_handler(ctx, "/api/v1/camera/database/media", api_v1_camera_db_media, NULL);
+    }
+
+    // ---- Always-registered camera config (not capability-gated) ----
     mg_set_request_handler(ctx, "/api/v1/camera/properties/reset", api_v1_camera_properties_reset, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/properties/factory-reset", api_v1_camera_properties_factory_reset, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/properties", api_v1_camera_properties_single, NULL);
@@ -1749,13 +1816,7 @@ extern "C" void http_api_register_v1(struct mg_context* ctx) {
 
     mg_set_request_handler(ctx, "/api/v1/camera/presets", api_v1_camera_presets, NULL);
 
-    mg_set_request_handler(ctx, "/api/v1/camera/database/media", api_v1_camera_db_media, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/database/thumbnail", api_v1_camera_db_thumb, NULL);
     mg_set_request_handler(ctx, "/api/v1/camera/preview", api_v1_camera_preview, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/thumbnail", api_v1_camera_thumbnail, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/photos", api_v1_camera_photos, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/files/download", api_v1_camera_files_download, NULL);
-    mg_set_request_handler(ctx, "/api/v1/camera/files/delete", api_v1_camera_files_delete, NULL);
 }
 
 extern "C" void http_api_v1_shutdown(void) {

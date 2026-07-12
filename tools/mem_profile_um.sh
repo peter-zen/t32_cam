@@ -1,30 +1,31 @@
 #!/bin/sh
-# mem_profile_sample.sh — sample-Encoder-video 内存 profiling
+# mem_profile_um.sh v2 — um preview OOM burst 定位
 #
-# 用途：跑官方 sample-Encoder-video（裸 SDK），和 um 做内存对照。
-#       sample 已编译为 direct_switch=1（CH0 bEnableIvdc=true，与 um 一致）。
-#       sample 录完 SLEEP_TIME 秒后自动退出——不需手动连 app。
+# 相比 v1：2s 粒度采样 + 当前 VmSize + [heap] 大小 + **VmSize 暴涨瞬间 dump
+# /proc/<pid>/maps**（定位是 [heap] / anon mmap / IMP 设备映射哪个在涨）。
 #
 # 用法（T32 上）:
 #   cd /mnt/huntcam
-#   sh tools/mem_profile_sample.sh
+#   sh tools/mem_profile_um.sh            # 干净跑（推荐第一轮）
+#   sh tools/mem_profile_um.sh debug      # +HTC_LOG_DEBUG=1（frame-level，第二轮）
 #
 # 交回（host 侧 build/logs/<输出目录>/ 同名可直接读）:
 #   trend.csv          每 2s 一行：VmSize/VmRSS/VmPeak/heap/Committed/Anon/Slab/MemFree/zram
-#   maps-T001.log      启动 baseline maps
-#   maps-burst-Tnnn.log VmSize 暴涨瞬间的 maps ← 决定性证据
-#   sample.log         sample stdout
-#   dmesg.log
+#   maps-T001.log      启动 baseline 的完整 maps（对照用）
+#   maps-burst-Tnnn.log VmSize 暴涨瞬间的 maps ← 决定性证据（哪个 region ballooned）
+#   um.log / dmesg.log / app.log
 
 LABEL=${1:-baseline}
+DEBUG=0
+[ "$LABEL" = "debug" ] && DEBUG=1
 
-BIN=/mnt/huntcam/bin/sample-Encoder-video
+BIN=/mnt/huntcam/bin/um
 LOG_DIR=/mnt/huntcam/logs
-PROFILE_DIR="$LOG_DIR/mem-profile-sample-$(date '+%Y%m%d-%H%M%S')-$LABEL"
+PROFILE_DIR="$LOG_DIR/mem-profile-um-$(date '+%Y%m%d-%H%M%S')-$LABEL"
 mkdir -p "$PROFILE_DIR"
-PID_LOG="$PROFILE_DIR/sample.pid"
+PID_LOG="$PROFILE_DIR/um.pid"
 TREND="$PROFILE_DIR/trend.csv"
-MAX_WAIT_SEC=120
+MAX_WAIT_SEC=600
 SAMPLE_SEC=2
 BURST_THRESHOLD_KB=20480    # VmSize 单次跳 >20MB 触发 maps dump
 prev_vmsize=0
@@ -32,17 +33,22 @@ burst_dumped=0
 
 echo ">>> 输出目录: $PROFILE_DIR"
 
-# 起 sample-Encoder-video（录完自动退出）
-"$BIN" > "$PROFILE_DIR/sample.log" 2>&1 &
-S_PID=$!
-echo $S_PID > "$PID_LOG"
-echo ">>> sample PID=$S_PID — 录制中，等 burst/退出。每 ${SAMPLE_SEC}s 采样。"
+# 起 um
+if [ "$DEBUG" = "1" ]; then
+    HTC_LOG_DEBUG=1 HTC_UM_IDLE_TIMEOUT_MS=600000 "$BIN" > "$PROFILE_DIR/um.log" 2>&1 &
+else
+    HTC_UM_IDLE_TIMEOUT_MS=600000 "$BIN" > "$PROFILE_DIR/um.log" 2>&1 &
+fi
+UM_PID=$!
+echo $UM_PID > "$PID_LOG"
+echo ">>> um PID=$UM_PID debug=$DEBUG — 连 APP 进预览，等 burst/OOM。每 ${SAMPLE_SEC}s 采样。"
 
-# NOTE: T32 busybox 无 awk — 用 set -- 词分割
-g_status() { set -- $(grep -m1 "^$1:" "/proc/$S_PID/status" 2>/dev/null); echo "$2"; }
+# NOTE: T32 busybox 无 awk — 用 set -- 词分割 / read 取首字段
+g_status() { set -- $(grep -m1 "^$1:" "/proc/$UM_PID/status" 2>/dev/null); echo "$2"; }
 g_mem()    { set -- $(grep -m1 "^$1:" /proc/meminfo 2>/dev/null); echo "$2"; }
 heap_kb() {
-    line=$(grep -m1 '\[heap\]' "/proc/$S_PID/maps" 2>/dev/null)
+    # /proc/<pid>/maps 里 [heap] 行的地址区间，shell 算术转 hex
+    line=$(grep -m1 '\[heap\]' "/proc/$UM_PID/maps" 2>/dev/null)
     [ -z "$line" ] && { echo 0; return; }
     range=${line%% *}; start=${range%%-*}; end=${range#*-}
     [ -z "$start" ] || [ -z "$end" ] && { echo 0; return; }
@@ -53,7 +59,7 @@ zram_orig() { read z _ < /sys/block/zram0/mm_stat 2>/dev/null; echo "$z"; }
 echo "snap,time,VmSize_kB,VmRSS_kB,VmPeak_kB,heap_kB,Committed_AS_kB,AnonPages_kB,Slab_kB,MemFree_kB,zram_orig_B" > "$TREND"
 
 i=0
-while kill -0 $S_PID 2>/dev/null; do
+while kill -0 $UM_PID 2>/dev/null; do
     i=$((i + 1))
     snap="T$(printf '%03d' $i)"
     vmsize=$(g_status VmSize); vmrss=$(g_status VmRSS); vmpeak=$(g_status VmPeak)
@@ -64,7 +70,7 @@ while kill -0 $S_PID 2>/dev/null; do
 
     # baseline maps（首帧，对照）
     if [ "$i" = 1 ]; then
-        cp "/proc/$S_PID/maps" "$PROFILE_DIR/maps-T001.log" 2>/dev/null
+        cp "/proc/$UM_PID/maps" "$PROFILE_DIR/maps-T001.log" 2>/dev/null
     fi
 
     # burst 检测：VmSize 单次跳 > 阈值 → dump maps 一次
@@ -72,8 +78,8 @@ while kill -0 $S_PID 2>/dev/null; do
         delta=$((vmsize - prev_vmsize))
         if [ "$delta" -gt "$BURST_THRESHOLD_KB" ] 2>/dev/null; then
             echo ">>> BURST $snap: VmSize ${prev_vmsize}->${vmsize} (+${delta} kB) — dumping maps"
-            cp "/proc/$S_PID/maps" "$PROFILE_DIR/maps-burst-$snap.log" 2>/dev/null
-            cat "/proc/$S_PID/smaps_rollup" > "$PROFILE_DIR/smaps-burst-$snap.log" 2>/dev/null
+            cp "/proc/$UM_PID/maps" "$PROFILE_DIR/maps-burst-$snap.log" 2>/dev/null
+            cat "/proc/$UM_PID/smaps_rollup" > "$PROFILE_DIR/smaps-burst-$snap.log" 2>/dev/null
             burst_dumped=1
         fi
     fi
@@ -81,18 +87,18 @@ while kill -0 $S_PID 2>/dev/null; do
 
     sleep $SAMPLE_SEC
     if [ $((i * SAMPLE_SEC)) -ge $MAX_WAIT_SEC ]; then
-        echo ">>> 上限 ${MAX_WAIT_SEC}s，sample 还在跑——强制 kill"
-        kill $S_PID 2>/dev/null
+        echo ">>> 上限 ${MAX_WAIT_SEC}s，um 还活着——未复现 OOM"
         break
     fi
 done
 
-wait $S_PID 2>/dev/null
-echo "sample rc=$?" > "$PROFILE_DIR/rc.log"
+wait $UM_PID 2>/dev/null
+echo "um rc=$?" > "$PROFILE_DIR/rc.log"
 dmesg > "$PROFILE_DIR/dmesg.log" 2>&1
+cp "$LOG_DIR/app.log" "$PROFILE_DIR/app.log" 2>/dev/null
 
 echo ""
 echo ">>> done。交回（NFS host 侧 build/logs/<同名目录>/ 可直读）:"
 echo "    $PROFILE_DIR/trend.csv             ← 2s 粒度内存趋势"
 echo "    $PROFILE_DIR/maps-burst-Tnnn.log   ← 暴涨瞬间的 maps（决定性）"
-echo "    $PROFILE_DIR/sample.log / dmesg.log"
+echo "    $PROFILE_DIR/um.log / dmesg.log"

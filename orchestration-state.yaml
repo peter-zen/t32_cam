@@ -151,6 +151,18 @@ tasks:
   status: done
   assignee: implementer
   deliverables: []
+- id: T28
+  title: um 能力自报(product.json um_*) + lean residentMode + HTTP/mDNS gate + fail-safe
+    lean default
+  status: done
+  assignee: implementer
+  deliverables: []
+- id: T29
+  title: um RTSP 改走 CH0-scaled-720p 单流(官方 nrvbs 指南) + capability-driven 通道映射，修 64MB
+    OOM
+  status: done
+  assignee: implementer
+  deliverables: []
 decisions: []
 risks:
 - '{''key'': ''T2-hw-regression-unverified'', ''severity'': ''medium'', ''description'':
@@ -246,4 +258,44 @@ risks:
   no-SD（HW mountSDCard non-fatal 分支）、真后端 upload/heartbeat 成功、IMP-not-init 在真机、tmpfs
   占用——sim 测不全（sim mountSDCard 递归 mkdir 总成功）。需 T32 硬件回归 （planner 已标，留用户）。sim 验收 + 双平台编译
   + 本审查 code-level 核实已足够放行合入。''}'
-active_task: T27
+- 'T28-hw-imp-channel-build-unverified (medium): cap→通道映射的 IMP 实际构建（IMP_Encoder_CreateChn/IMP_FrameSource_EnableChn/Bind）、首产品
+  um_live-only 只建 CH1 的内存省量（~2-4MB）与 CMA 占用，只能在 T32 真机验证（PC sim imp_stub 全 no-op）。映射决策有
+  R1-R4 单测覆盖（逻辑层）；回滚点 D（IngenicVideo.cpp um cap 分支 + HalProvider + um_app 接线）可单独 revert
+  回 residentMode<0 全建。设备验证：I1 um 启动 log 审计（CH1 建、CH0/12/14 不建、dmesg 无 IMP 错）；I2 cat
+  /proc/meminfo Cma/mem 对比 lean 前后。'
+- 'T28-hal-bind-before-enable-regression (medium): um_app prewarm 门控 + 新增 HalProvider::start(caps)
+  调用可能扰动 IMP lifecycle 序列（reviews/2026-06-24-wm-slice2-capture.md cm==1 根因 = Bind
+  落在 Enable 后致 JPEG polling 超时）。首产品 um_snap OFF → prewarm 不调（减少扰动）；RTSP EnableChn
+  前通道构建序列保持不变。设备验证：I3 若 dev 全开模板（um_snap ON），拍照 JPEG polling 不超时。'
+- 'T28-productconfig-load-fail-not-failsafe (low): ProductConfig.cpp:25,32 的 early-return
+  false 路径（文件缺失/JSON 坏）未 fail-safe——caps_set_ 保持空（非 {um_live}）→ cfg.caps.empty() →
+  走 wm 全建分支（=legacy 行为，非 lean）。首产品 G1 golden test 保证 product.json 必含 capabilities
+  且存在，实际不触发；corrupt-config 退化为 legacy 全建是保守安全方向。follow-up 可选：load 失败也走 {um_live} fail-safe。'
+- 'T28-halprovider-log-no-caps (low): HalProvider.cpp:70 的 start log 不含 caps 内容，调试时无法从该行看出
+  lean/全建。um_app.cpp:246 有独立 caps log 补偿。可选 follow-up：HalProvider log 加 caps 摘要。'
+- 'T28-thumbnail-route-gate-limitation (low): GET /api/v1/camera/thumbnail?file_path=
+  是双语义路由（snap 后取刚拍 thumb + 浏览已有 thumb），mongoose 按 URI prefix 注册无法按 query-param gate，故路由级留
+  um_snap。若未来出 um_pb-only 产品（能浏览但不拍照），纯浏览缩略图须走 database/thumbnail（已在 pb gate）或拆 /thumbnail
+  为 browse/live 两条路由。首产品 [um_live] 两者都关，无功能影响。'
+- 'T29-hw-ch0-scaler-720p-unverified (high): CH0+Scaler→720p 单流是真机 IMP 行为，sim (imp_stub
+  no-op) 测不出。核心假设：CH0 FS scaler 从 sensor 2560×1440 降到 1280×720 输出，raw ring 按 720p
+  分配（非全分辨率）。设备复测：重跑 tools/mem_profile_um.sh，期待 maps-burst 的 11×8MB 块消失、MemFree >20MB
+  稳态、trend.csv VmSize <<200MB、无 OOM。fall-back：保留 CH0 全分辨率 + 降 nrVBs(cmdline T30) +
+  不建 CH1。'
+- 'T29-rtsp-ch0-stream-unverified (high): RTSP 走 CH0(group0) 实际出帧 720p、帧率正常、持续 >5min
+  无断流。sim RTSP 用 SimVideo 不读 stream_id。设备复测：VLC/ffprobe 连 rtsp://<device>:8554 确认
+  1280×720 SDP + 出帧 + 帧率。'
+- 'T29-rtsp-ch0-fov-unverified (high, loopback#1 引入): CH0 purePreview picWidth 已回
+  sensor 原生 2560（全 FOV 降采样，非中心裁剪）。设备肉眼确认 RTSP 预览是全 sensor 视场角、非 2× 数码变焦。preBindAllChannels(IngenicVideo.cpp:1517-1528)
+  读 picWidth 当 crop 源——若设备见变焦，回查 crop 逻辑。'
+- 'T29-wm-bytes-identical-regression (high): buildChannels/fillFsAttrForOutput 签名变化，caps
+  空分支(wm/quick_snap) sim 代码审计 + tester/reviewer 独立复审逐字等价。设备验证：启 wm + 拍照 + 录影各一次不回归。'
+- 'T29-osd-double-prepare (medium): RTSP 走 CH0(group0) 时 IspOsdManager 双重 prepare（preBindAllChannels:1532
+  + IngenicVideoStream::configure:1261）。代码审计幂等（ensureRegion timeHandle_>=0 守卫 + start
+  started_.exchange(true) 守卫）。设备确认无 ERROR log。'
+- 'T29-nrvbs-cmdline-followup (medium): 应用侧瘦身（砍 user-space 11×8MB）不回收内核 cmdline nrvbs
+  为 CH0 全分辨率预留的 24MB /dev/rmem。MemFree 可能仍偏低。follow-up T30：查设备 /proc/cmdline，调低 nrvbs
+  匹配 720p。'
+- 'T29-doc-cleanup-ivideo-comment (low): src/hal/include/IVideo.h:102-103 注释仍写 um_live→CH1（T28
+  映射），T29 已改 CH0。非阻塞，建议顺手清。'
+active_task: T29

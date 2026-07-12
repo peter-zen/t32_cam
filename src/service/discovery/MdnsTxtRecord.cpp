@@ -22,7 +22,7 @@ std::string portToString(uint16_t port) {
 
 std::vector<std::string> MdnsTxtRecord::build(const MdnsTxtPayload& payload) {
     std::vector<std::string> records;
-    records.reserve(8);
+    records.reserve(9);
 
     appendIfNotEmpty(records, "device_family", payload.deviceFamily);
     appendIfNotEmpty(records, "model", payload.model);
@@ -32,6 +32,7 @@ std::vector<std::string> MdnsTxtRecord::build(const MdnsTxtPayload& payload) {
     appendIfNotEmpty(records, "ctrl_port", portToString(payload.ctrlPort));
     appendIfNotEmpty(records, "mac", payload.macAddress);
     appendIfNotEmpty(records, "status", payload.status);
+    appendIfNotEmpty(records, "caps", payload.caps);
 
     return records;
 }

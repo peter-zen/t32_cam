@@ -15,6 +15,12 @@
 #include "IAudio.h"
 
 #define RTSP_SENSOR_ID 0
+// T29 — RTSP_STREAM_ID is now a RUNTIME decision (see rtspStreamIdForCaps in
+// RtspServer.cpp). This macro is kept only as the default (multi-cap / legacy =
+// CH1). Pure-preview single-stream ({um_live} without um_rec) consumes CH0 at
+// runtime so the RTSP sink matches the FS CH0-Scaler-720p single-stream build
+// (design um-capability-advertising §3.6, OOM fix). initVideo calls
+// rtspStreamIdForCaps() instead of using this macro directly.
 #define RTSP_STREAM_ID 1
 #define PPS_SPS_IN_SDP 1
 namespace media

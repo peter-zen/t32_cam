@@ -19,6 +19,7 @@ struct MdnsTxtPayload {
     uint16_t ctrlPort = 80;
     std::string macAddress;
     std::string status = "ready";
+    std::string caps;  // T28: um_* capability presence-set, comma-joined ("um_live,um_pb")
 };
 
 class MdnsTxtRecord {

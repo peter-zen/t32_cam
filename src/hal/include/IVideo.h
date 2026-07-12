@@ -4,7 +4,8 @@
  #include <string>
  #include <vector>
  #include <memory>
- 
+ #include <set>
+
  namespace hal {
  
 // 视频编码负载类型，表示输出码流的编码格式
@@ -96,6 +97,13 @@ struct VideoEncodedFrame {
  struct HalVideoConfig {
      int  residentMode = -1;   // -1=legacy 全建(preview+record+photo+thumb) / 0=photo / 1=photo+record / 2=record
      bool withThumb     = true; // false→不建 group2/CH14 缩略图通道（quickSnap 省内存）
+     bool enableOsd     = true; // false→跳过 OSD pool 分配 + IspOsdManager（um 纯预览省内存）
+     bool enableIvdc    = true; // false→bEnableIvdc=false（对照 sample direct_switch=0，省 VPU 直通 ~160MB）
+     // T28 — um_* capability presence-set. Non-empty → cap-driven channel
+     // selection (um path); empty → residentMode int path (wm/quickSnap,
+     // unchanged). um_live→CH1 H264, um_snap→CH12 JPEG+CH14, um_rec→CH0 H264+CH14,
+     // um_pb→no channel. See ResidentChannelMap.h capToChannelSet().
+     std::set<std::string> caps;
  };
 
  enum class ISPDaynightMode {

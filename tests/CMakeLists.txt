@@ -459,3 +459,30 @@ set_target_properties(test_t26_phase4_paths PROPERTIES
     OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+
+# T28 um_* capability → resident IMP channel mapping unit test.
+# capToChannelSet is a pure decision function extracted from buildResidentChannels
+# (IngenicVideo.cpp file-local static) into ResidentChannelMap.{h,cpp}. This test
+# compiles ResidentChannelMap.cpp directly (no HAL/IMP deps — just set/vector/string).
+# Actual IMP channel CONSTRUCTION is a device verification item (imp_stub is no-op).
+add_executable(test_resident_channel_map
+    test_resident_channel_map.cpp
+    ${CMAKE_SOURCE_DIR}/src/hal/ingenic/ResidentChannelMap.cpp
+)
+
+target_include_directories(test_resident_channel_map PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/hal/ingenic
+)
+
+target_link_libraries(test_resident_channel_map
+    PRIVATE
+    pthread
+    rt
+    gcc
+    stdc++
+)
+
+set_target_properties(test_resident_channel_map PROPERTIES
+    OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)

@@ -95,6 +95,19 @@ MdnsServiceParams buildMdnsParams(const std::shared_ptr<DeviceConfig>& config,
     params.txt.ctrlPort = ctrl_port;
     params.txt.macAddress = Misc::getMACAddress(interface_name);
     params.txt.status = "ready";
+    // T28: surface the um_* capability set so APPs can hide unsupported features
+    // during discovery (design um-capability-advertising §3.8). Comma-joined,
+    // preserving the um_ prefix (e.g. "um_live,um_pb"). Empty -> omitted by
+    // MdnsTxtRecord::appendIfNotEmpty (but fail-safe guarantees um_live present).
+    {
+        std::string joined;
+        const auto caps = ProductConfig::getInstance()->getCaps();
+        for (auto it = caps.begin(); it != caps.end(); ++it) {
+            if (it != caps.begin()) joined += ",";
+            joined += *it;
+        }
+        params.txt.caps = joined;
+    }
     return params;
 }
 

@@ -12,6 +12,7 @@
 #include <vector>
 #include "Logger.h"
 #include "sensor-config.h"
+#include "ResidentChannelMap.h"
 #include <stdarg.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -179,6 +180,12 @@ static bool acquireChn(int group, int chn, const IMPEncoderCHNAttr* attr) {
         Logger::log(LogLevel::DEBUG, "[HAL] acquireChn(chn=%d): shared, ref=%d", chn, it->second);
         return true;
     }
+    // 在 CreateChn 前压缩码流缓存 buffer 个数（官方省内存配置，对照 sample code）。
+    // SDK 默认 buffer 个数偏大，64MB RAM 设备上会耗尽 rmem（19×8MB 元凶嫌疑）。
+    // 设为 2：既保证 H264 编码流畅不丢帧，又最大限度省内存。必须在 CreateChn 前调用。
+    hal_trace("--> IMP_Encoder_SetMaxStreamCnt chn=%d cnt=2", chn);
+    int msc_rc = IMP_Encoder_SetMaxStreamCnt(chn, 2);
+    hal_trace("<-- IMP_Encoder_SetMaxStreamCnt chn=%d rc=%d", chn, msc_rc);
     hal_trace("--> IMP_Encoder_CreateChn chn=%d", chn);
     int cc_rc = IMP_Encoder_CreateChn(chn, attr);
     hal_trace("<-- IMP_Encoder_CreateChn chn=%d rc=%d", chn, cc_rc);
@@ -386,7 +393,8 @@ static unsigned int getChEnableByIndex(int idx) {
     }
     return 0;
 }
-static void fillFsAttrForOutput(IMPFSChnAttr* a, int sensorIndex, int outputIndex) {
+static void fillFsAttrForOutput(IMPFSChnAttr* a, int sensorIndex, int outputIndex,
+                                const HalVideoConfig& vc) {
     memset(a, 0, sizeof(IMPFSChnAttr));
     a->pixFmt = PIX_FMT_NV12;
     a->nrVBs = 2;
@@ -401,8 +409,20 @@ static void fillFsAttrForOutput(IMPFSChnAttr* a, int sensorIndex, int outputInde
             a->crop.width = FIRST_SENSOR_WIDTH;
             a->crop.height = FIRST_SENSOR_HEIGHT;
             a->scaler.enable = 1;
-            a->scaler.outwidth = FIRST_SENSOR_WIDTH;
-            a->scaler.outheight = FIRST_SENSOR_HEIGHT;
+            // T29 — CH0 (group0) scaler output. Default = sensor native (identity,
+            // 2560x1440) for wm record / caps-empty path (byte-identical to T28).
+            // Pure-preview single-stream ({um_live} without um_rec) → Scaler 720p
+            // (design §3.6): the CH0 raw ring is allocated by IMP per scaler output
+            // size, so 720p instead of 2560x1440 shrinks the ~11x8MB virtual raw
+            // ring that caused the 64MB OOM. um_rec present keeps full-res (record).
+            int outW = FIRST_SENSOR_WIDTH;
+            int outH = FIRST_SENSOR_HEIGHT;
+            if (!vc.caps.empty() && vc.caps.count("um_live") && !vc.caps.count("um_rec")) {
+                outW = 1280;
+                outH = 720;
+            }
+            a->scaler.outwidth = outW;
+            a->scaler.outheight = outH;
             a->picWidth = FIRST_SENSOR_WIDTH;
             a->picHeight = FIRST_SENSOR_HEIGHT;
         } else if (outputIndex == 1) {
@@ -557,9 +577,26 @@ static void fillFsAttrForOutput(IMPFSChnAttr* a, int sensorIndex, int outputInde
         }
     }
 }
-static std::vector<ChannelConfig> buildChannels(const std::vector<SensorConfig>& sensors) {
+static std::vector<ChannelConfig> buildChannels(const std::vector<SensorConfig>& sensors,
+                                                 const HalVideoConfig& vc) {
     std::vector<ChannelConfig> v;
     int num = sensors.size();
+
+    // T29 — cap-driven FS channel enable set (only meaningful when vc.caps non-empty).
+    // FS channel index = group index (sensor0: idx0=group0/CH0, idx1=group1/CH1,
+    // idx2=group2/CH14). The FS enable set MUST match capToChannelSet's group
+    // allocation so preBindAllChannels finds the FS channels it needs already
+    // CreateChn'd. For sensor 0 only; other sensors fall back to compile-time macros.
+    //   group0 (idx0): um_live || um_rec || um_snap  (any media cap needs main stream)
+    //   group1 (idx1): um_live && um_rec             (classic main/sub pair, preview=CH1)
+    //   group2 (idx2): withThumb && (um_snap || um_rec)  (thumbnail shared, snap||rec)
+    // caps empty → fallback to compile-time CHNn_EN macros (wm/quickSnap, byte-identical).
+    const bool capDriven = !vc.caps.empty();
+    const bool hasLive = capDriven && vc.caps.count("um_live") > 0;
+    const bool hasSnap = capDriven && vc.caps.count("um_snap") > 0;
+    const bool hasRec  = capDriven && vc.caps.count("um_rec")  > 0;
+    const bool hasThumb = capDriven && vc.withThumb && (hasSnap || hasRec);
+
     for (int s = 0; s < num; ++s) {
         for (int o = 0; o < 3; ++o) {
             int idx = s * 3 + o;
@@ -569,7 +606,18 @@ static std::vector<ChannelConfig> buildChannels(const std::vector<SensorConfig>&
             c.sensor_index = s;
             c.output_index = o;
             c.enable = getChEnableByIndex(idx);
-            fillFsAttrForOutput(&c.fs_attr, s, o);
+            // T29 — cap-driven FS enable override (um path only).
+            // Single-stream preview ({um_live}) → only group0/CH0 created → the
+            // ~11x8MB CH0 full-res raw ring is replaced by a 720p raw ring (the
+            // 64MB OOM root cause fix). See design §3.6 + planner Slice B.
+            if (capDriven && s == 0) {
+                bool want = false;
+                if (o == 0) want = hasLive || hasRec || hasSnap;          // group0
+                else if (o == 1) want = hasLive && hasRec;                 // group1
+                else if (o == 2) want = hasThumb;                          // group2
+                c.enable = want ? 1 : 0;
+            }
+            fillFsAttrForOutput(&c.fs_attr, s, o, vc);
             v.push_back(c);
         }
     }
@@ -1117,7 +1165,47 @@ static std::vector<ResidentChannelDef> buildResidentChannels(const HalVideoConfi
         d.cfg.enable_ivdc = ivdc;
         return d;
     };
+    // T28 — channel-id → full ResidentChannelDef. Configs are the SAME literals
+    // used by the residentMode<0 (legacy) + wm selective paths below, so a cap-
+    // driven build produces byte-identical per-channel configs. This dispatch
+    // only decides WHICH channels; the cfg payload is the existing truth.
+    //
+    // T29 — case 0 (CH0) has a cap-driven width/height/bitrate branch: pure-
+    // preview single-stream ({um_live} alone, no um_rec/um_snap) uses 720p +
+    // 2048kbps to match the FS scaler output (fillFsAttrForOutput 720p branch).
+    // Otherwise CH0 stays 2560x1440 (record full-res / multi-cap). This keeps
+    // preBindAllChannels' SetChnAttr consistent with the FS attr (Slice B4).
+    const bool purePreview = !cfg.caps.empty()
+                             && cfg.caps.count("um_live")
+                             && !cfg.caps.count("um_rec")
+                             && !cfg.caps.count("um_snap");
+    // IVDC (ISP VPU Direct Connect): 对照 sample-Encoder-video（direct_switch=0 时不设 IVDC）。
+    // enableIvdc=false → bEnableIvdc=false → 不分配 VPU 直通大块物理连续内存（19×8MB 元凶）。
+    // sample 默认不开 IVDC 且 H264/H265 编码正常 → 关闭 IVDC 不影响编码功能。
+    const bool ivdc = cfg.enableIvdc;
+    auto mkById = [&mk, purePreview, ivdc](int channel) -> ResidentChannelDef {
+        switch (channel) {
+            case 0:
+                if (purePreview) {
+                    return mk(0, 0, VideoPayloadType::H264, 0, 1280, 720, 30, 0, 2048, 60, VideoRcMode::CBR, ivdc);
+                }
+                return mk(0, 0,  VideoPayloadType::H264, 0, 2560, 1440, 30, 0, 4096, 60, VideoRcMode::CBR,   ivdc);
+            case 12: return mk(0, 12, VideoPayloadType::JPEG, 0, 2560, 1440, 15, 40, 0,    0,  VideoRcMode::FIXQP, ivdc);
+            case 1:  return mk(1, 1,  VideoPayloadType::H264, 1, 1280, 720,  30, 0, 2048, 60, VideoRcMode::CBR,   ivdc);
+            case 14: return mk(2, 14, VideoPayloadType::JPEG, 2, 320,  180,  15, 80, 0,    0,  VideoRcMode::FIXQP, ivdc);
+            default: return mk(0, channel, VideoPayloadType::H264, 0, 1280, 720, 30, 0, 2048, 60, VideoRcMode::CBR, ivdc);
+        }
+    };
     std::vector<ResidentChannelDef> v;
+
+    // T28 — um cap-driven lean build (design um-capability-advertising §3.6).
+    // cfg.caps non-empty → um path: only build channels for declared capabilities.
+    // cfg.caps empty → wm/quickSnap path unchanged (residentMode int, byte-identical).
+    if (!cfg.caps.empty()) {
+        const auto ids = capToChannelSet(cfg.caps, cfg.withThumb);
+        for (int id : ids) v.push_back(mkById(id));
+        return v;
+    }
 
     // Selective preBind：常驻通道配置由 boot 入口经 HalProvider::start(HalVideoConfig) 显式
     // 传入（值存 IngenicVideo::videoCfg_，取代旧 HTC_HAL_RESIDENT_MODE env——env 已退役）。
@@ -1441,8 +1529,9 @@ bool IngenicVideo::preBindAllChannels() {
         fs_attr.scaler.enable = 1;
         fs_attr.scaler.outwidth = cfg0.width;
         fs_attr.scaler.outheight = cfg0.height;
-        fs_attr.picWidth = cfg0.width;
-        fs_attr.picHeight = cfg0.height;
+        // picWidth/picHeight MUST stay sensor-native (2560×1440) — sensor 输出即 ISP
+        // 物理通道源图尺寸，改成 scaler 输出值会导致 produced=0（管线不出帧）。
+        // 正确管线：sensor 全幅 picSize → crop 不裁 → scaler 缩放到 cfg0.width×height → encoder。
         fs_attr.crop.enable = 1;
         fs_attr.crop.top = 0;
         fs_attr.crop.left = 0;
@@ -1450,8 +1539,8 @@ bool IngenicVideo::preBindAllChannels() {
         fs_attr.crop.height = sensorH;
         fs_attr.outFrmRateNum = cfg0.fps_num;
         fs_attr.outFrmRateDen = cfg0.fps_den;
-        hal_trace("--> preBind IMP_FrameSource_SetChnAttr g=%d %dx%d crop=%dx%d",
-                  g, cfg0.width, cfg0.height, sensorW, sensorH);
+        hal_trace("--> preBind IMP_FrameSource_SetChnAttr g=%d picSize=%dx%d crop=%dx%d scalerOut=%dx%d",
+                  g, sensorW, sensorH, sensorW, sensorH, cfg0.width, cfg0.height);
         int sa_rc = IMP_FrameSource_SetChnAttr(g, &fs_attr);
         hal_trace("<-- preBind IMP_FrameSource_SetChnAttr g=%d rc=%d", g, sa_rc);
         if (sa_rc != 0) {
@@ -1521,8 +1610,14 @@ bool IngenicVideo::init() {
         return true;
     }
     hal_trace("==== [HAL] init() ENTERED (first ref, full IMP init) ====");
-    OSDController osd;
-    if (osd.setPoolSize(gosd_enable_) < 0) return false;
+    // OSD pool 分配：enableOsd=false 时跳过（官方省内存配置——OSD 不初始化）。
+    // um 纯预览不需要 OSD 水印；wm 录影需要时间戳水印保持 enableOsd=true 不变。
+    if (videoCfg_.enableOsd) {
+        OSDController osd;
+        if (osd.setPoolSize(gosd_enable_) < 0) return false;
+    } else {
+        Logger::log(LogLevel::INFO, "[HAL] init: OSD pool skipped (enableOsd=false)");
+    }
     hal_trace("--> [HAL] init: IMP_Encoder_SetJpegBsSize");
     int jbs_rc = IMP_Encoder_SetJpegBsSize(500 * 1024);
     hal_trace("<-- [HAL] init: IMP_Encoder_SetJpegBsSize rc=%d", jbs_rc);
@@ -1574,12 +1669,16 @@ bool IngenicVideo::init() {
      * See doc/knowledge/bugs/T32-recording-fps-17-investigation.md
      */
     // if (sensorMgr.setAllFps(sensors) < 0) return false;
-    fsMgr.init(buildChannels(sensors));
+    fsMgr.init(buildChannels(sensors, videoCfg_));
     if (fsMgr.create() < 0) return false;
     if (fsMgr.setAttr() < 0) return false;
-    ispOsdMgr_.reset(new IspOsdManager());
-    if (!ispOsdMgr_->init(SENSOR_NUM)) {
-        Logger::log(LogLevel::WARNING, "IngenicVideo: IspOsdManager init failed");
+    if (videoCfg_.enableOsd) {
+        ispOsdMgr_.reset(new IspOsdManager());
+        if (!ispOsdMgr_->init(SENSOR_NUM)) {
+            Logger::log(LogLevel::WARNING, "IngenicVideo: IspOsdManager init failed");
+        }
+    } else {
+        Logger::log(LogLevel::INFO, "[HAL] init: IspOsdManager skipped (enableOsd=false)");
     }
     /* Workaround: libimp.so internally overwrites VTS to 3000 during EnableSensor/EnableTuning,
      * dropping actual fps to ~17. Force VTS back to 1680 for correct 30fps.

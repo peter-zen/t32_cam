@@ -24,6 +24,7 @@ else()
     set(HAL_VIDEO_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/ingenic/IngenicVideo.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/ingenic/IspOsdManager.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/ingenic/ResidentChannelMap.cpp
     )
     set(HAL_GPIO_SRC  ${CMAKE_CURRENT_SOURCE_DIR}/ingenic/IngenicGpio.cpp)
 endif()
